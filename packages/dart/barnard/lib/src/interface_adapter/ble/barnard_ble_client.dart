@@ -6,6 +6,7 @@ import "../../domain/config.dart";
 import "../../domain/events.dart";
 import "../../domain/rssi.dart";
 import "../../domain/state.dart";
+import "../../domain/tek_storage.dart";
 import "../../domain/transport.dart";
 import "../../usecase/barnard_client.dart";
 import "package:flutter/services.dart";
@@ -14,35 +15,62 @@ class BarnardBleClient implements BarnardClient {
   BarnardBleClient._({
     required BarnardCapabilities capabilities,
     required BarnardState initialState,
+    required EventMode initialMode,
+    String? initialEventCode,
   })  : _capabilities = capabilities,
-        _state = initialState;
+        _state = initialState,
+        _currentMode = initialMode,
+        _currentEventCode = initialEventCode;
 
   static const MethodChannel _methods = MethodChannel("barnard/methods");
   static const EventChannel _eventsChannel = EventChannel("barnard/events");
-  static const EventChannel _debugEventsChannel = EventChannel("barnard/debugEvents");
+  static const EventChannel _debugEventsChannel = EventChannel(
+    "barnard/debugEvents",
+  );
 
-  final StreamController<BarnardEvent> _eventsController = StreamController<BarnardEvent>.broadcast();
-  final StreamController<BarnardDebugEvent> _debugEventsController = StreamController<BarnardDebugEvent>.broadcast();
+  final StreamController<BarnardEvent> _eventsController =
+      StreamController<BarnardEvent>.broadcast();
+  final StreamController<BarnardDebugEvent> _debugEventsController =
+      StreamController<BarnardDebugEvent>.broadcast();
 
   late final StreamSubscription<dynamic> _eventsSub;
   late final StreamSubscription<dynamic> _debugEventsSub;
 
-  final _BoundedBuffer<BarnardDebugEvent> _debugBuffer = _BoundedBuffer<BarnardDebugEvent>(2000);
-  final _BoundedBuffer<RssiSample> _rssiBuffer = _BoundedBuffer<RssiSample>(const RssiConfig().bufferMaxSamples);
+  final _BoundedBuffer<BarnardDebugEvent> _debugBuffer =
+      _BoundedBuffer<BarnardDebugEvent>(2000);
+  final _BoundedBuffer<RssiSample> _rssiBuffer = _BoundedBuffer<RssiSample>(
+    const RssiConfig().bufferMaxSamples,
+  );
 
   final BarnardCapabilities _capabilities;
   BarnardState _state;
+  EventMode _currentMode;
+  String? _currentEventCode;
   bool _disposed = false;
 
   static Future<BarnardBleClient> create() async {
     final Map<Object?, Object?> capsMap =
-        (await _methods.invokeMethod<Map<Object?, Object?>>("getCapabilities")) ?? <Object?, Object?>{};
+        (await _methods.invokeMethod<Map<Object?, Object?>>(
+              "getCapabilities",
+            )) ??
+            <Object?, Object?>{};
     final Map<Object?, Object?> stateMap =
-        (await _methods.invokeMethod<Map<Object?, Object?>>("getState")) ?? <Object?, Object?>{};
+        (await _methods.invokeMethod<Map<Object?, Object?>>("getState")) ??
+            <Object?, Object?>{};
+    final Map<Object?, Object?> modeMap =
+        (await _methods.invokeMethod<Map<Object?, Object?>>("getEventMode")) ??
+            <Object?, Object?>{};
+
+    final String? modeStr = modeMap["mode"] as String?;
+    final EventMode initialMode =
+        modeStr == "event" ? EventMode.event : EventMode.anonymous;
+    final String? eventCode = modeMap["eventCode"] as String?;
 
     final BarnardBleClient client = BarnardBleClient._(
       capabilities: _parseCapabilities(capsMap),
       initialState: _parseState(stateMap),
+      initialMode: initialMode,
+      initialEventCode: eventCode,
     );
     await client._attachStreams();
     return client;
@@ -53,12 +81,21 @@ class BarnardBleClient implements BarnardClient {
       final BarnardEvent event = _parseBarnardEvent(_expectMap(data));
       if (event is StateEvent) _state = event.state;
       if (event is DetectionEvent) {
-        _rssiBuffer.add(RssiSample(timestamp: event.timestamp, rpid: event.rpid, rssi: event.rssi, transport: event.transport));
+        _rssiBuffer.add(
+          RssiSample(
+            timestamp: event.timestamp,
+            rpid: event.rpid,
+            rssi: event.rssi,
+            transport: event.transport,
+          ),
+        );
       }
       _eventsController.add(event);
     });
 
-    _debugEventsSub = _debugEventsChannel.receiveBroadcastStream().listen((dynamic data) {
+    _debugEventsSub = _debugEventsChannel.receiveBroadcastStream().listen((
+      dynamic data,
+    ) {
       final BarnardDebugEvent event = _parseDebugEvent(_expectMap(data));
       _debugBuffer.add(event);
       _debugEventsController.add(event);
@@ -70,6 +107,12 @@ class BarnardBleClient implements BarnardClient {
 
   @override
   BarnardState get state => _state;
+
+  @override
+  EventMode get currentMode => _currentMode;
+
+  @override
+  String? get currentEventCode => _currentEventCode;
 
   @override
   Stream<BarnardEvent> get events => _eventsController.stream;
@@ -92,7 +135,10 @@ class BarnardBleClient implements BarnardClient {
   @override
   Future<void> startAdvertise([AdvertiseConfig? config]) async {
     _ensureNotDisposed();
-    await _methods.invokeMethod<void>("startAdvertise", _encodeAdvertiseConfig(config));
+    await _methods.invokeMethod<void>(
+      "startAdvertise",
+      _encodeAdvertiseConfig(config),
+    );
   }
 
   @override
@@ -105,9 +151,16 @@ class BarnardBleClient implements BarnardClient {
   Future<BarnardStartResult> startAuto([AutoConfig? config]) async {
     _ensureNotDisposed();
     final Map<Object?, Object?>? out =
-        await _methods.invokeMethod<Map<Object?, Object?>>("startAuto", _encodeAutoConfig(config));
+        await _methods.invokeMethod<Map<Object?, Object?>>(
+      "startAuto",
+      _encodeAutoConfig(config),
+    );
     if (out == null) {
-      return const BarnardStartResult(scanningStarted: false, advertisingStarted: false, issues: <BarnardIssue>[]);
+      return const BarnardStartResult(
+        scanningStarted: false,
+        advertisingStarted: false,
+        issues: <BarnardIssue>[],
+      );
     }
     return _parseStartResult(out);
   }
@@ -118,8 +171,72 @@ class BarnardBleClient implements BarnardClient {
     await _methods.invokeMethod<void>("stopAuto");
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Event Mode APIs
+  // ─────────────────────────────────────────────────────────────────────────
+
   @override
-  List<BarnardDebugEvent> getDebugBuffer({int? limit}) => _debugBuffer.toList(limit: limit);
+  Future<void> joinEvent(String eventCode) async {
+    _ensureNotDisposed();
+    if (_currentMode == EventMode.event) {
+      throw StateError("Already in Event Mode. Call leaveEvent() first.");
+    }
+    await _methods.invokeMethod<void>("joinEvent", <String, Object?>{
+      "eventCode": eventCode,
+    });
+    _currentMode = EventMode.event;
+    _currentEventCode = eventCode;
+  }
+
+  @override
+  Future<void> leaveEvent() async {
+    _ensureNotDisposed();
+    if (_currentMode == EventMode.anonymous) {
+      throw StateError("Not in Event Mode. Call joinEvent() first.");
+    }
+    await _methods.invokeMethod<void>("leaveEvent");
+    _currentMode = EventMode.anonymous;
+    _currentEventCode = null;
+  }
+
+  @override
+  Future<List<TekEntry>> getExchangedTeks(String eventCode) async {
+    _ensureNotDisposed();
+    final List<Object?>? rawList = await _methods.invokeMethod<List<Object?>>(
+      "getExchangedTeks",
+      <String, Object?>{"eventCode": eventCode},
+    );
+    if (rawList == null) return const <TekEntry>[];
+    return rawList
+        .whereType<Map<Object?, Object?>>()
+        .map((Map<Object?, Object?> m) => _parseTekEntry(m))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<int> clearTeksForEvent(String eventCode) async {
+    _ensureNotDisposed();
+    final int? count = await _methods.invokeMethod<int>(
+      "clearTeksForEvent",
+      <String, Object?>{"eventCode": eventCode},
+    );
+    return count ?? 0;
+  }
+
+  @override
+  Future<int> clearAllTeks() async {
+    _ensureNotDisposed();
+    final int? count = await _methods.invokeMethod<int>("clearAllTeks");
+    return count ?? 0;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Pull APIs
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @override
+  List<BarnardDebugEvent> getDebugBuffer({int? limit}) =>
+      _debugBuffer.toList(limit: limit);
 
   @override
   List<RssiSample> getRssiSamples({
@@ -127,13 +244,16 @@ class BarnardBleClient implements BarnardClient {
     int? limit,
     List<int>? rpidBytes,
   }) {
-    final Uint8List? filterRpid = rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid =
+        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
     Iterable<RssiSample> samples = _rssiBuffer.toList();
     if (since != null) {
       samples = samples.where((RssiSample s) => !s.timestamp.isBefore(since));
     }
     if (filterRpid != null) {
-      samples = samples.where((RssiSample s) => _bytesEqual(s.rpid, filterRpid));
+      samples = samples.where(
+        (RssiSample s) => _bytesEqual(s.rpid, filterRpid),
+      );
     }
     final List<RssiSample> out = samples.toList(growable: false);
     if (limit == null) return out;
@@ -160,12 +280,15 @@ class BarnardBleClient implements BarnardClient {
 
 Map<String, Object?> _encodeScanConfig(ScanConfig? config) => <String, Object?>{
       "transport": (config?.transport ?? TransportKind.ble).name,
-      "allowDuplicates": config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
+      "allowDuplicates":
+          config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
     };
 
-Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) => <String, Object?>{
+Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
+    <String, Object?>{
       "transport": (config?.transport ?? TransportKind.ble).name,
-      "formatVersion": config?.formatVersion ?? const AdvertiseConfig().formatVersion,
+      "formatVersion":
+          config?.formatVersion ?? const AdvertiseConfig().formatVersion,
     };
 
 Map<String, Object?> _encodeAutoConfig(AutoConfig? config) => <String, Object?>{
@@ -192,7 +315,11 @@ BarnardStartResult _parseStartResult(Map<Object?, Object?> map) {
       issues.add(BarnardIssue(severity: sev, code: code, message: message));
     }
   }
-  return BarnardStartResult(scanningStarted: scanningStarted, advertisingStarted: advertisingStarted, issues: issues);
+  return BarnardStartResult(
+    scanningStarted: scanningStarted,
+    advertisingStarted: advertisingStarted,
+    issues: issues,
+  );
 }
 
 BarnardCapabilities _parseCapabilities(Map<Object?, Object?> map) {
@@ -200,11 +327,18 @@ BarnardCapabilities _parseCapabilities(Map<Object?, Object?> map) {
   final List<Object?> transports = raw is List ? raw : const <Object?>["ble"];
   final Set<TransportKind> supportedTransports = transports
       .whereType<String>()
-      .map((String s) => TransportKind.values.firstWhere((e) => e.name == s, orElse: () => TransportKind.unknown))
+      .map(
+        (String s) => TransportKind.values.firstWhere(
+          (e) => e.name == s,
+          orElse: () => TransportKind.unknown,
+        ),
+      )
       .toSet();
 
   return BarnardCapabilities(
-    supportedTransports: supportedTransports.isEmpty ? <TransportKind>{TransportKind.ble} : supportedTransports,
+    supportedTransports: supportedTransports.isEmpty
+        ? <TransportKind>{TransportKind.ble}
+        : supportedTransports,
     supportsConnectionlessRpid: map["supportsConnectionlessRpid"] == true,
     supportsGattFallback: map["supportsGattFallback"] == true,
     supportsBackground: map["supportsBackground"] == true,
@@ -220,13 +354,18 @@ BarnardState _parseState(Map<Object?, Object?> map) {
 
 BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
   final String? type = map["type"] as String?;
-  final DateTime ts = DateTime.parse((map["timestamp"] as String?) ?? DateTime.now().toIso8601String());
+  final DateTime ts = DateTime.parse(
+    (map["timestamp"] as String?) ?? DateTime.now().toIso8601String(),
+  );
   switch (type) {
     case "state":
       final Map<Object?, Object?> state = _expectMap(map["state"]);
       return StateEvent(
         timestamp: ts,
-        state: BarnardState(isScanning: state["isScanning"] == true, isAdvertising: state["isAdvertising"] == true),
+        state: BarnardState(
+          isScanning: state["isScanning"] == true,
+          isAdvertising: state["isAdvertising"] == true,
+        ),
         reasonCode: map["reasonCode"] as String?,
       );
     case "constraint":
@@ -249,14 +388,20 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         (e) => e.name == (map["transport"] as String?),
         orElse: () => TransportKind.unknown,
       );
-      final Uint8List rpid = Uint8List.fromList(base64Decode((map["rpid"] as String?) ?? ""));
+      final Uint8List rpid = Uint8List.fromList(
+        base64Decode((map["rpid"] as String?) ?? ""),
+      );
       final String displayId = (map["displayId"] as String?) ?? "";
       final int rssi = (map["rssi"] as int?) ?? 0;
       final int formatVersion = (map["formatVersion"] as int?) ?? 0;
       final String? payloadRawB64 = map["payloadRaw"] as String?;
-      final Uint8List? payloadRaw = payloadRawB64 == null ? null : Uint8List.fromList(base64Decode(payloadRawB64));
+      final Uint8List? payloadRaw = payloadRawB64 == null
+          ? null
+          : Uint8List.fromList(base64Decode(payloadRawB64));
 
-      final Map<Object?, Object?>? summaryMap = map["rssiSummary"] is Map ? map["rssiSummary"] as Map<Object?, Object?> : null;
+      final Map<Object?, Object?>? summaryMap = map["rssiSummary"] is Map
+          ? map["rssiSummary"] as Map<Object?, Object?>
+          : null;
       final RssiSummary? summary = summaryMap == null
           ? null
           : RssiSummary(
@@ -265,6 +410,13 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
               max: (summaryMap["max"] as int?) ?? 0,
               mean: (summaryMap["mean"] as num?)?.toDouble() ?? 0.0,
             );
+
+      // Parse resolved TEK fields (Event Mode)
+      final String? resolvedTekB64 = map["resolvedTek"] as String?;
+      final Uint8List? resolvedTek = resolvedTekB64 == null
+          ? null
+          : Uint8List.fromList(base64Decode(resolvedTekB64));
+      final String? resolvedDisplayId = map["resolvedDisplayId"] as String?;
 
       return DetectionEvent(
         timestamp: ts,
@@ -275,12 +427,16 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         displayId: displayId,
         rssiSummary: summary,
         payloadRaw: payloadRaw,
+        resolvedTek: resolvedTek,
+        resolvedDisplayId: resolvedDisplayId,
       );
   }
 }
 
 BarnardDebugEvent _parseDebugEvent(Map<Object?, Object?> map) {
-  final DateTime ts = DateTime.parse((map["timestamp"] as String?) ?? DateTime.now().toIso8601String());
+  final DateTime ts = DateTime.parse(
+    (map["timestamp"] as String?) ?? DateTime.now().toIso8601String(),
+  );
   final String? levelStr = map["level"] as String?;
   final DebugLevel level = switch (levelStr) {
     "trace" => DebugLevel.trace,
@@ -289,9 +445,20 @@ BarnardDebugEvent _parseDebugEvent(Map<Object?, Object?> map) {
     _ => DebugLevel.info,
   };
   final String name = (map["name"] as String?) ?? "debug";
-  final Map<Object?, Object?>? rawData = map["data"] is Map ? map["data"] as Map<Object?, Object?> : null;
-  final Map<String, Object?>? data = rawData?.map((k, v) => MapEntry(k.toString(), v));
+  final Map<Object?, Object?>? rawData =
+      map["data"] is Map ? map["data"] as Map<Object?, Object?> : null;
+  final Map<String, Object?>? data = rawData?.map(
+    (k, v) => MapEntry(k.toString(), v),
+  );
   return DebugEvent(timestamp: ts, level: level, name: name, data: data);
+}
+
+TekEntry _parseTekEntry(Map<Object?, Object?> map) {
+  // Convert Object? map to String keys for TekEntry.fromMap
+  final Map<String, dynamic> typed = map.map(
+    (k, v) => MapEntry(k.toString(), v),
+  );
+  return TekEntry.fromMap(typed);
 }
 
 Map<Object?, Object?> _expectMap(Object? value) {

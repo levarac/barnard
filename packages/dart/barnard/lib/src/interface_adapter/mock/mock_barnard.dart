@@ -6,9 +6,11 @@ import "dart:typed_data";
 import "../../usecase/barnard_client.dart";
 import "../../domain/capabilities.dart";
 import "../../domain/config.dart";
+import "../../domain/crypto.dart";
 import "../../domain/events.dart";
 import "../../domain/rssi.dart";
 import "../../domain/state.dart";
+import "../../domain/tek_storage.dart";
 import "../../domain/transport.dart";
 import "mock_peer.dart";
 import "ring_buffer.dart";
@@ -30,10 +32,14 @@ class MockBarnard implements BarnardClient {
     int simulatedPeerCount = 50,
     int tickMs = 200,
     MockBarnardOverrides? overrides,
-  })  : _tickMs = tickMs.clamp(50, 2000),
-        _random = Random(),
-        _overrides = overrides {
-    _peers = List<MockPeer>.generate(simulatedPeerCount.clamp(1, 2000), (int i) {
+    Uint8List? deviceSecret,
+  }) : _tickMs = tickMs.clamp(50, 2000),
+       _random = Random(),
+       _overrides = overrides,
+       _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
+    _peers = List<MockPeer>.generate(simulatedPeerCount.clamp(1, 2000), (
+      int i,
+    ) {
       final int seed = _random.nextInt(1 << 31);
       return MockPeer(id: i, seed: seed, transport: TransportKind.ble);
     });
@@ -43,13 +49,18 @@ class MockBarnard implements BarnardClient {
     _debugEvents = StreamController<BarnardDebugEvent>.broadcast();
     _debugBuffer = RingBuffer<BarnardDebugEvent>(2000);
 
-    final int bufferMaxSamples = _overrides?.bufferMaxSamples ?? const RssiConfig().bufferMaxSamples;
+    final int bufferMaxSamples =
+        _overrides?.bufferMaxSamples ?? const RssiConfig().bufferMaxSamples;
     _rssiBuffer = RingBuffer<RssiSample>(bufferMaxSamples);
+
+    // Initialize with a random TEK for Anonymous Mode
+    _currentTek = _generateRandomBytes(16);
   }
 
   final int _tickMs;
   final Random _random;
   final MockBarnardOverrides? _overrides;
+  final Uint8List _deviceSecret;
 
   late final List<MockPeer> _peers;
 
@@ -63,6 +74,15 @@ class MockBarnard implements BarnardClient {
   Timer? _timer;
   bool _disposed = false;
 
+  // Event Mode state
+  EventMode _currentMode = EventMode.anonymous;
+  String? _currentEventCode;
+  late Uint8List _currentTek;
+  Uint8List? _currentEventCodeHash;
+
+  // TEK storage: eventCodeHash (base64) -> List<TekEntry>
+  final Map<String, List<TekEntry>> _tekStore = <String, List<TekEntry>>{};
+
   final Map<String, _RssiAgg> _aggByRpidKey = <String, _RssiAgg>{};
   int? _lastWindowIndex;
 
@@ -70,15 +90,21 @@ class MockBarnard implements BarnardClient {
 
   @override
   BarnardCapabilities get capabilities => const BarnardCapabilities(
-        supportedTransports: {TransportKind.ble},
-        supportsConnectionlessRpid: true,
-        supportsGattFallback: false,
-        supportsBackground: false,
-        supportsHighRateRssi: true,
-      );
+    supportedTransports: {TransportKind.ble},
+    supportsConnectionlessRpid: true,
+    supportsGattFallback: false,
+    supportsBackground: false,
+    supportsHighRateRssi: true,
+  );
 
   @override
   BarnardState get state => _state;
+
+  @override
+  EventMode get currentMode => _currentMode;
+
+  @override
+  String? get currentEventCode => _currentEventCode;
 
   @override
   Stream<BarnardEvent> get events => _events.stream;
@@ -90,7 +116,10 @@ class MockBarnard implements BarnardClient {
   Future<void> startScan([ScanConfig? config]) async {
     _ensureNotDisposed();
     if (_state.isScanning) return;
-    _setState(BarnardState(isScanning: true, isAdvertising: _state.isAdvertising), reasonCode: "scan_start");
+    _setState(
+      BarnardState(isScanning: true, isAdvertising: _state.isAdvertising),
+      reasonCode: "scan_start",
+    );
     _ensureTicker();
   }
 
@@ -98,7 +127,10 @@ class MockBarnard implements BarnardClient {
   Future<void> stopScan() async {
     _ensureNotDisposed();
     if (!_state.isScanning) return;
-    _setState(BarnardState(isScanning: false, isAdvertising: _state.isAdvertising), reasonCode: "scan_stop");
+    _setState(
+      BarnardState(isScanning: false, isAdvertising: _state.isAdvertising),
+      reasonCode: "scan_stop",
+    );
     _clearAggregation();
     _maybeStopTicker();
   }
@@ -107,7 +139,10 @@ class MockBarnard implements BarnardClient {
   Future<void> startAdvertise([AdvertiseConfig? config]) async {
     _ensureNotDisposed();
     if (_state.isAdvertising) return;
-    _setState(BarnardState(isScanning: _state.isScanning, isAdvertising: true), reasonCode: "advertise_start");
+    _setState(
+      BarnardState(isScanning: _state.isScanning, isAdvertising: true),
+      reasonCode: "advertise_start",
+    );
     _ensureTicker();
   }
 
@@ -115,7 +150,10 @@ class MockBarnard implements BarnardClient {
   Future<void> stopAdvertise() async {
     _ensureNotDisposed();
     if (!_state.isAdvertising) return;
-    _setState(BarnardState(isScanning: _state.isScanning, isAdvertising: false), reasonCode: "advertise_stop");
+    _setState(
+      BarnardState(isScanning: _state.isScanning, isAdvertising: false),
+      reasonCode: "advertise_stop",
+    );
     _maybeStopTicker();
   }
 
@@ -142,8 +180,130 @@ class MockBarnard implements BarnardClient {
     await stopAdvertise();
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Event Mode APIs
+  // ─────────────────────────────────────────────────────────────────────────
+
   @override
-  List<BarnardDebugEvent> getDebugBuffer({int? limit}) => _debugBuffer.toList(limit: limit);
+  Future<void> joinEvent(String eventCode) async {
+    _ensureNotDisposed();
+    if (_currentMode == EventMode.event) {
+      throw StateError("Already in Event Mode. Call leaveEvent() first.");
+    }
+
+    _currentEventCode = eventCode;
+    _currentMode = EventMode.event;
+
+    // Derive TEK from DeviceSecret + EventCode
+    _currentTek = BarnardCrypto.deriveTekForEvent(_deviceSecret, eventCode);
+    _currentEventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode);
+
+    _emitDebug(DebugLevel.info, "mock_join_event", <String, Object?>{
+      "eventCode": eventCode,
+      "tekDisplayId": _tekDisplayId(_currentTek),
+      "eventCodeHash": base64Encode(_currentEventCodeHash!),
+    });
+  }
+
+  @override
+  Future<void> leaveEvent() async {
+    _ensureNotDisposed();
+    if (_currentMode == EventMode.anonymous) {
+      throw StateError("Not in Event Mode. Call joinEvent() first.");
+    }
+
+    final String leftEvent = _currentEventCode!;
+    _currentEventCode = null;
+    _currentMode = EventMode.anonymous;
+    _currentEventCodeHash = null;
+
+    // Generate a new random TEK for Anonymous Mode
+    _currentTek = _generateRandomBytes(16);
+
+    _emitDebug(DebugLevel.info, "mock_leave_event", <String, Object?>{
+      "leftEvent": leftEvent,
+    });
+  }
+
+  @override
+  Future<List<TekEntry>> getExchangedTeks(String eventCode) async {
+    _ensureNotDisposed();
+    final Uint8List hash = BarnardCrypto.computeEventCodeHash(eventCode);
+    final String key = base64Encode(hash);
+    return List<TekEntry>.unmodifiable(_tekStore[key] ?? const <TekEntry>[]);
+  }
+
+  @override
+  Future<int> clearTeksForEvent(String eventCode) async {
+    _ensureNotDisposed();
+    final Uint8List hash = BarnardCrypto.computeEventCodeHash(eventCode);
+    final String key = base64Encode(hash);
+    final List<TekEntry>? removed = _tekStore.remove(key);
+    final int count = removed?.length ?? 0;
+
+    _emitDebug(DebugLevel.info, "mock_clear_teks_for_event", <String, Object?>{
+      "eventCode": eventCode,
+      "removed": count,
+    });
+
+    return count;
+  }
+
+  @override
+  Future<int> clearAllTeks() async {
+    _ensureNotDisposed();
+    int total = 0;
+    for (final List<TekEntry> entries in _tekStore.values) {
+      total += entries.length;
+    }
+    _tekStore.clear();
+
+    _emitDebug(DebugLevel.info, "mock_clear_all_teks", <String, Object?>{
+      "removed": total,
+    });
+
+    return total;
+  }
+
+  /// Simulates receiving a TEK from another peer (for testing).
+  ///
+  /// In the real BLE implementation, this happens via GATT exchange.
+  void simulateReceivedTek(Uint8List tek, Uint8List eventCodeHash) {
+    final String key = base64Encode(eventCodeHash);
+    final List<TekEntry> entries = _tekStore.putIfAbsent(
+      key,
+      () => <TekEntry>[],
+    );
+
+    // Check if we already have this TEK
+    final String tekB64 = base64Encode(tek);
+    final bool alreadyHave = entries.any((e) => base64Encode(e.tek) == tekB64);
+    if (alreadyHave) return;
+
+    final DateTime now = DateTime.now();
+    entries.add(
+      TekEntry(
+        tek: Uint8List.fromList(tek),
+        eventCodeHash: Uint8List.fromList(eventCodeHash),
+        exchangedAt: now,
+        lastSeenAt: now,
+      ),
+    );
+
+    _emitDebug(DebugLevel.info, "mock_tek_received", <String, Object?>{
+      "tekDisplayId": _tekDisplayId(tek),
+      "eventCodeHashB64": key,
+      "totalTeks": entries.length,
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Pull APIs
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @override
+  List<BarnardDebugEvent> getDebugBuffer({int? limit}) =>
+      _debugBuffer.toList(limit: limit);
 
   @override
   List<RssiSample> getRssiSamples({
@@ -152,14 +312,18 @@ class MockBarnard implements BarnardClient {
     List<int>? rpidBytes,
   }) {
     final List<RssiSample> all = _rssiBuffer.toList();
-    final Uint8List? filterRpid = rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid = rpidBytes == null
+        ? null
+        : Uint8List.fromList(rpidBytes);
 
     Iterable<RssiSample> filtered = all;
     if (since != null) {
       filtered = filtered.where((RssiSample s) => !s.timestamp.isBefore(since));
     }
     if (filterRpid != null) {
-      filtered = filtered.where((RssiSample s) => _bytesEqual(s.rpid, filterRpid));
+      filtered = filtered.where(
+        (RssiSample s) => _bytesEqual(s.rpid, filterRpid),
+      );
     }
 
     final List<RssiSample> out = filtered.toList(growable: false);
@@ -195,7 +359,8 @@ class MockBarnard implements BarnardClient {
 
     final DateTime now = DateTime.now();
     final int rotationSeconds = _clampRotationSeconds();
-    final int windowIndex = (now.millisecondsSinceEpoch ~/ 1000) ~/ rotationSeconds;
+    final int windowIndex =
+        (now.millisecondsSinceEpoch ~/ 1000) ~/ rotationSeconds;
     if (_lastWindowIndex != windowIndex) {
       _lastWindowIndex = windowIndex;
       _clearAggregation();
@@ -211,7 +376,14 @@ class MockBarnard implements BarnardClient {
       final Uint8List rpid = peer.rpidForWindow(windowIndex);
       final int rssi = peer.nextRssi();
 
-      _rssiBuffer.add(RssiSample(timestamp: now, rpid: rpid, rssi: rssi, transport: peer.transport));
+      _rssiBuffer.add(
+        RssiSample(
+          timestamp: now,
+          rpid: rpid,
+          rssi: rssi,
+          transport: peer.transport,
+        ),
+      );
       _accumulateAndMaybeEmit(now: now, peer: peer, rpid: rpid, rssi: rssi);
     }
   }
@@ -227,8 +399,11 @@ class MockBarnard implements BarnardClient {
     agg.add(rssi, now: now);
     _evictAggIfNeeded(now);
 
-    final int minIntervalMs = (_overrides?.minPushIntervalMs ?? const RssiConfig().minPushIntervalMs).clamp(50, 60 * 1000);
-    if (agg.lastEmitAt != null && now.difference(agg.lastEmitAt!).inMilliseconds < minIntervalMs) {
+    final int minIntervalMs =
+        (_overrides?.minPushIntervalMs ?? const RssiConfig().minPushIntervalMs)
+            .clamp(50, 60 * 1000);
+    if (agg.lastEmitAt != null &&
+        now.difference(agg.lastEmitAt!).inMilliseconds < minIntervalMs) {
       return;
     }
 
@@ -260,7 +435,9 @@ class MockBarnard implements BarnardClient {
   void _setState(BarnardState next, {required String reasonCode}) {
     _state = next;
     final DateTime now = DateTime.now();
-    _events.add(StateEvent(timestamp: now, state: next, reasonCode: reasonCode));
+    _events.add(
+      StateEvent(timestamp: now, state: next, reasonCode: reasonCode),
+    );
     _emitDebug(DebugLevel.info, "state", <String, Object?>{
       "isScanning": next.isScanning,
       "isAdvertising": next.isAdvertising,
@@ -269,7 +446,12 @@ class MockBarnard implements BarnardClient {
   }
 
   void _emitDebug(DebugLevel level, String name, Map<String, Object?> data) {
-    final DebugEvent e = DebugEvent(timestamp: DateTime.now(), level: level, name: name, data: data);
+    final DebugEvent e = DebugEvent(
+      timestamp: DateTime.now(),
+      level: level,
+      name: name,
+      data: data,
+    );
     _debugBuffer.add(e);
     _debugEvents.add(e);
   }
@@ -283,10 +465,13 @@ class MockBarnard implements BarnardClient {
 
     // Evict the least-recently-seen entries to keep the mock bounded.
     // This is O(n) but only triggers when the map exceeds the cap.
-    final List<MapEntry<String, _RssiAgg>> entries = _aggByRpidKey.entries.toList(growable: false);
+    final List<MapEntry<String, _RssiAgg>> entries = _aggByRpidKey.entries
+        .toList(growable: false);
     entries.sort((a, b) {
-      final DateTime aSeen = a.value.lastSeenAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final DateTime bSeen = b.value.lastSeenAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final DateTime aSeen =
+          a.value.lastSeenAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final DateTime bSeen =
+          b.value.lastSeenAt ?? DateTime.fromMillisecondsSinceEpoch(0);
       return aSeen.compareTo(bSeen);
     });
 
@@ -307,13 +492,20 @@ class MockBarnard implements BarnardClient {
   }
 
   int _clampRotationSeconds() {
-    final int rotationSeconds = _overrides?.rotationSeconds ?? const RpidConfig().rotationSeconds;
-    return rotationSeconds.clamp(const RpidConfig().minRotationSeconds, const RpidConfig().maxRotationSeconds);
+    final int rotationSeconds =
+        _overrides?.rotationSeconds ?? const RpidConfig().rotationSeconds;
+    return rotationSeconds.clamp(
+      const RpidConfig().minRotationSeconds,
+      const RpidConfig().maxRotationSeconds,
+    );
   }
 
   static String _displayId(Uint8List rpid) {
     final int take = min(4, rpid.length);
-    final String hex = rpid.sublist(0, take).map((int b) => b.toRadixString(16).padLeft(2, "0")).join();
+    final String hex = rpid
+        .sublist(0, take)
+        .map((int b) => b.toRadixString(16).padLeft(2, "0"))
+        .join();
     return hex;
   }
 
@@ -325,6 +517,22 @@ class MockBarnard implements BarnardClient {
       if (a[i] != b[i]) return false;
     }
     return true;
+  }
+
+  static Uint8List _generateRandomBytes(int length) {
+    final Random random = Random.secure();
+    return Uint8List.fromList(
+      List<int>.generate(length, (_) => random.nextInt(256)),
+    );
+  }
+
+  static String _tekDisplayId(Uint8List tek) {
+    final int take = min(3, tek.length);
+    return tek
+        .sublist(0, take)
+        .map((int b) => b.toRadixString(16).padLeft(2, "0"))
+        .join()
+        .toUpperCase();
   }
 }
 

@@ -1,37 +1,158 @@
+// Copyright 2024-2026 The Greeting Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style license.
+
 import CryptoKit
 import Foundation
 import Security
 
+/// GAEN v1.2-compatible RPI generator with Event Mode support.
+///
+/// Two modes of operation:
+/// - **Anonymous Mode** (default): Random TEK, no identification
+/// - **Event Mode**: Deterministic TEK derived from DeviceSecret + EventCode
 final class BarnardRpidGenerator {
-  private let storageKey = "barnard.rpidSeed"
+  // MARK: - Storage Keys
 
-  func currentPayload(formatVersion: UInt8, now: Date) -> Data {
-    let rotationSeconds: Int64 = 600
-    let unix = Int64(now.timeIntervalSince1970)
-    let window = unix / rotationSeconds
+  private let deviceSecretKey = "barnard.rpidSeed"
+  private let eventCodeKey = "barnard.eventCode"
+  private let currentTekKey = "barnard.currentTek"
 
-    let seed = getOrCreateSeed()
-    let key = SymmetricKey(data: seed)
-    var be = window.bigEndian
-    let msg = Data(bytes: &be, count: MemoryLayout.size(ofValue: be))
-    let mac = HMAC<SHA256>.authenticationCode(for: msg, using: key)
-    let rpid = Data(mac).prefix(16)
+  // MARK: - State
 
-    var out = Data([formatVersion])
-    out.append(rpid)
-    return out
+  /// Current Event Code (nil for Anonymous Mode)
+  private(set) var eventCode: String? {
+    didSet {
+      if eventCode != oldValue {
+        regenerateTek()
+      }
+    }
   }
 
-  private func getOrCreateSeed() -> Data {
+  /// Current TEK (Temporary Exposure Key)
+  private var currentTek: Data
+
+  // MARK: - Initialization
+
+  init() {
+    // Load persisted event code
     let defaults = UserDefaults.standard
-    if let existing = defaults.data(forKey: storageKey), existing.count >= 16 {
+    eventCode = defaults.string(forKey: eventCodeKey)
+
+    // Initialize TEK based on mode
+    if let code = eventCode {
+      let deviceSecret = getOrCreateDeviceSecret()
+      currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret: deviceSecret, eventCode: code)
+    } else {
+      // Anonymous Mode: use stored random TEK or generate new one
+      if let storedTek = defaults.data(forKey: currentTekKey), storedTek.count == 16 {
+        currentTek = storedTek
+      } else {
+        currentTek = BarnardCrypto.generateRandomTek()
+        defaults.set(currentTek, forKey: currentTekKey)
+      }
+    }
+  }
+
+  // MARK: - Mode Control
+
+  /// Join an event, switching to Event Mode.
+  ///
+  /// - Parameter code: The event code to join
+  func joinEvent(_ code: String) {
+    let defaults = UserDefaults.standard
+    defaults.set(code, forKey: eventCodeKey)
+    eventCode = code
+  }
+
+  /// Leave the current event, switching to Anonymous Mode.
+  func leaveEvent() {
+    let defaults = UserDefaults.standard
+    defaults.removeObject(forKey: eventCodeKey)
+    eventCode = nil
+  }
+
+  /// Check if currently in Event Mode.
+  var isEventMode: Bool {
+    eventCode != nil
+  }
+
+  // MARK: - TEK Management
+
+  /// Get the current TEK.
+  func getCurrentTek() -> Data {
+    currentTek
+  }
+
+  /// Regenerate TEK based on current mode.
+  private func regenerateTek() {
+    let defaults = UserDefaults.standard
+
+    if let code = eventCode {
+      // Event Mode: derive TEK from DeviceSecret + EventCode
+      let deviceSecret = getOrCreateDeviceSecret()
+      currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret: deviceSecret, eventCode: code)
+      // Don't persist event-derived TEK (can be recomputed)
+      defaults.removeObject(forKey: currentTekKey)
+    } else {
+      // Anonymous Mode: generate new random TEK
+      currentTek = BarnardCrypto.generateRandomTek()
+      defaults.set(currentTek, forKey: currentTekKey)
+    }
+  }
+
+  // MARK: - EventCodeHash
+
+  /// Get the EventCodeHash for GATT characteristic (8 bytes, or empty for Anonymous Mode).
+  func getEventCodeHash() -> Data {
+    guard let code = eventCode else {
+      return Data() // Empty for Anonymous Mode
+    }
+    return BarnardCrypto.computeEventCodeHash(code)
+  }
+
+  // MARK: - RPID Payload Generation
+
+  /// Generate the current RPID payload for BLE advertisement/GATT.
+  ///
+  /// - Parameters:
+  ///   - formatVersion: Protocol version byte (default: 1)
+  ///   - now: Current timestamp (default: now)
+  /// - Returns: 17 bytes: [formatVersion(1) + RPI(16)]
+  func currentPayload(formatVersion: UInt8 = 1, now: Date = Date()) -> Data {
+    let enin = BarnardCrypto.calculateEnin(for: now)
+    let rpik = BarnardCrypto.deriveRpik(from: currentTek)
+    let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: enin)
+
+    var payload = Data([formatVersion])
+    payload.append(rpi)
+    return payload
+  }
+
+  // MARK: - DeviceSecret Management
+
+  /// Get or create the DeviceSecret (32 bytes, device-unique, never transmitted).
+  private func getOrCreateDeviceSecret() -> Data {
+    let defaults = UserDefaults.standard
+
+    if let existing = defaults.data(forKey: deviceSecretKey), existing.count >= 32 {
       return existing
     }
-    var bytes = [UInt8](repeating: 0, count: 32)
-    _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-    let seed = Data(bytes)
-    defaults.set(seed, forKey: storageKey)
-    return seed
+
+    // Generate new 32-byte DeviceSecret
+    let newSecret = BarnardCrypto.generateRandomBytes(32)
+    defaults.set(newSecret, forKey: deviceSecretKey)
+    return newSecret
+  }
+
+  /// Get the DeviceSecret (for platform channel access).
+  func getDeviceSecret() -> Data {
+    getOrCreateDeviceSecret()
+  }
+
+  // MARK: - Display IDs
+
+  /// Get the display ID for the current TEK.
+  func getCurrentDisplayId() -> String {
+    BarnardCrypto.displayId(from: currentTek)
   }
 }
-

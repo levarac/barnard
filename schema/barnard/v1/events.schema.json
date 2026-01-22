@@ -22,7 +22,19 @@
         "displayId": { "type": "string", "minLength": 1 },
         "rssi": { "type": "integer" },
         "rssiSummary": { "$ref": "#/$defs/RssiSummary" },
-        "payloadRaw": { "type": ["string", "null"], "contentEncoding": "base64" }
+        "payloadRaw": { "type": ["string", "null"], "contentEncoding": "base64" },
+        "resolvedTek": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/TekBytes" },
+            { "type": "null" }
+          ],
+          "description": "TEK of the resolved peer (null if not resolved or Anonymous Mode)"
+        },
+        "resolvedDisplayId": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{6}$",
+          "description": "First 3 bytes of resolved TEK as lowercase hex (6 chars)"
+        }
       },
       "required": ["type", "timestamp", "transport", "formatVersion", "rpid", "displayId", "rssi"]
     },

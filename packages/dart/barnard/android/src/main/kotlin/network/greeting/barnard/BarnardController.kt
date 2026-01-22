@@ -1,3 +1,6 @@
+// Copyright 2024-2026 The Greeting Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style license.
+
 package network.greeting.barnard
 
 import android.Manifest
@@ -15,8 +18,6 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
-import android.bluetooth.le.BluetoothLeAdvertiser
-import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -29,16 +30,12 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Base64
+import android.util.Log
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.UUID
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
-import android.util.Log
 
 private const val TAG = "BarnardBLE"
 
@@ -55,8 +52,14 @@ internal class BarnardController(
     private var eventSink: EventChannel.EventSink? = null
     private var debugEventSink: EventChannel.EventSink? = null
 
+    // MARK: - UUIDs
+
     private val serviceUuid: UUID = UUID.fromString("0000B001-0000-1000-8000-00805F9B34FB")
     private val rpidCharUuid: UUID = UUID.fromString("0000B002-0000-1000-8000-00805F9B34FB")
+    private val tekCharUuid: UUID = UUID.fromString("0000B003-0000-1000-8000-00805F9B34FB")
+    private val eventCodeHashCharUuid: UUID = UUID.fromString("0000B004-0000-1000-8000-00805F9B34FB")
+
+    // MARK: - Bluetooth
 
     private val bluetoothManager: BluetoothManager? =
         appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -64,13 +67,26 @@ internal class BarnardController(
 
     private var gattServer: BluetoothGattServer? = null
 
+    // MARK: - State
+
     private var isScanning: Boolean = false
     private var isAdvertising: Boolean = false
     private var allowDuplicates: Boolean = true
     private var formatVersion: Int = 1
 
+    // MARK: - Event Mode
+
+    private var eventCode: String? = null
+    private var currentTek: ByteArray = ByteArray(16)
+
+    private val tekStorage: BarnardTekStorage by lazy { BarnardTekStorage(appContext) }
+
+    // MARK: - Discovery State
+
     private val discoveredRssi: MutableMap<String, Int> = mutableMapOf()
     private val discoveredAt: MutableMap<String, Long> = mutableMapOf()
+
+    // MARK: - Connection Queue
 
     private val connectQueue: ArrayDeque<BluetoothDevice> = ArrayDeque()
     private val lastConnectAttemptAtMs: MutableMap<String, Long> = mutableMapOf()
@@ -78,6 +94,18 @@ internal class BarnardController(
 
     private val maxConnectQueue: Int = 20
     private val cooldownPerPeerMs: Long = 10_000
+
+    // MARK: - Central GATT State
+
+    private data class GattReadValues(
+        var eventCodeHash: ByteArray? = null,
+        var rpid: ByteArray? = null,
+        var tek: ByteArray? = null
+    )
+
+    private val peripheralReadValues: MutableMap<String, GattReadValues> = mutableMapOf()
+
+    // MARK: - Storage
 
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences("barnard", Context.MODE_PRIVATE)
@@ -104,6 +132,32 @@ internal class BarnardController(
                 debugEventSink = null
             }
         })
+
+        // Initialize TEK
+        initializeTek()
+    }
+
+    private fun initializeTek() {
+        // Load persisted event code
+        eventCode = prefs.getString("eventCode", null)
+
+        if (eventCode != null) {
+            // Event Mode: derive TEK from DeviceSecret + EventCode
+            val deviceSecret = getOrCreateDeviceSecret()
+            currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret, eventCode!!)
+        } else {
+            // Anonymous Mode: use stored random TEK or generate new one
+            val storedTek = prefs.getString("currentTek", null)
+            if (storedTek != null) {
+                val decoded = Base64.decode(storedTek, Base64.DEFAULT)
+                if (decoded.size == 16) {
+                    currentTek = decoded
+                    return
+                }
+            }
+            currentTek = BarnardCrypto.generateRandomTek()
+            prefs.edit().putString("currentTek", Base64.encodeToString(currentTek, Base64.NO_WRAP)).apply()
+        }
     }
 
     fun dispose() {
@@ -125,27 +179,40 @@ internal class BarnardController(
                     "supportsHighRateRssi" to false,
                 )
             )
-            "getState" -> result.success(mapOf("isScanning" to isScanning, "isAdvertising" to isAdvertising))
+
+            "getState" -> result.success(
+                mapOf(
+                    "isScanning" to isScanning,
+                    "isAdvertising" to isAdvertising,
+                    "eventMode" to if (eventCode != null) "event" else "anonymous",
+                    "eventCode" to eventCode
+                )
+            )
+
             "startScan" -> {
                 val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
                 allowDuplicates = args["allowDuplicates"] as? Boolean ?: true
                 startScan()
                 result.success(null)
             }
+
             "stopScan" -> {
                 stopScan()
                 result.success(null)
             }
+
             "startAdvertise" -> {
                 val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
                 formatVersion = (args["formatVersion"] as? Int) ?: 1
                 startAdvertise()
                 result.success(null)
             }
+
             "stopAdvertise" -> {
                 stopAdvertise()
                 result.success(null)
             }
+
             "startAuto" -> {
                 val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
                 val scan = args["scan"] as? Map<*, *>
@@ -165,18 +232,130 @@ internal class BarnardController(
                     )
                 )
             }
+
             "stopAuto" -> {
                 stopScan()
                 stopAdvertise()
                 result.success(null)
             }
+
             "dispose" -> {
                 dispose()
                 result.success(null)
             }
+
+            // MARK: Event Mode APIs
+
+            "joinEvent" -> {
+                val args = call.arguments as? Map<*, *>
+                val code = args?.get("eventCode") as? String
+                if (code == null) {
+                    result.error("INVALID_ARGUMENT", "eventCode required", null)
+                    return
+                }
+                joinEvent(code)
+                result.success(null)
+            }
+
+            "leaveEvent" -> {
+                leaveEvent()
+                result.success(null)
+            }
+
+            "getExchangedTeks" -> {
+                val args = call.arguments as? Map<*, *>
+                val code = args?.get("eventCode") as? String
+                if (code == null) {
+                    result.error("INVALID_ARGUMENT", "eventCode required", null)
+                    return
+                }
+                val eventCodeHash = BarnardCrypto.computeEventCodeHash(code)
+                val entries = tekStorage.getEntries(eventCodeHash)
+                result.success(entries.map { it.toMap() })
+            }
+
+            "clearTeksForEvent" -> {
+                val args = call.arguments as? Map<*, *>
+                val code = args?.get("eventCode") as? String
+                if (code == null) {
+                    result.error("INVALID_ARGUMENT", "eventCode required", null)
+                    return
+                }
+                val eventCodeHash = BarnardCrypto.computeEventCodeHash(code)
+                val count = tekStorage.clear(eventCodeHash)
+                emitDebug("info", "clear_teks_for_event", mapOf("eventCode" to code, "count" to count))
+                result.success(count)
+            }
+
+            "clearAllTeks" -> {
+                val count = tekStorage.clearAll()
+                emitDebug("info", "clear_all_teks", mapOf("count" to count))
+                result.success(count)
+            }
+
             else -> result.notImplemented()
         }
     }
+
+    // MARK: - Event Mode Control
+
+    private fun joinEvent(code: String) {
+        eventCode = code
+        prefs.edit().putString("eventCode", code).apply()
+
+        // Derive TEK from DeviceSecret + EventCode
+        val deviceSecret = getOrCreateDeviceSecret()
+        currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret, code)
+        prefs.edit().remove("currentTek").apply() // Event-derived TEK can be recomputed
+
+        // Rebuild GATT server
+        rebuildGattServerIfNeeded()
+
+        emitState("join_event")
+        emitDebug("info", "join_event", mapOf(
+            "eventCode" to code,
+            "displayId" to BarnardCrypto.displayId(currentTek)
+        ))
+    }
+
+    private fun leaveEvent() {
+        eventCode = null
+        prefs.edit().remove("eventCode").apply()
+
+        // Generate new random TEK
+        currentTek = BarnardCrypto.generateRandomTek()
+        prefs.edit().putString("currentTek", Base64.encodeToString(currentTek, Base64.NO_WRAP)).apply()
+
+        // Rebuild GATT server
+        rebuildGattServerIfNeeded()
+
+        emitState("leave_event")
+        emitDebug("info", "leave_event", null)
+    }
+
+    private val isEventMode: Boolean
+        get() = eventCode != null
+
+    private fun getEventCodeHash(): ByteArray {
+        val code = eventCode ?: return ByteArray(0)
+        return BarnardCrypto.computeEventCodeHash(code)
+    }
+
+    // MARK: - DeviceSecret Management
+
+    private fun getOrCreateDeviceSecret(): ByteArray {
+        val key = "rpidSeed"
+        val existing = prefs.getString(key, null)
+        if (existing != null) {
+            val bytes = Base64.decode(existing, Base64.DEFAULT)
+            if (bytes.size >= 32) return bytes
+        }
+        val bytes = BarnardCrypto.generateRandomBytes(32)
+        prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
+        return bytes
+    }
+
+    // MARK: - Scan Control
 
     private fun startScan() {
         val a = adapter ?: run {
@@ -248,10 +427,13 @@ internal class BarnardController(
         discoveredRssi.clear()
         discoveredAt.clear()
         lastConnectAttemptAtMs.clear()
+        peripheralReadValues.clear()
 
         emitState("scan_stop")
         emitDebug("info", "scan_stop", null)
     }
+
+    // MARK: - Advertise Control
 
     private fun startAdvertise() {
         val a = adapter ?: run {
@@ -297,6 +479,7 @@ internal class BarnardController(
                 "formatVersion" to formatVersion,
                 "serviceUuid" to serviceUuid.toString(),
                 "localName" to "BNRD",
+                "eventMode" to isEventMode,
             )
         )
     }
@@ -313,61 +496,91 @@ internal class BarnardController(
         emitDebug("info", "advertise_stop", null)
     }
 
+    // MARK: - GATT Server
+
     @SuppressLint("MissingPermission")
     private fun ensureGattServer() {
         if (gattServer != null) return
+        buildAndAddGattServer()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun rebuildGattServerIfNeeded() {
+        if (!hasConnectPermission()) return
+        gattServer?.close()
+        gattServer = null
+        if (isAdvertising) {
+            buildAndAddGattServer()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun buildAndAddGattServer() {
         if (!hasConnectPermission()) {
             emitConstraint("permission_denied", "Missing BLUETOOTH_CONNECT permission", requiredAction = "grant_permission")
             return
         }
         val manager = bluetoothManager ?: return
         val server = manager.openGattServer(appContext, gattServerCallback)
+
         val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-        val ch = BluetoothGattCharacteristic(
+
+        // RPID characteristic (Read)
+        val rpidCh = BluetoothGattCharacteristic(
             rpidCharUuid,
             BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ,
         )
-        service.addCharacteristic(ch)
+        service.addCharacteristic(rpidCh)
+
+        // TEK characteristic (Read/Write)
+        val tekCh = BluetoothGattCharacteristic(
+            tekCharUuid,
+            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
+            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE,
+        )
+        service.addCharacteristic(tekCh)
+
+        // EventCodeHash characteristic (Read)
+        val eventCodeHashCh = BluetoothGattCharacteristic(
+            eventCodeHashCharUuid,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ,
+        )
+        service.addCharacteristic(eventCodeHashCh)
+
         server.addService(service)
         gattServer = server
-        emitDebug("info", "gatt_server_started", null)
+        emitDebug("info", "gatt_server_started", mapOf(
+            "characteristics" to listOf("RPID", "TEK", "EventCodeHash")
+        ))
     }
+
+    // MARK: - RPID Payload Generation
 
     private fun computePayload(nowMs: Long): ByteArray {
-        val rotationSeconds = 600L
-        val window = (nowMs / 1000L) / rotationSeconds
-        val seed = getOrCreateSeed()
+        val enin = BarnardCrypto.calculateEnin(nowMs)
+        val rpik = BarnardCrypto.deriveRpik(currentTek)
+        val rpi = BarnardCrypto.generateRpi(rpik, enin)
 
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(seed, "HmacSHA256"))
-        val msg = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(window).array()
-        val digest = mac.doFinal(msg)
-
-        val out = ByteArray(17)
-        out[0] = (formatVersion and 0xFF).toByte()
-        System.arraycopy(digest, 0, out, 1, 16)
-        return out
+        val payload = ByteArray(17)
+        payload[0] = (formatVersion and 0xFF).toByte()
+        System.arraycopy(rpi, 0, payload, 1, 16)
+        return payload
     }
 
-    private fun getOrCreateSeed(): ByteArray {
-        val key = "rpidSeed"
-        val existing = prefs.getString(key, null)
-        if (existing != null) {
-            val bytes = Base64.decode(existing, Base64.DEFAULT)
-            if (bytes.size >= 16) return bytes
-        }
-        val bytes = ByteArray(32)
-        java.security.SecureRandom().nextBytes(bytes)
-        prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
-        return bytes
-    }
+    // MARK: - Event Emission
 
     private fun emitState(reasonCode: String?) {
         val payload = mapOf(
             "type" to "state",
             "timestamp" to BarnardIso8601.now(),
-            "state" to mapOf("isScanning" to isScanning, "isAdvertising" to isAdvertising),
+            "state" to mapOf(
+                "isScanning" to isScanning,
+                "isAdvertising" to isAdvertising,
+                "eventMode" to if (isEventMode) "event" else "anonymous",
+                "eventCode" to eventCode
+            ),
             "reasonCode" to reasonCode,
         )
         mainHandler.post { eventSink?.success(payload) }
@@ -395,7 +608,7 @@ internal class BarnardController(
         mainHandler.post { eventSink?.success(payload) }
     }
 
-    private fun emitDetection(timestampMs: Long, rssi: Int, payloadBytes: ByteArray) {
+    private fun emitDetection(timestampMs: Long, rssi: Int, payloadBytes: ByteArray, resolvedTek: ByteArray? = null) {
         if (payloadBytes.size != 17) {
             emitDebug("warn", "payload_invalid_length", mapOf("length" to payloadBytes.size))
             return
@@ -407,7 +620,28 @@ internal class BarnardController(
         }
         val rpid = payloadBytes.copyOfRange(1, 17)
         val displayId = rpid.copyOfRange(0, 4).joinToString("") { b -> "%02x".format(b) }
-        val payload = mapOf(
+
+        // Try to resolve RPI if we have exchanged TEKs
+        var resolvedTekToEmit = resolvedTek
+        var resolvedDisplayId: String? = null
+
+        if (resolvedTekToEmit == null && isEventMode) {
+            // Try to resolve from stored TEKs
+            val eventCodeHash = getEventCodeHash()
+            val knownTeks = tekStorage.getTeks(eventCodeHash)
+
+            resolvedTekToEmit = BarnardCrypto.resolveRpi(rpid, knownTeks)
+            if (resolvedTekToEmit != null) {
+                // Update lastSeenAt
+                tekStorage.updateLastSeen(resolvedTekToEmit, eventCodeHash)
+            }
+        }
+
+        if (resolvedTekToEmit != null) {
+            resolvedDisplayId = BarnardCrypto.displayId(resolvedTekToEmit)
+        }
+
+        val payload = mutableMapOf<String, Any?>(
             "type" to "detection",
             "timestamp" to BarnardIso8601.fromMs(timestampMs),
             "transport" to "ble",
@@ -418,6 +652,14 @@ internal class BarnardController(
             "rssiSummary" to null,
             "payloadRaw" to Base64.encodeToString(payloadBytes, Base64.NO_WRAP),
         )
+
+        if (resolvedTekToEmit != null) {
+            payload["resolvedTek"] = Base64.encodeToString(resolvedTekToEmit, Base64.NO_WRAP)
+        }
+        if (resolvedDisplayId != null) {
+            payload["resolvedDisplayId"] = resolvedDisplayId
+        }
+
         mainHandler.post { eventSink?.success(payload) }
     }
 
@@ -431,6 +673,8 @@ internal class BarnardController(
         )
         mainHandler.post { debugEventSink?.success(payload) }
     }
+
+    // MARK: - Permissions
 
     private fun hasScanPermission(): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
@@ -447,6 +691,8 @@ internal class BarnardController(
         return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
     }
 
+    // MARK: - Advertise Callback
+
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartFailure(errorCode: Int) {
             emitError("advertise_failed", "errorCode=$errorCode", recoverable = true)
@@ -458,6 +704,8 @@ internal class BarnardController(
             emitDebug("info", "advertise_started", null)
         }
     }
+
+    // MARK: - Scan Callback
 
     private var scanCallback: ScanCallback? = null
 
@@ -537,6 +785,8 @@ internal class BarnardController(
         }
     }
 
+    // MARK: - Connection Queue
+
     private fun enqueueConnect(device: BluetoothDevice) {
         val address = device.address ?: return
         // Skip if already in queue or currently connecting.
@@ -567,6 +817,8 @@ internal class BarnardController(
             return
         }
         lastConnectAttemptAtMs[key] = nowMs
+        peripheralReadValues[key] = GattReadValues()
+
         activeGatt =
             if (Build.VERSION.SDK_INT >= 23) {
                 device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
@@ -577,12 +829,37 @@ internal class BarnardController(
         emitDebug("trace", "connect_attempt", mapOf("address" to device.address))
     }
 
+    // MARK: - GATT Exchange Logic
+
+    private fun shouldExchangeTek(remoteEventCodeHash: ByteArray?): Boolean {
+        // If we're in Anonymous Mode, don't exchange
+        if (!isEventMode) return false
+
+        // If remote is Anonymous (empty hash), don't exchange
+        if (remoteEventCodeHash == null || remoteEventCodeHash.isEmpty()) return false
+
+        // Check if hashes match
+        val myHash = getEventCodeHash()
+        return myHash.contentEquals(remoteEventCodeHash)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun finishConnection(gatt: BluetoothGatt) {
+        val address = gatt.device?.address ?: ""
+        peripheralReadValues.remove(address)
+        gatt.disconnect()
+    }
+
+    // MARK: - GATT Client Callback
+
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 emitError("connect_failed", "status=$status", recoverable = true)
                 gatt.close()
+                val address = gatt.device?.address ?: ""
+                peripheralReadValues.remove(address)
                 activeGatt = null
                 pumpConnectQueue()
                 return
@@ -591,42 +868,46 @@ internal class BarnardController(
                 emitDebug("trace", "connected", mapOf("address" to gatt.device.address))
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                val address = gatt.device?.address ?: ""
+                peripheralReadValues.remove(address)
                 gatt.close()
                 activeGatt = null
                 pumpConnectQueue()
             }
         }
 
+        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 emitError("service_discovery_failed", "status=$status", recoverable = true)
-                gatt.disconnect()
+                finishConnection(gatt)
                 return
             }
             val svc = gatt.getService(serviceUuid)
             if (svc == null) {
                 emitError("service_not_found", "Barnard service not found", recoverable = true)
-                gatt.disconnect()
+                finishConnection(gatt)
                 return
             }
-            val ch = svc.getCharacteristic(rpidCharUuid)
-            if (ch == null) {
-                emitError("characteristic_not_found", "RPID characteristic not found", recoverable = true)
-                gatt.disconnect()
-                return
+
+            // Step 1: Read EventCodeHash first
+            val eventCodeHashCh = svc.getCharacteristic(eventCodeHashCharUuid)
+            if (eventCodeHashCh != null && hasConnectPermission()) {
+                gatt.readCharacteristic(eventCodeHashCh)
+            } else {
+                // No EventCodeHash characteristic, read RPID directly
+                val rpidCh = svc.getCharacteristic(rpidCharUuid)
+                if (rpidCh != null && hasConnectPermission()) {
+                    gatt.readCharacteristic(rpidCh)
+                } else {
+                    finishConnection(gatt)
+                }
             }
-            if (!hasConnectPermission()) {
-                emitConstraint("permission_denied", "Missing BLUETOOTH_CONNECT permission", requiredAction = "grant_permission")
-                gatt.disconnect()
-                return
-            }
-            @SuppressLint("MissingPermission")
-            gatt.readCharacteristic(ch)
         }
 
         override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             val value = characteristic.value ?: ByteArray(0)
-            handleRead(gatt, status, value)
+            handleCharacteristicRead(gatt, characteristic.uuid, status, value)
         }
 
         override fun onCharacteristicRead(
@@ -635,22 +916,122 @@ internal class BarnardController(
             value: ByteArray,
             status: Int
         ) {
-            handleRead(gatt, status, value)
+            handleCharacteristicRead(gatt, characteristic.uuid, status, value)
         }
 
-        private fun handleRead(gatt: BluetoothGatt, status: Int, value: ByteArray) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                emitError("read_failed", "status=$status", recoverable = true)
-                gatt.disconnect()
+        @SuppressLint("MissingPermission")
+        private fun handleCharacteristicRead(gatt: BluetoothGatt, uuid: UUID, status: Int, value: ByteArray) {
+            val address = gatt.device?.address ?: ""
+            val svc = gatt.getService(serviceUuid) ?: run {
+                finishConnection(gatt)
                 return
             }
-            val address = gatt.device.address ?: ""
-            val rssi = discoveredRssi[address] ?: 0
-            val ts = discoveredAt[address] ?: System.currentTimeMillis()
-            emitDetection(ts, rssi, value)
-            gatt.disconnect()
+
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                emitError("read_failed", "status=$status uuid=$uuid", recoverable = true)
+                finishConnection(gatt)
+                return
+            }
+
+            when (uuid) {
+                eventCodeHashCharUuid -> {
+                    peripheralReadValues[address]?.eventCodeHash = value
+                    emitDebug("trace", "gatt_read_event_code_hash", mapOf(
+                        "address" to address,
+                        "bytes" to value.size,
+                        "isEmpty" to value.isEmpty()
+                    ))
+                    // Proceed to RPID read
+                    val rpidCh = svc.getCharacteristic(rpidCharUuid)
+                    if (rpidCh != null && hasConnectPermission()) {
+                        gatt.readCharacteristic(rpidCh)
+                    } else {
+                        finishConnection(gatt)
+                    }
+                }
+
+                rpidCharUuid -> {
+                    peripheralReadValues[address]?.rpid = value
+                    emitDebug("trace", "gatt_read_rpid", mapOf(
+                        "address" to address,
+                        "bytes" to value.size
+                    ))
+                    // Check if we should exchange TEK
+                    val remoteHash = peripheralReadValues[address]?.eventCodeHash
+                    if (shouldExchangeTek(remoteHash)) {
+                        val tekCh = svc.getCharacteristic(tekCharUuid)
+                        if (tekCh != null && hasConnectPermission()) {
+                            gatt.readCharacteristic(tekCh)
+                        } else {
+                            completeGattExchange(gatt)
+                        }
+                    } else {
+                        completeGattExchange(gatt)
+                    }
+                }
+
+                tekCharUuid -> {
+                    peripheralReadValues[address]?.tek = value
+                    emitDebug("trace", "gatt_read_tek", mapOf(
+                        "address" to address,
+                        "bytes" to value.size
+                    ))
+                    // Store received TEK
+                    val remoteHash = peripheralReadValues[address]?.eventCodeHash
+                    if (value.size == 16 && remoteHash != null && remoteHash.size == 8) {
+                        val entry = TekEntry(
+                            tek = value,
+                            eventCodeHash = remoteHash,
+                            exchangedAt = System.currentTimeMillis(),
+                            lastSeenAt = System.currentTimeMillis()
+                        )
+                        tekStorage.store(entry)
+                        emitDebug("info", "tek_received", mapOf(
+                            "displayId" to BarnardCrypto.displayId(value)
+                        ))
+                    }
+                    // Write our TEK to complete exchange
+                    val tekCh = svc.getCharacteristic(tekCharUuid)
+                    if (tekCh != null && hasConnectPermission()) {
+                        tekCh.value = currentTek
+                        gatt.writeCharacteristic(tekCh)
+                    } else {
+                        completeGattExchange(gatt)
+                    }
+                }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                emitError("write_failed", "status=$status", recoverable = true)
+            } else {
+                emitDebug("trace", "gatt_write_tek", mapOf(
+                    "address" to (gatt.device?.address ?: ""),
+                    "displayId" to BarnardCrypto.displayId(currentTek)
+                ))
+            }
+            completeGattExchange(gatt)
+        }
+
+        private fun completeGattExchange(gatt: BluetoothGatt) {
+            val address = gatt.device?.address ?: ""
+            val values = peripheralReadValues[address]
+
+            // Emit detection
+            val rpidData = values?.rpid
+            if (rpidData != null) {
+                val rssi = discoveredRssi[address] ?: 0
+                val ts = discoveredAt[address] ?: System.currentTimeMillis()
+                emitDetection(ts, rssi, rpidData, values?.tek)
+            }
+
+            finishConnection(gatt)
         }
     }
+
+    // MARK: - GATT Server Callback
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         @SuppressLint("MissingPermission")
@@ -661,21 +1042,117 @@ internal class BarnardController(
             characteristic: BluetoothGattCharacteristic
         ) {
             val server = gattServer ?: return
-            val payload = computePayload(System.currentTimeMillis())
-            val slice =
-                if (offset <= 0) payload
-                else if (offset >= payload.size) ByteArray(0)
-                else payload.copyOfRange(offset, payload.size)
-            server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
-            emitDebug(
-                "trace",
-                "gatt_read_rpid",
-                mapOf(
-                    "bytes" to payload.size,
-                    "formatVersion" to (payload[0].toInt() and 0xFF),
-                    "displayId" to displayIdForPayload(payload),
-                )
+
+            when (characteristic.uuid) {
+                rpidCharUuid -> {
+                    val payload = computePayload(System.currentTimeMillis())
+                    val slice =
+                        if (offset <= 0) payload
+                        else if (offset >= payload.size) ByteArray(0)
+                        else payload.copyOfRange(offset, payload.size)
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+                    emitDebug(
+                        "trace",
+                        "gatt_read_rpid",
+                        mapOf(
+                            "bytes" to payload.size,
+                            "formatVersion" to (payload[0].toInt() and 0xFF),
+                            "displayId" to displayIdForPayload(payload),
+                        )
+                    )
+                }
+
+                tekCharUuid -> {
+                    // Only return TEK in Event Mode
+                    if (isEventMode) {
+                        val slice =
+                            if (offset <= 0) currentTek
+                            else if (offset >= currentTek.size) ByteArray(0)
+                            else currentTek.copyOfRange(offset, currentTek.size)
+                        server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+                        emitDebug("trace", "gatt_respond_tek_read", mapOf(
+                            "displayId" to BarnardCrypto.displayId(currentTek)
+                        ))
+                    } else {
+                        server.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
+                        emitDebug("trace", "gatt_reject_tek_read", mapOf(
+                            "reason" to "anonymous_mode"
+                        ))
+                    }
+                }
+
+                eventCodeHashCharUuid -> {
+                    val hash = getEventCodeHash()
+                    val slice =
+                        if (offset <= 0) hash
+                        else if (offset >= hash.size) ByteArray(0)
+                        else hash.copyOfRange(offset, hash.size)
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+                    emitDebug("trace", "gatt_respond_event_code_hash", mapOf(
+                        "bytes" to hash.size,
+                        "isEmpty" to hash.isEmpty()
+                    ))
+                }
+
+                else -> {
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, offset, null)
+                }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicWriteRequest(
+            device: BluetoothDevice,
+            requestId: Int,
+            characteristic: BluetoothGattCharacteristic,
+            preparedWrite: Boolean,
+            responseNeeded: Boolean,
+            offset: Int,
+            value: ByteArray?
+        ) {
+            val server = gattServer ?: return
+
+            if (characteristic.uuid != tekCharUuid) {
+                if (responseNeeded) {
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
+                }
+                return
+            }
+
+            if (value == null || value.size != 16) {
+                if (responseNeeded) {
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH, offset, null)
+                }
+                return
+            }
+
+            // Only accept TEK writes in Event Mode
+            if (!isEventMode) {
+                if (responseNeeded) {
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
+                }
+                emitDebug("trace", "gatt_reject_tek_write", mapOf(
+                    "reason" to "anonymous_mode"
+                ))
+                return
+            }
+
+            // Store the received TEK
+            val eventCodeHash = getEventCodeHash()
+            val entry = TekEntry(
+                tek = value,
+                eventCodeHash = eventCodeHash,
+                exchangedAt = System.currentTimeMillis(),
+                lastSeenAt = System.currentTimeMillis()
             )
+            tekStorage.store(entry)
+
+            if (responseNeeded) {
+                server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+            }
+            emitDebug("info", "tek_received_via_write", mapOf(
+                "displayId" to BarnardCrypto.displayId(value)
+            ))
         }
     }
 

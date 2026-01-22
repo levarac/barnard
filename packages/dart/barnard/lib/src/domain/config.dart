@@ -1,14 +1,33 @@
+import "tek_storage.dart";
 import "transport.dart";
 
 class BarnardConfig {
   const BarnardConfig({
     this.transport = TransportKind.ble,
+    this.eventCode,
+    this.tekStorage = const TekStorageConfig(),
     this.rpid = const RpidConfig(),
     this.rssi = const RssiConfig(),
     this.connect = const ConnectConfig(),
   });
 
   final TransportKind transport;
+
+  /// Event code for Event Mode. If null, operates in Anonymous Mode.
+  ///
+  /// In Anonymous Mode:
+  /// - RPID rotates but cannot be resolved to a device identity
+  /// - No TEK exchange occurs
+  ///
+  /// In Event Mode:
+  /// - TEK is derived from DeviceSecret + EventCode
+  /// - TEK exchange occurs with peers in the same event
+  /// - Peers can be identified and tracked within the event scope
+  final String? eventCode;
+
+  /// Configuration for TEK storage.
+  final TekStorageConfig tekStorage;
+
   final RpidConfig rpid;
   final RssiConfig rssi;
   final ConnectConfig connect;
