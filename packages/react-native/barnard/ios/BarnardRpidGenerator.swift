@@ -4,9 +4,11 @@ import Security
 
 final class BarnardRpidGenerator {
   private let storageKey = "barnard.rpidSeed"
+  private let rotationSeconds: Int64 = 600
+  private let seedSizeBytes = 32
 
   func currentPayload(formatVersion: UInt8, now: Date) -> Data {
-    let rotationSeconds: Int64 = 600
+    let rotationSeconds = self.rotationSeconds
     let unix = Int64(now.timeIntervalSince1970)
     let window = unix / rotationSeconds
 
@@ -24,10 +26,10 @@ final class BarnardRpidGenerator {
 
   private func getOrCreateSeed() -> Data {
     let defaults = UserDefaults.standard
-    if let existing = defaults.data(forKey: storageKey), existing.count >= 16 {
+    if let existing = defaults.data(forKey: storageKey), existing.count >= seedSizeBytes {
       return existing
     }
-    var bytes = [UInt8](repeating: 0, count: 32)
+    var bytes = [UInt8](repeating: 0, count: seedSizeBytes)
     _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
     let seed = Data(bytes)
     defaults.set(seed, forKey: storageKey)

@@ -50,6 +50,10 @@ internal class BarnardController(
 
     private val serviceUuid: UUID = UUID.fromString("0000B001-0000-1000-8000-00805F9B34FB")
     private val rpidCharUuid: UUID = UUID.fromString("0000B002-0000-1000-8000-00805F9B34FB")
+    
+    // RPID security parameters
+    private val rotationSeconds = 600L
+    private val seedSizeBytes = 32
 
     private val bluetoothManager: BluetoothManager? =
         appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -254,7 +258,6 @@ internal class BarnardController(
     }
 
     private fun computePayload(nowMs: Long): ByteArray {
-        val rotationSeconds = 600L
         val window = (nowMs / 1000L) / rotationSeconds
         val seed = getOrCreateSeed()
 
@@ -274,9 +277,9 @@ internal class BarnardController(
         val existing = prefs.getString(key, null)
         if (existing != null) {
             val bytes = Base64.decode(existing, Base64.DEFAULT)
-            if (bytes.size >= 16) return bytes
+            if (bytes.size >= seedSizeBytes) return bytes
         }
-        val bytes = ByteArray(32)
+        val bytes = ByteArray(seedSizeBytes)
         java.security.SecureRandom().nextBytes(bytes)
         prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
         return bytes

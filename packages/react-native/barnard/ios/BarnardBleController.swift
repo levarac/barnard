@@ -6,6 +6,9 @@ final class BarnardBleController: NSObject {
   private let discoveryServiceUUID = CBUUID(string: "0000B001-0000-1000-8000-00805F9B34FB")
   private let rpidCharacteristicUUID = CBUUID(string: "0000B002-0000-1000-8000-00805F9B34FB")
   private let localName = "BNRD"
+  
+  // Error codes
+  private let constraintCodeBluetoothNotReady = "bluetooth_not_ready"
 
   private let iso8601: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
@@ -66,7 +69,7 @@ final class BarnardBleController: NSObject {
   func startScan(allowDuplicates: Bool) {
     self.allowDuplicates = allowDuplicates
     guard centralManager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(centralManager.state.rawValue)")
+      emitConstraint(code: constraintCodeBluetoothNotReady, message: "CentralManager state=\(centralManager.state.rawValue)")
       return
     }
     if isScanning { return }
@@ -90,7 +93,7 @@ final class BarnardBleController: NSObject {
   func startAdvertise(formatVersion: Int) {
     self.formatVersion = UInt8(clamping: formatVersion)
     guard peripheralManager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(peripheralManager.state.rawValue)")
+      emitConstraint(code: constraintCodeBluetoothNotReady, message: "PeripheralManager state=\(peripheralManager.state.rawValue)")
       return
     }
     if isAdvertising { return }

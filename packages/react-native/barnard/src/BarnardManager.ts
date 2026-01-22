@@ -34,7 +34,7 @@ import type {
  *
  * // Later: cleanup
  * unsubscribe();
- * await barnard.dispose();
+ * barnard.dispose();
  * ```
  */
 export class BarnardManager {
