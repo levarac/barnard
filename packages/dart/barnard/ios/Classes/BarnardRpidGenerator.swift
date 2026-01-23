@@ -8,14 +8,13 @@ import Security
 /// GAEN v1.2-compatible RPI generator with Event Mode support.
 ///
 /// Two modes of operation:
-/// - **Anonymous Mode** (default): Random TEK, no identification
+/// - **Anonymous Mode** (default): Deterministic TEK derived from DeviceSecret
 /// - **Event Mode**: Deterministic TEK derived from DeviceSecret + EventCode
 final class BarnardRpidGenerator {
   // MARK: - Storage Keys
 
   private let deviceSecretKey = "barnard.rpidSeed"
   private let eventCodeKey = "barnard.eventCode"
-  private let currentTekKey = "barnard.currentTek"
 
   // MARK: - State
 
@@ -37,20 +36,10 @@ final class BarnardRpidGenerator {
     // Load persisted event code
     let defaults = UserDefaults.standard
     eventCode = defaults.string(forKey: eventCodeKey)
+    currentTek = Data()
 
     // Initialize TEK based on mode
-    if let code = eventCode {
-      let deviceSecret = getOrCreateDeviceSecret()
-      currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret: deviceSecret, eventCode: code)
-    } else {
-      // Anonymous Mode: use stored random TEK or generate new one
-      if let storedTek = defaults.data(forKey: currentTekKey), storedTek.count == 16 {
-        currentTek = storedTek
-      } else {
-        currentTek = BarnardCrypto.generateRandomTek()
-        defaults.set(currentTek, forKey: currentTekKey)
-      }
-    }
+    regenerateTek()
   }
 
   // MARK: - Mode Control
@@ -85,18 +74,14 @@ final class BarnardRpidGenerator {
 
   /// Regenerate TEK based on current mode.
   private func regenerateTek() {
-    let defaults = UserDefaults.standard
-
     if let code = eventCode {
       // Event Mode: derive TEK from DeviceSecret + EventCode
       let deviceSecret = getOrCreateDeviceSecret()
       currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret: deviceSecret, eventCode: code)
-      // Don't persist event-derived TEK (can be recomputed)
-      defaults.removeObject(forKey: currentTekKey)
     } else {
-      // Anonymous Mode: generate new random TEK
-      currentTek = BarnardCrypto.generateRandomTek()
-      defaults.set(currentTek, forKey: currentTekKey)
+      // Anonymous Mode: derive TEK from DeviceSecret
+      let deviceSecret = getOrCreateDeviceSecret()
+      currentTek = BarnardCrypto.deriveTekForAnonymous(deviceSecret: deviceSecret)
     }
   }
 

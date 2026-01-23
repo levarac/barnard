@@ -30,6 +30,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Base64
+import network.greeting.barnard.BuildConfig
 import android.util.Log
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
@@ -73,6 +74,7 @@ internal class BarnardController(
     private var isAdvertising: Boolean = false
     private var allowDuplicates: Boolean = true
     private var formatVersion: Int = 1
+    private var debugOriginalName: String? = null
 
     // MARK: - Event Mode
 
@@ -85,6 +87,11 @@ internal class BarnardController(
 
     private val discoveredRssi: MutableMap<String, Int> = mutableMapOf()
     private val discoveredAt: MutableMap<String, Long> = mutableMapOf()
+    private val lastDiscoveryNameById: MutableMap<String, String> = mutableMapOf()
+
+    private fun isDebugBuild(): Boolean {
+        return BuildConfig.BUILD_TYPE != "release"
+    }
 
     // MARK: - Connection Queue
 
@@ -146,17 +153,9 @@ internal class BarnardController(
             val deviceSecret = getOrCreateDeviceSecret()
             currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret, eventCode!!)
         } else {
-            // Anonymous Mode: use stored random TEK or generate new one
-            val storedTek = prefs.getString("currentTek", null)
-            if (storedTek != null) {
-                val decoded = Base64.decode(storedTek, Base64.DEFAULT)
-                if (decoded.size == 16) {
-                    currentTek = decoded
-                    return
-                }
-            }
-            currentTek = BarnardCrypto.generateRandomTek()
-            prefs.edit().putString("currentTek", Base64.encodeToString(currentTek, Base64.NO_WRAP)).apply()
+            // Anonymous Mode: derive TEK from DeviceSecret
+            val deviceSecret = getOrCreateDeviceSecret()
+            currentTek = BarnardCrypto.deriveTekForAnonymous(deviceSecret)
         }
     }
 
@@ -185,6 +184,13 @@ internal class BarnardController(
                     "isScanning" to isScanning,
                     "isAdvertising" to isAdvertising,
                     "eventMode" to if (eventCode != null) "event" else "anonymous",
+                    "eventCode" to eventCode
+                )
+            )
+
+            "getEventMode" -> result.success(
+                mapOf(
+                    "mode" to if (eventCode != null) "event" else "anonymous",
                     "eventCode" to eventCode
                 )
             )
@@ -306,7 +312,6 @@ internal class BarnardController(
         // Derive TEK from DeviceSecret + EventCode
         val deviceSecret = getOrCreateDeviceSecret()
         currentTek = BarnardCrypto.deriveTekForEvent(deviceSecret, code)
-        prefs.edit().remove("currentTek").apply() // Event-derived TEK can be recomputed
 
         // Rebuild GATT server
         rebuildGattServerIfNeeded()
@@ -322,9 +327,9 @@ internal class BarnardController(
         eventCode = null
         prefs.edit().remove("eventCode").apply()
 
-        // Generate new random TEK
-        currentTek = BarnardCrypto.generateRandomTek()
-        prefs.edit().putString("currentTek", Base64.encodeToString(currentTek, Base64.NO_WRAP)).apply()
+        // Derive TEK from DeviceSecret
+        val deviceSecret = getOrCreateDeviceSecret()
+        currentTek = BarnardCrypto.deriveTekForAnonymous(deviceSecret)
 
         // Rebuild GATT server
         rebuildGattServerIfNeeded()
@@ -426,6 +431,7 @@ internal class BarnardController(
         // Clear discovery state for clean restart
         discoveredRssi.clear()
         discoveredAt.clear()
+        lastDiscoveryNameById.clear()
         lastConnectAttemptAtMs.clear()
         peripheralReadValues.clear()
 
@@ -452,6 +458,14 @@ internal class BarnardController(
             emitConstraint("advertise_unsupported", "Multiple advertisement not supported")
             return
         }
+        if (!hasConnectPermission()) {
+            emitConstraint(
+                "permission_denied",
+                "Missing BLUETOOTH_CONNECT permission",
+                requiredAction = "grant_permission"
+            )
+            return
+        }
         val adv = a.bluetoothLeAdvertiser ?: run {
             emitError("advertise_failed", "BluetoothLeAdvertiser is null", recoverable = true)
             return
@@ -460,6 +474,26 @@ internal class BarnardController(
 
         ensureGattServer()
 
+        val localName = if (isDebugBuild()) {
+            val deviceSecret = getOrCreateDeviceSecret()
+            val tail = if (deviceSecret.size >= 2) {
+                deviceSecret.copyOfRange(deviceSecret.size - 2, deviceSecret.size)
+            } else {
+                deviceSecret
+            }
+            val suffix = tail.joinToString("") { "%02x".format(it) }.uppercase()
+            val debugName = "BND-" + if (suffix.isEmpty()) "DEAD" else suffix
+            if (debugOriginalName == null && !a.name.isNullOrEmpty()) {
+                debugOriginalName = a.name
+            }
+            if (a.name != debugName) {
+                a.name = debugName
+            }
+            debugName
+        } else {
+            "BNRD"
+        }
+
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
@@ -467,7 +501,7 @@ internal class BarnardController(
             .build()
         val data = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(serviceUuid))
-            .setIncludeDeviceName(false)
+            .setIncludeDeviceName(isDebugBuild())
             .build()
         adv.startAdvertising(settings, data, advertiseCallback)
         isAdvertising = true
@@ -478,7 +512,7 @@ internal class BarnardController(
             mapOf(
                 "formatVersion" to formatVersion,
                 "serviceUuid" to serviceUuid.toString(),
-                "localName" to "BNRD",
+                "localName" to localName,
                 "eventMode" to isEventMode,
             )
         )
@@ -488,6 +522,13 @@ internal class BarnardController(
         if (!isAdvertising) return
         if (hasAdvertisePermission()) {
             adapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
+        }
+        if (BuildConfig.DEBUG) {
+            val original = debugOriginalName
+            if (original != null && adapter?.name != original) {
+                adapter?.name = original
+            }
+            debugOriginalName = null
         }
         isAdvertising = false
         gattServer?.close()
@@ -608,7 +649,13 @@ internal class BarnardController(
         mainHandler.post { eventSink?.success(payload) }
     }
 
-    private fun emitDetection(timestampMs: Long, rssi: Int, payloadBytes: ByteArray, resolvedTek: ByteArray? = null) {
+    private fun emitDetection(
+        timestampMs: Long,
+        rssi: Int,
+        payloadBytes: ByteArray,
+        resolvedTek: ByteArray? = null,
+        debugLocalName: String? = null
+    ) {
         if (payloadBytes.size != 17) {
             emitDebug("warn", "payload_invalid_length", mapOf("length" to payloadBytes.size))
             return
@@ -658,6 +705,9 @@ internal class BarnardController(
         }
         if (resolvedDisplayId != null) {
             payload["resolvedDisplayId"] = resolvedDisplayId
+        }
+        if (isDebugBuild() && debugLocalName != null) {
+            payload["debugLocalName"] = debugLocalName
         }
 
         mainHandler.post { eventSink?.success(payload) }
@@ -753,6 +803,11 @@ internal class BarnardController(
         }
         discoveredRssi[address] = result.rssi
         discoveredAt[address] = nowMs
+        if (isDebugBuild()) {
+            result.scanRecord?.deviceName?.let { name ->
+                if (name.isNotEmpty()) lastDiscoveryNameById[address] = name
+            }
+        }
 
         emitDebug("trace", "ble_discovery_result", mapOf(
             "id" to address,
@@ -768,7 +823,7 @@ internal class BarnardController(
         val uuids = record.serviceUuids
         val hasService = uuids?.any { it.uuid == serviceUuid } == true
         val name = record.deviceName
-        val isBnrd = name == "BNRD"
+        val isBnrd = name == "BNRD" || (isDebugBuild() && name?.startsWith("BND-") == true)
         Log.d(TAG, "isBarnardScanResult: addr=${result.device?.address} name=$name hasService=$hasService isBnrd=$isBnrd uuids=$uuids")
         // 1. Service UUID match (reliable for Android-to-Android).
         if (hasService) return true
@@ -847,6 +902,7 @@ internal class BarnardController(
     private fun finishConnection(gatt: BluetoothGatt) {
         val address = gatt.device?.address ?: ""
         peripheralReadValues.remove(address)
+        lastDiscoveryNameById.remove(address)
         gatt.disconnect()
     }
 
@@ -860,6 +916,7 @@ internal class BarnardController(
                 gatt.close()
                 val address = gatt.device?.address ?: ""
                 peripheralReadValues.remove(address)
+                lastDiscoveryNameById.remove(address)
                 activeGatt = null
                 pumpConnectQueue()
                 return
@@ -870,6 +927,7 @@ internal class BarnardController(
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 val address = gatt.device?.address ?: ""
                 peripheralReadValues.remove(address)
+                lastDiscoveryNameById.remove(address)
                 gatt.close()
                 activeGatt = null
                 pumpConnectQueue()
@@ -993,8 +1051,16 @@ internal class BarnardController(
                     // Write our TEK to complete exchange
                     val tekCh = svc.getCharacteristic(tekCharUuid)
                     if (tekCh != null && hasConnectPermission()) {
-                        tekCh.value = currentTek
-                        gatt.writeCharacteristic(tekCh)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            gatt.writeCharacteristic(
+                                tekCh,
+                                currentTek,
+                                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                            )
+                        } else {
+                            tekCh.value = currentTek
+                            gatt.writeCharacteristic(tekCh)
+                        }
                     } else {
                         completeGattExchange(gatt)
                     }
@@ -1024,7 +1090,7 @@ internal class BarnardController(
             if (rpidData != null) {
                 val rssi = discoveredRssi[address] ?: 0
                 val ts = discoveredAt[address] ?: System.currentTimeMillis()
-                emitDetection(ts, rssi, rpidData, values?.tek)
+                emitDetection(ts, rssi, rpidData, values?.tek, lastDiscoveryNameById[address])
             }
 
             finishConnection(gatt)

@@ -22,7 +22,7 @@ data class TekEntry(
     /** When the TEK holder was last seen (epoch millis). */
     var lastSeenAt: Long
 ) {
-    /** Display ID: first 3 bytes of TEK as uppercase hex. */
+    /** Display ID: first 3 bytes of TEK as lowercase hex. */
     val displayId: String
         get() = BarnardCrypto.displayId(tek)
 
@@ -112,7 +112,7 @@ class BarnardTekStorage(
 
         // Evict expired entries
         val now = System.currentTimeMillis()
-        val validEntries = entries.filter { now - it.exchangedAt < config.ttlMs }.toMutableList()
+        val validEntries = entries.filter { now - it.lastSeenAt < config.ttlMs }.toMutableList()
 
         // LRU eviction if over capacity
         if (validEntries.size > config.maxEntries) {
@@ -132,7 +132,7 @@ class BarnardTekStorage(
 
         // Filter expired entries
         val now = System.currentTimeMillis()
-        val validEntries = entries.filter { now - it.exchangedAt < config.ttlMs }
+        val validEntries = entries.filter { now - it.lastSeenAt < config.ttlMs }
 
         // Save back if we filtered any
         if (validEntries.size != entries.size) {

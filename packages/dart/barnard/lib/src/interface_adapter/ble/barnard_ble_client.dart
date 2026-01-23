@@ -57,9 +57,16 @@ class BarnardBleClient implements BarnardClient {
     final Map<Object?, Object?> stateMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>("getState")) ??
             <Object?, Object?>{};
-    final Map<Object?, Object?> modeMap =
-        (await _methods.invokeMethod<Map<Object?, Object?>>("getEventMode")) ??
-            <Object?, Object?>{};
+    Map<Object?, Object?> modeMap;
+    try {
+      modeMap = (await _methods
+              .invokeMethod<Map<Object?, Object?>>("getEventMode")) ??
+          <Object?, Object?>{};
+    } on MissingPluginException {
+      modeMap = <Object?, Object?>{};
+    } on PlatformException {
+      modeMap = <Object?, Object?>{};
+    }
 
     final String? modeStr = modeMap["mode"] as String?;
     final EventMode initialMode =
@@ -417,6 +424,7 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
           ? null
           : Uint8List.fromList(base64Decode(resolvedTekB64));
       final String? resolvedDisplayId = map["resolvedDisplayId"] as String?;
+      final String? debugLocalName = map["debugLocalName"] as String?;
 
       return DetectionEvent(
         timestamp: ts,
@@ -429,6 +437,7 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         payloadRaw: payloadRaw,
         resolvedTek: resolvedTek,
         resolvedDisplayId: resolvedDisplayId,
+        debugLocalName: debugLocalName,
       );
   }
 }

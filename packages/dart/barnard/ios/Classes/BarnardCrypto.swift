@@ -1,6 +1,7 @@
 // Copyright 2024-2026 The Greeting Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style license.
 
+import CommonCrypto
 import CryptoKit
 import Foundation
 
@@ -10,7 +11,7 @@ import Foundation
 /// ```
 /// DeviceSecret (32 bytes)
 ///      |
-///      +-- Anonymous Mode: TEK = random 16 bytes
+///      +-- Anonymous Mode: TEK = HKDF(DeviceSecret, "barnard-tek-anonymous", 16)
 ///      |
 ///      +-- Event Mode: TEK = HKDF(DeviceSecret || EventCode, "barnard-tek", 16)
 ///                           |
@@ -44,9 +45,17 @@ enum BarnardCrypto {
     return derived.withUnsafeBytes { Data($0) }
   }
 
-  /// Generate a random TEK for Anonymous Mode.
-  static func generateRandomTek() -> Data {
-    generateRandomBytes(16)
+  /// Derive TEK for Anonymous Mode from DeviceSecret.
+  ///
+  /// `TEK = HKDF(DeviceSecret, "barnard-tek-anonymous", 16)`
+  static func deriveTekForAnonymous(deviceSecret: Data) -> Data {
+    let key = SymmetricKey(data: deviceSecret)
+    let derived = HKDF<SHA256>.deriveKey(
+      inputKeyMaterial: key,
+      info: "barnard-tek-anonymous".data(using: .utf8)!,
+      outputByteCount: 16
+    )
+    return derived.withUnsafeBytes { Data($0) }
   }
 
   // MARK: - RPIK Derivation
@@ -189,9 +198,9 @@ enum BarnardCrypto {
 
   // MARK: - Display ID
 
-  /// Get displayId from TEK (first 3 bytes as uppercase hex).
+  /// Get displayId from TEK (first 3 bytes as lowercase hex).
   static func displayId(from tek: Data) -> String {
-    tek.prefix(3).map { String(format: "%02X", $0) }.joined()
+    tek.prefix(3).map { String(format: "%02x", $0) }.joined()
   }
 
   // MARK: - Random Bytes
@@ -203,6 +212,3 @@ enum BarnardCrypto {
     return Data(bytes)
   }
 }
-
-// Import CommonCrypto for AES-ECB
-import CommonCrypto

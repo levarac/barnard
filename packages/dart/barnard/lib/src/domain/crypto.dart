@@ -10,7 +10,7 @@
 /// ```
 /// DeviceSecret (32 bytes)
 ///      |
-///      +-- Anonymous Mode: TEK = random 16 bytes
+///      +-- Anonymous Mode: TEK = HKDF(DeviceSecret, "barnard-tek-anonymous", 16)
 ///      |
 ///      +-- Event Mode: TEK = HKDF(DeviceSecret || EventCode, "barnard-tek", 16)
 ///                           |
@@ -99,13 +99,16 @@ Uint8List sha256(Uint8List data) {
 
 /// Derive TEK from DeviceSecret and optional EventCode.
 ///
-/// - Anonymous Mode (eventCode == null): Returns random 16 bytes.
+/// - Anonymous Mode (eventCode == null): Returns `HKDF(DeviceSecret, "barnard-tek-anonymous", 16)`.
 /// - Event Mode: Returns `HKDF(DeviceSecret || EventCode, "barnard-tek", 16)`.
 Uint8List deriveTek(Uint8List deviceSecret, [String? eventCode]) {
   if (eventCode == null) {
-    // Anonymous Mode: random TEK
-    final random = Random.secure();
-    return Uint8List.fromList(List.generate(16, (_) => random.nextInt(256)));
+    // Anonymous Mode: deterministic TEK
+    return hkdfSha256(
+      ikm: deviceSecret,
+      info: Uint8List.fromList(utf8.encode('barnard-tek-anonymous')),
+      length: 16,
+    );
   }
 
   // Event Mode: deterministic TEK
@@ -248,9 +251,9 @@ abstract class BarnardCrypto {
     return deriveTek(deviceSecret, eventCode);
   }
 
-  /// Derive TEK for Anonymous Mode (random 16 bytes).
-  static Uint8List deriveTekForAnonymous() {
-    return deriveTek(Uint8List(32), null);
+  /// Derive TEK for Anonymous Mode from DeviceSecret.
+  static Uint8List deriveTekForAnonymous(Uint8List deviceSecret) {
+    return deriveTek(deviceSecret, null);
   }
 
   /// Compute EventCodeHash from EventCode.
@@ -292,8 +295,8 @@ abstract class BarnardCrypto {
     );
   }
 
-  /// Get displayId from TEK (first 3 bytes as uppercase hex).
+  /// Get displayId from TEK (first 3 bytes as lowercase hex).
   static String displayIdFromTek(Uint8List tek) {
-    return tekToDisplayId(tek).toUpperCase();
+    return tekToDisplayId(tek);
   }
 }

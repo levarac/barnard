@@ -25,6 +25,7 @@ final class DetectionEvent extends BarnardEvent {
     this.payloadRaw,
     this.resolvedTek,
     this.resolvedDisplayId,
+    this.debugLocalName,
   });
 
   final Uint8List rpid;
@@ -47,8 +48,11 @@ final class DetectionEvent extends BarnardEvent {
   final Uint8List? resolvedTek;
 
   /// Human-readable identifier derived from resolvedTek (first 3 bytes as hex).
-  /// Example: "A1B2C3". Only populated when resolvedTek is available.
+  /// Example: "a1b2c3". Only populated when resolvedTek is available.
   final String? resolvedDisplayId;
+
+  /// Debug-only local name of the peer, if present in advertisements.
+  final String? debugLocalName;
 
   /// Whether this detection was resolved to a known TEK.
   bool get isResolved => resolvedTek != null;

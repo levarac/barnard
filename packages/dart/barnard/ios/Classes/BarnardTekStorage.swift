@@ -17,9 +17,9 @@ struct TekEntry: Codable, Equatable {
   /// When the TEK holder was last seen (RPI resolved).
   var lastSeenAt: Date
 
-  /// Display ID: first 3 bytes of TEK as uppercase hex.
+  /// Display ID: first 3 bytes of TEK as lowercase hex.
   var displayId: String {
-    BarnardCrypto.displayId(from: tek)
+    tek.prefix(3).map { String(format: "%02x", $0) }.joined()
   }
 
   /// Create from platform channel dictionary.
@@ -104,7 +104,7 @@ final class BarnardTekStorage {
     // Evict expired entries
     let now = Date()
     entries = entries.filter { entry in
-      now.timeIntervalSince(entry.exchangedAt) < Double(config.ttlSeconds)
+      now.timeIntervalSince(entry.lastSeenAt) < Double(config.ttlSeconds)
     }
 
     // LRU eviction if over capacity
@@ -124,7 +124,7 @@ final class BarnardTekStorage {
     // Filter expired entries
     let now = Date()
     let validEntries = entries.filter { entry in
-      now.timeIntervalSince(entry.exchangedAt) < Double(config.ttlSeconds)
+      now.timeIntervalSince(entry.lastSeenAt) < Double(config.ttlSeconds)
     }
 
     // Save back if we filtered any

@@ -34,6 +34,10 @@
           "type": ["string", "null"],
           "pattern": "^[0-9a-f]{6}$",
           "description": "First 3 bytes of resolved TEK as lowercase hex (6 chars)"
+        },
+        "debugLocalName": {
+          "type": ["string", "null"],
+          "description": "Debug-only local name observed during scan (may be omitted in release builds)"
         }
       },
       "required": ["type", "timestamp", "transport", "formatVersion", "rpid", "displayId", "rssi"]
@@ -106,4 +110,3 @@
     }
   }
 }
-

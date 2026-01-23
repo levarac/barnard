@@ -18,7 +18,7 @@ import javax.crypto.spec.SecretKeySpec
  * ```
  * DeviceSecret (32 bytes)
  *      |
- *      +-- Anonymous Mode: TEK = random 16 bytes
+ *      +-- Anonymous Mode: TEK = HKDF(DeviceSecret, "barnard-tek-anonymous", 16)
  *      |
  *      +-- Event Mode: TEK = HKDF(DeviceSecret || EventCode, "barnard-tek", 16)
  *                           |
@@ -45,9 +45,13 @@ object BarnardCrypto {
     }
 
     /**
-     * Generate a random TEK for Anonymous Mode.
+     * Derive TEK for Anonymous Mode from DeviceSecret.
+     *
+     * `TEK = HKDF(DeviceSecret, "barnard-tek-anonymous", 16)`
      */
-    fun generateRandomTek(): ByteArray = generateRandomBytes(16)
+    fun deriveTekForAnonymous(deviceSecret: ByteArray): ByteArray {
+        return hkdfSha256(deviceSecret, "barnard-tek-anonymous".toByteArray(Charsets.UTF_8), 16)
+    }
 
     // MARK: - RPIK Derivation
 
@@ -171,10 +175,10 @@ object BarnardCrypto {
     // MARK: - Display ID
 
     /**
-     * Get displayId from TEK (first 3 bytes as uppercase hex).
+     * Get displayId from TEK (first 3 bytes as lowercase hex).
      */
     fun displayId(tek: ByteArray): String {
-        return tek.take(3).joinToString("") { "%02X".format(it) }
+        return tek.take(3).joinToString("") { "%02x".format(it) }
     }
 
     // MARK: - HKDF

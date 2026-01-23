@@ -4,6 +4,7 @@
 import CoreBluetooth
 import Flutter
 import Foundation
+import UIKit
 
 final class BarnardBleController: NSObject {
   // MARK: - UUIDs
@@ -13,6 +14,22 @@ final class BarnardBleController: NSObject {
   private let tekCharacteristicUUID = CBUUID(string: "0000B003-0000-1000-8000-00805F9B34FB")
   private let eventCodeHashCharacteristicUUID = CBUUID(string: "0000B004-0000-1000-8000-00805F9B34FB")
   private let localName = "BNRD"
+
+  private var debugLocalName: String {
+    #if DEBUG
+    let suffix = debugDeviceSuffix()
+    return "BND-\(suffix)"
+    #else
+    return localName
+    #endif
+  }
+
+  private func debugDeviceSuffix() -> String {
+    let deviceSecret = rpid.getDeviceSecret()
+    let tail = deviceSecret.suffix(2)
+    let hex = tail.map { String(format: "%02x", $0) }.joined().uppercased()
+    return hex.isEmpty ? "DEAD" : hex
+  }
 
   private let iso8601: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
@@ -42,6 +59,8 @@ final class BarnardBleController: NSObject {
   private var isAdvertising = false
   private var allowDuplicates = true
   private var formatVersion: UInt8 = 1
+
+  private var lastDiscoveryNameById: [UUID: String] = [:]
 
   // MARK: - Discovery State
 
@@ -118,6 +137,12 @@ final class BarnardBleController: NSObject {
         "isScanning": isScanning,
         "isAdvertising": isAdvertising,
         "eventMode": rpid.isEventMode ? "event" : "anonymous",
+        "eventCode": rpid.eventCode as Any,
+      ])
+
+    case "getEventMode":
+      result([
+        "mode": rpid.isEventMode ? "event" : "anonymous",
         "eventCode": rpid.eventCode as Any,
       ])
 
@@ -262,6 +287,7 @@ final class BarnardBleController: NSObject {
     lastConnectAttemptAt.removeAll()
     peripheralCharacteristics.removeAll()
     peripheralReadValues.removeAll()
+    lastDiscoveryNameById.removeAll()
 
     emitState(reasonCode: "scan_stop")
     emitDebug(level: "info", name: "scan_stop", data: nil)
@@ -276,10 +302,12 @@ final class BarnardBleController: NSObject {
     }
     if isAdvertising { return }
     ensureGattService()
-    let ad: [String: Any] = [
-      CBAdvertisementDataLocalNameKey: localName,
+    var ad: [String: Any] = [
       CBAdvertisementDataServiceUUIDsKey: [discoveryServiceUUID],
     ]
+    #if DEBUG
+    ad[CBAdvertisementDataLocalNameKey] = debugLocalName
+    #endif
     peripheralManager.startAdvertising(ad)
     isAdvertising = true
     emitState(reasonCode: "advertise_start")
@@ -289,7 +317,7 @@ final class BarnardBleController: NSObject {
       data: [
         "formatVersion": Int(formatVersion),
         "serviceUuid": discoveryServiceUUID.uuidString,
-        "localName": localName,
+        "localName": debugLocalName,
         "eventMode": rpid.isEventMode,
       ]
     )
@@ -487,7 +515,8 @@ final class BarnardBleController: NSObject {
         timestamp: ts,
         rssi: rssi,
         payload: rpidData,
-        resolvedTek: values.tek
+        resolvedTek: values.tek,
+        debugLocalName: lastDiscoveryNameById[id]
       )
     }
 
@@ -498,6 +527,7 @@ final class BarnardBleController: NSObject {
     let id = peripheral.identifier
     peripheralCharacteristics.removeValue(forKey: id)
     peripheralReadValues.removeValue(forKey: id)
+    lastDiscoveryNameById.removeValue(forKey: id)
     centralManager.cancelPeripheralConnection(peripheral)
   }
 
@@ -550,7 +580,13 @@ final class BarnardBleController: NSObject {
     ])
   }
 
-  private func emitDetection(timestamp: Date, rssi: Int, payload: Data, resolvedTek: Data? = nil) {
+  private func emitDetection(
+    timestamp: Date,
+    rssi: Int,
+    payload: Data,
+    resolvedTek: Data? = nil,
+    debugLocalName: String? = nil
+  ) {
     guard payload.count == 17 else {
       emitDebug(level: "warn", name: "payload_invalid_length", data: ["length": payload.count])
       return
@@ -601,6 +637,11 @@ final class BarnardBleController: NSObject {
     if let dispId = resolvedDisplayId {
       event["resolvedDisplayId"] = dispId
     }
+    #if DEBUG
+    if let name = debugLocalName {
+      event["debugLocalName"] = name
+    }
+    #endif
 
     eventSink?(event)
   }
@@ -641,6 +682,12 @@ extension BarnardBleController: CBCentralManagerDelegate {
       "rssi": RSSI.intValue,
       "name": (advertisementData[CBAdvertisementDataLocalNameKey] as? String) as Any,
     ])
+
+    #if DEBUG
+    if let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String, !name.isEmpty {
+      lastDiscoveryNameById[peripheral.identifier] = name
+    }
+    #endif
 
     enqueueConnect(peripheral)
   }

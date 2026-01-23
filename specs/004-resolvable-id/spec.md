@@ -56,7 +56,7 @@ Key constraint: **No global device uniqueness** - identity must be scoped to a s
 ### Anonymous Mode
 
 - Default mode when no Event Code is set
-- RPI generation uses GAEN algorithm with random TEK (not shared)
+- RPI generation uses GAEN algorithm with a deterministic TEK derived from DeviceSecret
 - Other devices can detect presence but cannot identify or track
 - Privacy-first for users who don't want to be identifiable
 
@@ -73,7 +73,7 @@ Key constraint: **No global device uniqueness** - identity must be scoped to a s
 DeviceSecret (32 bytes, device-generated, never transmitted)
      │
      ├── Anonymous Mode (no Event Code)
-     │   └── TEK = random 16 bytes (regenerated periodically)
+     │   └── TEK = HKDF-SHA256(DeviceSecret, info="barnard-tek-anonymous", length=16)
      │
      └── Event Mode (Event Code present)
          │
@@ -361,6 +361,10 @@ class DetectionEvent extends BarnardEvent {
   /// Display ID of the resolved peer (null if not resolved).
   /// Format: first 3 bytes of TEK as lowercase hex (6 chars).
   final String? resolvedDisplayId;
+
+  /// Debug-only local name observed in advertisements, if present.
+  /// May be omitted in release builds.
+  final String? debugLocalName;
 }
 ```
 

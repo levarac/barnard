@@ -33,10 +33,10 @@ class MockBarnard implements BarnardClient {
     int tickMs = 200,
     MockBarnardOverrides? overrides,
     Uint8List? deviceSecret,
-  }) : _tickMs = tickMs.clamp(50, 2000),
-       _random = Random(),
-       _overrides = overrides,
-       _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
+  })  : _tickMs = tickMs.clamp(50, 2000),
+        _random = Random(),
+        _overrides = overrides,
+        _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
     _peers = List<MockPeer>.generate(simulatedPeerCount.clamp(1, 2000), (
       int i,
     ) {
@@ -53,8 +53,8 @@ class MockBarnard implements BarnardClient {
         _overrides?.bufferMaxSamples ?? const RssiConfig().bufferMaxSamples;
     _rssiBuffer = RingBuffer<RssiSample>(bufferMaxSamples);
 
-    // Initialize with a random TEK for Anonymous Mode
-    _currentTek = _generateRandomBytes(16);
+    // Initialize with a deterministic TEK for Anonymous Mode
+    _currentTek = BarnardCrypto.deriveTekForAnonymous(_deviceSecret);
   }
 
   final int _tickMs;
@@ -90,12 +90,12 @@ class MockBarnard implements BarnardClient {
 
   @override
   BarnardCapabilities get capabilities => const BarnardCapabilities(
-    supportedTransports: {TransportKind.ble},
-    supportsConnectionlessRpid: true,
-    supportsGattFallback: false,
-    supportsBackground: false,
-    supportsHighRateRssi: true,
-  );
+        supportedTransports: {TransportKind.ble},
+        supportsConnectionlessRpid: true,
+        supportsGattFallback: false,
+        supportsBackground: false,
+        supportsHighRateRssi: true,
+      );
 
   @override
   BarnardState get state => _state;
@@ -217,8 +217,8 @@ class MockBarnard implements BarnardClient {
     _currentMode = EventMode.anonymous;
     _currentEventCodeHash = null;
 
-    // Generate a new random TEK for Anonymous Mode
-    _currentTek = _generateRandomBytes(16);
+    // Generate a deterministic TEK for Anonymous Mode
+    _currentTek = BarnardCrypto.deriveTekForAnonymous(_deviceSecret);
 
     _emitDebug(DebugLevel.info, "mock_leave_event", <String, Object?>{
       "leftEvent": leftEvent,
@@ -312,9 +312,8 @@ class MockBarnard implements BarnardClient {
     List<int>? rpidBytes,
   }) {
     final List<RssiSample> all = _rssiBuffer.toList();
-    final Uint8List? filterRpid = rpidBytes == null
-        ? null
-        : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid =
+        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
 
     Iterable<RssiSample> filtered = all;
     if (since != null) {
@@ -419,6 +418,7 @@ class MockBarnard implements BarnardClient {
       displayId: _displayId(rpid),
       rssiSummary: summary,
       payloadRaw: null,
+      debugLocalName: null,
     );
 
     _events.add(event);
@@ -465,8 +465,8 @@ class MockBarnard implements BarnardClient {
 
     // Evict the least-recently-seen entries to keep the mock bounded.
     // This is O(n) but only triggers when the map exceeds the cap.
-    final List<MapEntry<String, _RssiAgg>> entries = _aggByRpidKey.entries
-        .toList(growable: false);
+    final List<MapEntry<String, _RssiAgg>> entries =
+        _aggByRpidKey.entries.toList(growable: false);
     entries.sort((a, b) {
       final DateTime aSeen =
           a.value.lastSeenAt ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -531,8 +531,7 @@ class MockBarnard implements BarnardClient {
     return tek
         .sublist(0, take)
         .map((int b) => b.toRadixString(16).padLeft(2, "0"))
-        .join()
-        .toUpperCase();
+        .join();
   }
 }
 
