@@ -112,6 +112,16 @@ internal class BarnardController(
 
     private val peripheralReadValues: MutableMap<String, GattReadValues> = mutableMapOf()
 
+    // MARK: - Known Peers (for high-rate RSSI updates)
+
+    private data class KnownPeer(
+        val displayId: String,
+        val rpid: ByteArray,
+        val resolvedDisplayId: String?
+    )
+
+    private val knownPeers: MutableMap<String, KnownPeer> = mutableMapOf()
+
     // MARK: - Storage
 
     private val prefs: SharedPreferences =
@@ -434,6 +444,7 @@ internal class BarnardController(
         lastDiscoveryNameById.clear()
         lastConnectAttemptAtMs.clear()
         peripheralReadValues.clear()
+        knownPeers.clear()
 
         emitState("scan_stop")
         emitDebug("info", "scan_stop", null)
@@ -713,6 +724,24 @@ internal class BarnardController(
         mainHandler.post { eventSink?.success(payload) }
     }
 
+    private fun emitRssiUpdate(address: String, rssi: Int, timestampMs: Long) {
+        val peer = knownPeers[address] ?: return
+
+        val payload = mutableMapOf<String, Any?>(
+            "type" to "rssi_update",
+            "timestamp" to BarnardIso8601.fromMs(timestampMs),
+            "displayId" to peer.displayId,
+            "rssi" to rssi,
+            "rpid" to Base64.encodeToString(peer.rpid, Base64.NO_WRAP),
+        )
+
+        if (peer.resolvedDisplayId != null) {
+            payload["resolvedDisplayId"] = peer.resolvedDisplayId
+        }
+
+        mainHandler.post { eventSink?.success(payload) }
+    }
+
     private fun emitDebug(level: String, name: String, data: Map<String, Any?>?) {
         val payload = mapOf(
             "type" to "debug",
@@ -815,7 +844,12 @@ internal class BarnardController(
             "name" to result.scanRecord?.deviceName
         ))
 
-        enqueueConnect(device)
+        // If this is a known peer, emit high-frequency RSSI update instead of GATT connection
+        if (knownPeers.containsKey(address)) {
+            emitRssiUpdate(address, result.rssi, nowMs)
+        } else {
+            enqueueConnect(device)
+        }
     }
 
     private fun isBarnardScanResult(result: ScanResult): Boolean {
@@ -1091,6 +1125,14 @@ internal class BarnardController(
                 val rssi = discoveredRssi[address] ?: 0
                 val ts = discoveredAt[address] ?: System.currentTimeMillis()
                 emitDetection(ts, rssi, rpidData, values?.tek, lastDiscoveryNameById[address])
+
+                // Register as known peer for high-rate RSSI updates
+                if (rpidData.size == 17) {
+                    val rpidBytes = rpidData.sliceArray(1 until 17)
+                    val displayId = rpidBytes.take(4).joinToString("") { "%02x".format(it) }
+                    val resolvedDisplayId = values?.tek?.let { BarnardCrypto.displayId(it) }
+                    knownPeers[address] = KnownPeer(displayId, rpidBytes, resolvedDisplayId)
+                }
             }
 
             finishConnection(gatt)

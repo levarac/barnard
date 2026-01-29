@@ -389,6 +389,17 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         message: (map["message"] as String?) ?? "unknown",
         recoverable: map["recoverable"] as bool?,
       );
+    case "rssi_update":
+      final Uint8List rpid = Uint8List.fromList(
+        base64Decode((map["rpid"] as String?) ?? ""),
+      );
+      return RssiUpdateEvent(
+        timestamp: ts,
+        displayId: (map["displayId"] as String?) ?? "",
+        rssi: (map["rssi"] as int?) ?? 0,
+        rpid: rpid,
+        resolvedDisplayId: map["resolvedDisplayId"] as String?,
+      );
     case "detection":
     default:
       final TransportKind transport = TransportKind.values.firstWhere(
