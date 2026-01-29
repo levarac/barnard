@@ -1,9 +1,11 @@
 // domain
 export "src/domain/capabilities.dart";
 export "src/domain/config.dart";
+export "src/domain/crypto.dart";
 export "src/domain/events.dart";
 export "src/domain/rssi.dart";
 export "src/domain/state.dart";
+export "src/domain/tek_storage.dart";
 export "src/domain/transport.dart";
 
 // usecase (public interface)

@@ -20,6 +20,16 @@
     "Timestamp": {
       "type": "string",
       "format": "date-time"
+    },
+    "TekBytes": {
+      "description": "TEK (Temporary Exposure Key) as 16 bytes encoded as base64.",
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "EventCodeHashBytes": {
+      "description": "EventCodeHash as first 8 bytes of SHA256(EventCode) encoded as base64.",
+      "type": "string",
+      "contentEncoding": "base64"
     }
   }
 }

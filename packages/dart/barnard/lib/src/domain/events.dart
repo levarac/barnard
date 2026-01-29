@@ -23,6 +23,9 @@ final class DetectionEvent extends BarnardEvent {
     required this.displayId,
     this.rssiSummary,
     this.payloadRaw,
+    this.resolvedTek,
+    this.resolvedDisplayId,
+    this.debugLocalName,
   });
 
   final Uint8List rpid;
@@ -38,6 +41,21 @@ final class DetectionEvent extends BarnardEvent {
 
   /// Optional raw payload bytes as observed (if available).
   final Uint8List? payloadRaw;
+
+  /// The TEK that was used to derive this RPI, if resolution succeeded.
+  /// Only populated when both devices are in Event Mode with matching
+  /// EventCodeHash and have exchanged TEKs via GATT.
+  final Uint8List? resolvedTek;
+
+  /// Human-readable identifier derived from resolvedTek (first 3 bytes as hex).
+  /// Example: "a1b2c3". Only populated when resolvedTek is available.
+  final String? resolvedDisplayId;
+
+  /// Debug-only local name of the peer, if present in advertisements.
+  final String? debugLocalName;
+
+  /// Whether this detection was resolved to a known TEK.
+  bool get isResolved => resolvedTek != null;
 }
 
 final class StateEvent extends BarnardEvent {
