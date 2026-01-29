@@ -33,10 +33,10 @@ class MockBarnard implements BarnardClient {
     int tickMs = 200,
     MockBarnardOverrides? overrides,
     Uint8List? deviceSecret,
-  })  : _tickMs = tickMs.clamp(50, 2000),
-        _random = Random(),
-        _overrides = overrides,
-        _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
+  }) : _tickMs = tickMs.clamp(50, 2000),
+       _random = Random(),
+       _overrides = overrides,
+       _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
     _peers = List<MockPeer>.generate(simulatedPeerCount.clamp(1, 2000), (
       int i,
     ) {
@@ -90,12 +90,12 @@ class MockBarnard implements BarnardClient {
 
   @override
   BarnardCapabilities get capabilities => const BarnardCapabilities(
-        supportedTransports: {TransportKind.ble},
-        supportsConnectionlessRpid: true,
-        supportsGattFallback: false,
-        supportsBackground: false,
-        supportsHighRateRssi: true,
-      );
+    supportedTransports: {TransportKind.ble},
+    supportsConnectionlessRpid: true,
+    supportsGattFallback: false,
+    supportsBackground: false,
+    supportsHighRateRssi: true,
+  );
 
   @override
   BarnardState get state => _state;
@@ -105,6 +105,9 @@ class MockBarnard implements BarnardClient {
 
   @override
   String? get currentEventCode => _currentEventCode;
+
+  @override
+  String? get myResolvedDisplayId => _tekDisplayId(_currentTek);
 
   @override
   Stream<BarnardEvent> get events => _events.stream;
@@ -312,8 +315,9 @@ class MockBarnard implements BarnardClient {
     List<int>? rpidBytes,
   }) {
     final List<RssiSample> all = _rssiBuffer.toList();
-    final Uint8List? filterRpid =
-        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid = rpidBytes == null
+        ? null
+        : Uint8List.fromList(rpidBytes);
 
     Iterable<RssiSample> filtered = all;
     if (since != null) {
@@ -465,8 +469,8 @@ class MockBarnard implements BarnardClient {
 
     // Evict the least-recently-seen entries to keep the mock bounded.
     // This is O(n) but only triggers when the map exceeds the cap.
-    final List<MapEntry<String, _RssiAgg>> entries =
-        _aggByRpidKey.entries.toList(growable: false);
+    final List<MapEntry<String, _RssiAgg>> entries = _aggByRpidKey.entries
+        .toList(growable: false);
     entries.sort((a, b) {
       final DateTime aSeen =
           a.value.lastSeenAt ?? DateTime.fromMillisecondsSinceEpoch(0);

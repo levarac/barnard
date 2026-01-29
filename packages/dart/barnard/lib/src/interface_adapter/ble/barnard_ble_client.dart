@@ -17,10 +17,12 @@ class BarnardBleClient implements BarnardClient {
     required BarnardState initialState,
     required EventMode initialMode,
     String? initialEventCode,
-  })  : _capabilities = capabilities,
-        _state = initialState,
-        _currentMode = initialMode,
-        _currentEventCode = initialEventCode;
+    String? initialMyResolvedDisplayId,
+  }) : _capabilities = capabilities,
+       _state = initialState,
+       _currentMode = initialMode,
+       _currentEventCode = initialEventCode,
+       _myResolvedDisplayId = initialMyResolvedDisplayId;
 
   static const MethodChannel _methods = MethodChannel("barnard/methods");
   static const EventChannel _eventsChannel = EventChannel("barnard/events");
@@ -46,21 +48,24 @@ class BarnardBleClient implements BarnardClient {
   BarnardState _state;
   EventMode _currentMode;
   String? _currentEventCode;
+  String? _myResolvedDisplayId;
   bool _disposed = false;
 
   static Future<BarnardBleClient> create() async {
     final Map<Object?, Object?> capsMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>(
-              "getCapabilities",
-            )) ??
-            <Object?, Object?>{};
+          "getCapabilities",
+        )) ??
+        <Object?, Object?>{};
     final Map<Object?, Object?> stateMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>("getState")) ??
-            <Object?, Object?>{};
+        <Object?, Object?>{};
     Map<Object?, Object?> modeMap;
     try {
-      modeMap = (await _methods
-              .invokeMethod<Map<Object?, Object?>>("getEventMode")) ??
+      modeMap =
+          (await _methods.invokeMethod<Map<Object?, Object?>>(
+            "getEventMode",
+          )) ??
           <Object?, Object?>{};
     } on MissingPluginException {
       modeMap = <Object?, Object?>{};
@@ -69,15 +74,29 @@ class BarnardBleClient implements BarnardClient {
     }
 
     final String? modeStr = modeMap["mode"] as String?;
-    final EventMode initialMode =
-        modeStr == "event" ? EventMode.event : EventMode.anonymous;
+    final EventMode initialMode = modeStr == "event"
+        ? EventMode.event
+        : EventMode.anonymous;
     final String? eventCode = modeMap["eventCode"] as String?;
+
+    // Fetch own resolved display ID
+    String? myResolvedDisplayId;
+    try {
+      myResolvedDisplayId = await _methods.invokeMethod<String?>(
+        "getMyResolvedDisplayId",
+      );
+    } on MissingPluginException {
+      myResolvedDisplayId = null;
+    } on PlatformException {
+      myResolvedDisplayId = null;
+    }
 
     final BarnardBleClient client = BarnardBleClient._(
       capabilities: _parseCapabilities(capsMap),
       initialState: _parseState(stateMap),
       initialMode: initialMode,
       initialEventCode: eventCode,
+      initialMyResolvedDisplayId: myResolvedDisplayId,
     );
     await client._attachStreams();
     return client;
@@ -122,6 +141,9 @@ class BarnardBleClient implements BarnardClient {
   String? get currentEventCode => _currentEventCode;
 
   @override
+  String? get myResolvedDisplayId => _myResolvedDisplayId;
+
+  @override
   Stream<BarnardEvent> get events => _eventsController.stream;
 
   @override
@@ -157,11 +179,11 @@ class BarnardBleClient implements BarnardClient {
   @override
   Future<BarnardStartResult> startAuto([AutoConfig? config]) async {
     _ensureNotDisposed();
-    final Map<Object?, Object?>? out =
-        await _methods.invokeMethod<Map<Object?, Object?>>(
-      "startAuto",
-      _encodeAutoConfig(config),
-    );
+    final Map<Object?, Object?>? out = await _methods
+        .invokeMethod<Map<Object?, Object?>>(
+          "startAuto",
+          _encodeAutoConfig(config),
+        );
     if (out == null) {
       return const BarnardStartResult(
         scanningStarted: false,
@@ -193,6 +215,10 @@ class BarnardBleClient implements BarnardClient {
     });
     _currentMode = EventMode.event;
     _currentEventCode = eventCode;
+    // Refresh display ID after TEK change
+    _myResolvedDisplayId = await _methods.invokeMethod<String?>(
+      "getMyResolvedDisplayId",
+    );
   }
 
   @override
@@ -204,6 +230,10 @@ class BarnardBleClient implements BarnardClient {
     await _methods.invokeMethod<void>("leaveEvent");
     _currentMode = EventMode.anonymous;
     _currentEventCode = null;
+    // Refresh display ID after TEK change
+    _myResolvedDisplayId = await _methods.invokeMethod<String?>(
+      "getMyResolvedDisplayId",
+    );
   }
 
   @override
@@ -251,8 +281,9 @@ class BarnardBleClient implements BarnardClient {
     int? limit,
     List<int>? rpidBytes,
   }) {
-    final Uint8List? filterRpid =
-        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid = rpidBytes == null
+        ? null
+        : Uint8List.fromList(rpidBytes);
     Iterable<RssiSample> samples = _rssiBuffer.toList();
     if (since != null) {
       samples = samples.where((RssiSample s) => !s.timestamp.isBefore(since));
@@ -286,10 +317,10 @@ class BarnardBleClient implements BarnardClient {
 }
 
 Map<String, Object?> _encodeScanConfig(ScanConfig? config) => <String, Object?>{
-      "transport": (config?.transport ?? TransportKind.ble).name,
-      "allowDuplicates":
-          config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
-    };
+  "transport": (config?.transport ?? TransportKind.ble).name,
+  "allowDuplicates":
+      config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
+};
 
 Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     <String, Object?>{
@@ -299,9 +330,9 @@ Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     };
 
 Map<String, Object?> _encodeAutoConfig(AutoConfig? config) => <String, Object?>{
-      "scan": _encodeScanConfig(config?.scan),
-      "advertise": _encodeAdvertiseConfig(config?.advertise),
-    };
+  "scan": _encodeScanConfig(config?.scan),
+  "advertise": _encodeAdvertiseConfig(config?.advertise),
+};
 
 BarnardStartResult _parseStartResult(Map<Object?, Object?> map) {
   final bool scanningStarted = map["scanningStarted"] == true;
@@ -454,8 +485,9 @@ BarnardDebugEvent _parseDebugEvent(Map<Object?, Object?> map) {
     _ => DebugLevel.info,
   };
   final String name = (map["name"] as String?) ?? "debug";
-  final Map<Object?, Object?>? rawData =
-      map["data"] is Map ? map["data"] as Map<Object?, Object?> : null;
+  final Map<Object?, Object?>? rawData = map["data"] is Map
+      ? map["data"] as Map<Object?, Object?>
+      : null;
   final Map<String, Object?>? data = rawData?.map(
     (k, v) => MapEntry(k.toString(), v),
   );

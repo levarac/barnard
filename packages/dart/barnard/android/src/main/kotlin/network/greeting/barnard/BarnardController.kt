@@ -195,6 +195,8 @@ internal class BarnardController(
                 )
             )
 
+            "getMyResolvedDisplayId" -> result.success(BarnardCrypto.displayId(currentTek))
+
             "startScan" -> {
                 val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
                 allowDuplicates = args["allowDuplicates"] as? Boolean ?: true
