@@ -1,0 +1,67 @@
+{
+  "name": "barnard",
+  "version": "0.1.0",
+  "description": "React Native plugin for Barnard SDK - BLE Scan/Advertise + GATT-based RPID detection",
+  "main": "lib/commonjs/index.js",
+  "module": "lib/module/index.js",
+  "types": "lib/typescript/index.d.ts",
+  "react-native": "src/index.ts",
+  "source": "src/index.ts",
+  "files": [
+    "src",
+    "lib",
+    "ios",
+    "android",
+    "react-native-barnard.podspec",
+    "README.md"
+  ],
+  "scripts": {
+    "typescript": "tsc --noEmit",
+    "lint": "eslint \"**/*.{js,ts,tsx}\"",
+    "prepare": "bob build"
+  },
+  "keywords": [
+    "react-native",
+    "ios",
+    "android",
+    "bluetooth",
+    "ble",
+    "barnard",
+    "rpid",
+    "proximity"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thegreeting/barnard.git",
+    "directory": "packages/react-native/barnard"
+  },
+  "author": "The Greeting Network",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/thegreeting/barnard/issues"
+  },
+  "homepage": "https://github.com/thegreeting/barnard#readme",
+  "devDependencies": {
+    "@react-native-community/eslint-config": "^3.2.0",
+    "@types/react": "^18.2.0",
+    "@types/react-native": "^0.72.0",
+    "eslint": "^8.0.0",
+    "react": "^18.2.0",
+    "react-native": "^0.72.0",
+    "react-native-builder-bob": "^0.20.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": ">=0.71.0"
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": [
+      "commonjs",
+      "module",
+      "typescript"
+    ]
+  }
+}

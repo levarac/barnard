@@ -1,0 +1,20 @@
+# OSX
+.DS_Store
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build output
+lib/
+*.tgz
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testing
+coverage/
