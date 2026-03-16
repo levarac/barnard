@@ -33,6 +33,13 @@ flutter pub get
 flutter run
 ```
 
+## Requirements
+
+- Flutter 3.41.0 or newer
+- Dart 3.11.0 or newer
+
+Swift Package Manager support in Flutter depends on the Flutter 3.41 toolchain.
+
 ## Platform notes
 
 ### iOS
