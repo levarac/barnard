@@ -46,6 +46,7 @@ Swift Package Manager support in Flutter depends on the Flutter 3.41 toolchain.
 
 - Host app must include `NSBluetoothAlwaysUsageDescription` (and typically `NSBluetoothPeripheralUsageDescription`) in `Info.plist`.
 - Foreground-only.
+- Flutter 3.41+ can consume the plugin through Swift Package Manager. When SPM is enabled in the host app toolchain, Barnard no longer requires CocoaPods on iOS.
 
 ### Android
 
