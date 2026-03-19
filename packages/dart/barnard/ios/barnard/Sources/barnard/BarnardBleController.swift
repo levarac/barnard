@@ -157,6 +157,9 @@ final class BarnardBleController: NSObject {
         "eventCode": rpid.eventCode as Any,
       ])
 
+    case "getMyResolvedDisplayId":
+      result(rpid.getCurrentDisplayId())
+
     case "startScan":
       let args = (call.arguments as? [String: Any]) ?? [:]
       allowDuplicates = (args["allowDuplicates"] as? Bool) ?? true
