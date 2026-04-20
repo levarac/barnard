@@ -239,122 +239,71 @@ void main() {
     });
   });
 
-  group("RPI resolution", () {
-    test("resolveRpi finds matching TEK", () {
-      // Create a TEK and generate an RPI from it
-      final tek = Uint8List.fromList(List.generate(16, (i) => i + 10));
-      final rpik = deriveRpik(tek);
-      const currentEnin = 2948599;
-      final rpi = generateRpi(rpik, currentEnin);
-
-      // Try to resolve the RPI
-      final result = resolveRpi(
-        rpi: rpi,
-        knownTeks: [tek],
-        currentEnin: currentEnin,
-      );
-
-      expect(result, isNotNull);
-      expect(result, equals(tek));
+  group("v2 displayId derivation", () {
+    test("displayIdFromTek returns 8 lowercase hex chars", () {
+      final tek = Uint8List.fromList(List.generate(16, (i) => i));
+      final displayId = displayIdFromTek(tek);
+      expect(displayId.length, equals(8));
+      expect(displayId, matches(RegExp(r"^[0-9a-f]{8}$")));
     });
 
-    test("resolveRpi finds TEK within time window", () {
-      final tek = Uint8List.fromList(List.generate(16, (i) => i + 20));
-      final rpik = deriveRpik(tek);
-      const currentEnin = 2948599;
-      // Generate RPI for ENIN that's 3 intervals in the past (within ±6 window)
-      final rpi = generateRpi(rpik, currentEnin - 3);
-
-      final result = resolveRpi(
-        rpi: rpi,
-        knownTeks: [tek],
-        currentEnin: currentEnin,
-      );
-
-      expect(result, isNotNull);
-      expect(result, equals(tek));
+    test("displayIdFromTek is deterministic for same TEK", () {
+      final tek = Uint8List.fromList(List.generate(16, (i) => i + 7));
+      expect(displayIdFromTek(tek), equals(displayIdFromTek(tek)));
     });
 
-    test("resolveRpi returns null for unknown RPI", () {
-      final knownTek = Uint8List.fromList(List.generate(16, (i) => i));
-      final unknownTek = Uint8List.fromList(List.generate(16, (i) => i + 100));
-      final unknownRpik = deriveRpik(unknownTek);
-      const currentEnin = 2948599;
-      final unknownRpi = generateRpi(unknownRpik, currentEnin);
-
-      final result = resolveRpi(
-        rpi: unknownRpi,
-        knownTeks: [knownTek],
-        currentEnin: currentEnin,
-      );
-
-      expect(result, isNull);
+    test("displayIdFromTek differs for different TEKs", () {
+      final tek1 = Uint8List.fromList(List.generate(16, (i) => i));
+      final tek2 = Uint8List.fromList(List.generate(16, (i) => i + 1));
+      expect(displayIdFromTek(tek1), isNot(equals(displayIdFromTek(tek2))));
     });
 
-    test("resolveRpi returns null for RPI outside time window", () {
-      final tek = Uint8List.fromList(List.generate(16, (i) => i + 30));
-      final rpik = deriveRpik(tek);
-      const currentEnin = 2948599;
-      // Generate RPI for ENIN that's 10 intervals in the past (outside ±6 window)
-      final rpi = generateRpi(rpik, currentEnin - 10);
-
-      final result = resolveRpi(
-        rpi: rpi,
-        knownTeks: [tek],
-        currentEnin: currentEnin,
-      );
-
-      expect(result, isNull);
+    test("known-answer: SHA256(0x00 * 16)[0:4] == 374708ff", () {
+      // Fixed KAT: first 4 bytes of SHA-256 of 16 zero bytes
+      final tek = Uint8List(16);
+      expect(displayIdFromTek(tek), equals("374708ff"));
     });
 
-    test("resolveRpi finds correct TEK among multiple", () {
-      final tek1 = Uint8List.fromList(List.generate(16, (i) => i + 40));
-      final tek2 = Uint8List.fromList(List.generate(16, (i) => i + 50));
-      final tek3 = Uint8List.fromList(List.generate(16, (i) => i + 60));
+    test("known-answer: SHA256(0x01..0x10)[0:4] == 5dfbabee", () {
+      // TEK = 0x01 0x02 ... 0x10 (16 bytes)
+      final tek = Uint8List.fromList(List.generate(16, (i) => i + 1));
+      // Precomputed: SHA-256(0x0102...10)[0:4] = 5dfbabee
+      expect(displayIdFromTek(tek), equals("5dfbabee"));
+    });
 
-      // Generate RPI from tek2
-      final rpik2 = deriveRpik(tek2);
-      const currentEnin = 2948599;
-      final rpi = generateRpi(rpik2, currentEnin);
-
-      final result = resolveRpi(
-        rpi: rpi,
-        knownTeks: [tek1, tek2, tek3],
-        currentEnin: currentEnin,
+    test("displayIdFromTek rejects non-16-byte TEK", () {
+      expect(
+        () => displayIdFromTek(Uint8List(15)),
+        throwsA(isA<ArgumentError>()),
       );
+      expect(
+        () => displayIdFromTek(Uint8List(17)),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
 
-      expect(result, isNotNull);
-      expect(result, equals(tek2));
+    test("BarnardCrypto.computeDisplayId matches top-level function", () {
+      final tek = Uint8List.fromList(List.generate(16, (i) => i * 3));
+      expect(BarnardCrypto.computeDisplayId(tek), equals(displayIdFromTek(tek)));
     });
   });
 
-  group("End-to-end key derivation chain", () {
-    test("full chain: DeviceSecret -> TEK -> RPIK -> RPI -> resolve", () {
-      // Simulate Device A
+  group("End-to-end key derivation chain (v2)", () {
+    test("full chain: DeviceSecret -> TEK -> RPIK -> RPI + v2 displayId", () {
       final deviceSecretA = Uint8List.fromList(List.generate(32, (i) => i * 3));
       const eventCode = "TECH2026";
 
-      // Derive keys
       final tekA = deriveTek(deviceSecretA, eventCode);
       final rpikA = deriveRpik(tekA);
       const currentEnin = 2948599;
       final rpiA = generateRpi(rpikA, currentEnin);
 
-      // Simulate Device B receiving and resolving
-      final resolvedTek = resolveRpi(
-        rpi: rpiA,
-        knownTeks: [tekA], // B has A's TEK from GATT exchange
-        currentEnin: currentEnin,
-      );
-
-      expect(resolvedTek, equals(tekA));
-
-      // Verify displayId derivation
-      final displayId = tekA
-          .sublist(0, 3)
-          .map((b) => b.toRadixString(16).padLeft(2, "0"))
-          .join();
-      expect(displayId.length, equals(6));
+      // v2: RPI resolution via peer-TEK lookup is removed. Instead, the
+      // reporter publishes displayId = SHA256(TEK)[0:4] via GATT B003.
+      expect(rpiA.length, equals(16));
+      final displayId = displayIdFromTek(tekA);
+      expect(displayId.length, equals(8));
+      expect(displayId, matches(RegExp(r"^[0-9a-f]{8}$")));
     });
 
     test("different event codes produce unlinkable identities", () {
@@ -363,23 +312,22 @@ void main() {
       final tekEvent1 = deriveTek(deviceSecret, "EVENT_1");
       final tekEvent2 = deriveTek(deviceSecret, "EVENT_2");
 
+      // TEKs differ
+      expect(tekEvent1, isNot(equals(tekEvent2)));
+
+      // displayIds differ
+      expect(
+        displayIdFromTek(tekEvent1),
+        isNot(equals(displayIdFromTek(tekEvent2))),
+      );
+
+      // RPIs differ
       final rpikEvent1 = deriveRpik(tekEvent1);
       final rpikEvent2 = deriveRpik(tekEvent2);
-
       const enin = 2948599;
       final rpiEvent1 = generateRpi(rpikEvent1, enin);
       final rpiEvent2 = generateRpi(rpikEvent2, enin);
-
-      // RPIs from different events should be completely different
       expect(rpiEvent1, isNot(equals(rpiEvent2)));
-
-      // Cannot resolve RPI from event1 using TEK from event2
-      final resolveResult = resolveRpi(
-        rpi: rpiEvent1,
-        knownTeks: [tekEvent2],
-        currentEnin: enin,
-      );
-      expect(resolveResult, isNull);
     });
   });
 }
