@@ -17,10 +17,12 @@ class BarnardBleClient implements BarnardClient {
     required BarnardState initialState,
     required EventMode initialMode,
     String? initialEventCode,
+    String? initialMyResolvedDisplayId,
   })  : _capabilities = capabilities,
         _state = initialState,
         _currentMode = initialMode,
-        _currentEventCode = initialEventCode;
+        _currentEventCode = initialEventCode,
+        _myResolvedDisplayId = initialMyResolvedDisplayId;
 
   static const MethodChannel _methods = MethodChannel("barnard/methods");
   static const EventChannel _eventsChannel = EventChannel("barnard/events");
@@ -46,6 +48,7 @@ class BarnardBleClient implements BarnardClient {
   BarnardState _state;
   EventMode _currentMode;
   String? _currentEventCode;
+  String? _myResolvedDisplayId;
   bool _disposed = false;
 
   static Future<BarnardBleClient> create() async {
@@ -73,11 +76,24 @@ class BarnardBleClient implements BarnardClient {
         modeStr == "event" ? EventMode.event : EventMode.anonymous;
     final String? eventCode = modeMap["eventCode"] as String?;
 
+    // Fetch own resolved display ID
+    String? myResolvedDisplayId;
+    try {
+      myResolvedDisplayId = await _methods.invokeMethod<String?>(
+        "getMyResolvedDisplayId",
+      );
+    } on MissingPluginException {
+      myResolvedDisplayId = null;
+    } on PlatformException {
+      myResolvedDisplayId = null;
+    }
+
     final BarnardBleClient client = BarnardBleClient._(
       capabilities: _parseCapabilities(capsMap),
       initialState: _parseState(stateMap),
       initialMode: initialMode,
       initialEventCode: eventCode,
+      initialMyResolvedDisplayId: myResolvedDisplayId,
     );
     await client._attachStreams();
     return client;
@@ -120,6 +136,9 @@ class BarnardBleClient implements BarnardClient {
 
   @override
   String? get currentEventCode => _currentEventCode;
+
+  @override
+  String? get myResolvedDisplayId => _myResolvedDisplayId;
 
   @override
   Stream<BarnardEvent> get events => _eventsController.stream;
@@ -193,6 +212,10 @@ class BarnardBleClient implements BarnardClient {
     });
     _currentMode = EventMode.event;
     _currentEventCode = eventCode;
+    // Refresh display ID after TEK change
+    _myResolvedDisplayId = await _methods.invokeMethod<String?>(
+      "getMyResolvedDisplayId",
+    );
   }
 
   @override
@@ -204,6 +227,10 @@ class BarnardBleClient implements BarnardClient {
     await _methods.invokeMethod<void>("leaveEvent");
     _currentMode = EventMode.anonymous;
     _currentEventCode = null;
+    // Refresh display ID after TEK change
+    _myResolvedDisplayId = await _methods.invokeMethod<String?>(
+      "getMyResolvedDisplayId",
+    );
   }
 
   @override
@@ -388,6 +415,17 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         code: (map["code"] as String?) ?? "unknown",
         message: (map["message"] as String?) ?? "unknown",
         recoverable: map["recoverable"] as bool?,
+      );
+    case "rssi_update":
+      final Uint8List rpid = Uint8List.fromList(
+        base64Decode((map["rpid"] as String?) ?? ""),
+      );
+      return RssiUpdateEvent(
+        timestamp: ts,
+        displayId: (map["displayId"] as String?) ?? "",
+        rssi: (map["rssi"] as int?) ?? 0,
+        rpid: rpid,
+        resolvedDisplayId: map["resolvedDisplayId"] as String?,
       );
     case "detection":
     default:

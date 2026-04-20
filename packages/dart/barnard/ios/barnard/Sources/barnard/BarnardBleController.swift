@@ -93,6 +93,17 @@ final class BarnardBleController: NSObject {
     var tek: Data?
   }
 
+  // MARK: - Known Peers (for high-rate RSSI updates)
+
+  /// Tracks peers that have completed GATT exchange for high-frequency RSSI updates.
+  private struct KnownPeer {
+    let displayId: String
+    let rpid: Data
+    var resolvedDisplayId: String?
+  }
+
+  private var knownPeers: [UUID: KnownPeer] = [:]
+
   // MARK: - Event Sinks
 
   let eventsStreamHandler: BarnardStreamHandler
@@ -145,6 +156,9 @@ final class BarnardBleController: NSObject {
         "mode": rpid.isEventMode ? "event" : "anonymous",
         "eventCode": rpid.eventCode as Any,
       ])
+
+    case "getMyResolvedDisplayId":
+      result(rpid.getCurrentDisplayId())
 
     case "startScan":
       let args = (call.arguments as? [String: Any]) ?? [:]
@@ -288,6 +302,7 @@ final class BarnardBleController: NSObject {
     peripheralCharacteristics.removeAll()
     peripheralReadValues.removeAll()
     lastDiscoveryNameById.removeAll()
+    knownPeers.removeAll()
 
     emitState(reasonCode: "scan_stop")
     emitDebug(level: "info", name: "scan_stop", data: nil)
@@ -518,6 +533,21 @@ final class BarnardBleController: NSObject {
         resolvedTek: values.tek,
         debugLocalName: lastDiscoveryNameById[id]
       )
+
+      // Register as known peer for high-rate RSSI updates
+      if rpidData.count == 17 {
+        let rpidBytes = rpidData.subdata(in: 1 ..< 17)
+        let displayId = rpidBytes.prefix(4).map { String(format: "%02x", $0) }.joined()
+        var resolvedDisplayId: String?
+        if let tek = values.tek {
+          resolvedDisplayId = BarnardCrypto.displayId(from: tek)
+        }
+        knownPeers[id] = KnownPeer(
+          displayId: displayId,
+          rpid: rpidBytes,
+          resolvedDisplayId: resolvedDisplayId
+        )
+      }
     }
 
     finishConnection(peripheral)
@@ -646,6 +676,24 @@ final class BarnardBleController: NSObject {
     eventSink?(event)
   }
 
+  private func emitRssiUpdate(peripheralId: UUID, rssi: Int, timestamp: Date) {
+    guard let peer = knownPeers[peripheralId] else { return }
+
+    var event: [String: Any] = [
+      "type": "rssi_update",
+      "timestamp": iso8601.string(from: timestamp),
+      "displayId": peer.displayId,
+      "rssi": rssi,
+      "rpid": peer.rpid.base64EncodedString(),
+    ]
+
+    if let resolvedId = peer.resolvedDisplayId {
+      event["resolvedDisplayId"] = resolvedId
+    }
+
+    eventSink?(event)
+  }
+
   private func emitDebug(level: String, name: String, data: [String: Any]?) {
     debugEventSink?([
       "type": "debug",
@@ -689,7 +737,12 @@ extension BarnardBleController: CBCentralManagerDelegate {
     }
     #endif
 
-    enqueueConnect(peripheral)
+    // If this is a known peer, emit high-frequency RSSI update instead of GATT connection
+    if knownPeers[peripheral.identifier] != nil {
+      emitRssiUpdate(peripheralId: peripheral.identifier, rssi: RSSI.intValue, timestamp: now)
+    } else {
+      enqueueConnect(peripheral)
+    }
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {

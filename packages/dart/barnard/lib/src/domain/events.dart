@@ -95,6 +95,30 @@ final class ErrorEvent extends BarnardEvent {
   final bool? recoverable;
 }
 
+/// High-frequency RSSI update event for known peers.
+/// Emitted on each BLE scan without requiring GATT connection.
+final class RssiUpdateEvent extends BarnardEvent {
+  const RssiUpdateEvent({
+    required super.timestamp,
+    required this.displayId,
+    required this.rssi,
+    required this.rpid,
+    this.resolvedDisplayId,
+  });
+
+  /// Short debug-only identifier derived from RPID.
+  final String displayId;
+
+  /// Signal strength in dBm.
+  final int rssi;
+
+  /// The RPID bytes.
+  final Uint8List rpid;
+
+  /// Resolved display ID if this peer was resolved (Event Mode).
+  final String? resolvedDisplayId;
+}
+
 @immutable
 sealed class BarnardDebugEvent {
   const BarnardDebugEvent({

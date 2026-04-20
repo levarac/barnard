@@ -53,6 +53,13 @@ abstract class BarnardClient {
   /// The active event code when in Event Mode, null otherwise.
   String? get currentEventCode;
 
+  /// The device's own resolved display ID (first 6 hex characters of TEK).
+  ///
+  /// This is derived from the current TEK and represents how this device
+  /// would appear to others who have exchanged TEKs with it.
+  /// Returns null if not yet initialized.
+  String? get myResolvedDisplayId;
+
   Stream<BarnardEvent> get events;
   Stream<BarnardDebugEvent> get debugEvents;
 

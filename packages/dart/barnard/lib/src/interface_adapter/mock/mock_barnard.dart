@@ -107,6 +107,9 @@ class MockBarnard implements BarnardClient {
   String? get currentEventCode => _currentEventCode;
 
   @override
+  String? get myResolvedDisplayId => _tekDisplayId(_currentTek);
+
+  @override
   Stream<BarnardEvent> get events => _events.stream;
 
   @override
