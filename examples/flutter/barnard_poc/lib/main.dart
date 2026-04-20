@@ -1,6 +1,7 @@
 import "dart:async";
 import "dart:convert";
 import "dart:io";
+import "dart:typed_data";
 
 import "package:barnard/barnard.dart";
 import "package:barnard/barnard_ble.dart";
@@ -96,7 +97,6 @@ class _MyAppState extends State<MyApp> {
   Future<void> _ensurePermissions() async {
     if (!Platform.isAndroid) return;
 
-    // With neverForLocation flag in manifest, only Bluetooth permissions are needed on Android 12+
     final List<Permission> perms = <Permission>[
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
@@ -118,7 +118,7 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _ensureEventJoined(BarnardBleClient client) async {
-    if (client.currentMode == EventMode.event) return;
+    if (client.currentEventCode != null) return;
     final String code = _eventCodeController.text.trim();
     if (code.isEmpty) return;
     await client.joinEvent(code);
@@ -137,7 +137,7 @@ class _MyAppState extends State<MyApp> {
 
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(title: const Text("Barnard BLE PoC (GATT-first)")),
+        appBar: AppBar(title: const Text("Barnard v2 PoC (B003 = SHA256(TEK)[0:4])")),
         body:
             client == null
                 ? const Center(child: CircularProgressIndicator())
@@ -163,7 +163,7 @@ class _MyAppState extends State<MyApp> {
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                Text("Auto-join on Start", style: TextStyle(fontSize: 12, color: Colors.black54)),
+                                const Text("Auto-join on Start", style: TextStyle(fontSize: 12, color: Colors.black54)),
                               ],
                             ),
                           ),
@@ -218,7 +218,7 @@ class _MyAppState extends State<MyApp> {
                         children: <Widget>[
                           Expanded(
                             child: Text(
-                              "State: $_state mode=${client.currentMode.name} event=${client.currentEventCode ?? "-"}",
+                              "State: $_state myDisplayId=${client.myDisplayId} enin=${client.currentEnin} event=${client.currentEventCode ?? "-"}",
                             ),
                           ),
                           Text("caps: ${client.capabilities.supportedTransports.map((e) => e.name).join(",")}"),
@@ -246,6 +246,25 @@ class _MyAppState extends State<MyApp> {
                             onPressed: _debugEvents.isEmpty ? null : () => setState(() => _debugEvents.clear()),
                             child: const Text("Clear Debug"),
                           ),
+                          TextButton(
+                            onPressed: _busy
+                                ? null
+                                : () async {
+                                    final messenger = ScaffoldMessenger.of(context);
+                                    final Uint8List tek = await client.exportCurrentTek();
+                                    final String hex = bytesToHex(tek);
+                                    messenger.showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          "exported TEK (hex): $hex",
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                            child: const Text("Export TEK"),
+                          ),
                         ],
                       ),
                     ),
@@ -264,7 +283,7 @@ class _MyAppState extends State<MyApp> {
                               serviceUuid: _selfInfo.serviceUuid ?? _serviceUuid,
                               localName: _selfInfo.localName ?? _localName,
                               formatVersion: _selfInfo.formatVersion ?? 1,
-                              lastDisplayId: _selfInfo.lastDisplayId,
+                              myDisplayId: client.myDisplayId,
                               lastPayloadAt: _selfInfo.lastPayloadAt,
                               staleAfter: _staleAfter,
                               now: now,
@@ -374,12 +393,12 @@ class _MyAppState extends State<MyApp> {
 
   void _updateSeen(DetectionEvent e) {
     final String key = base64UrlEncode(e.rpid);
-    final _SeenEntry existing = _seenById[key] ?? _SeenEntry(displayId: e.displayId);
+    final _SeenEntry existing = _seenById[key] ?? _SeenEntry();
     existing.lastSeen = e.timestamp;
     existing.lastRssi = e.rssi;
-    existing.displayId = e.displayId.isNotEmpty ? e.displayId : existing.displayId;
-    if (e.resolvedDisplayId != null && e.resolvedDisplayId!.isNotEmpty) {
-      existing.resolvedDisplayId = e.resolvedDisplayId;
+    existing.lastEnin = e.enin;
+    if (e.detectedDisplayId != null && e.detectedDisplayId!.isNotEmpty) {
+      existing.detectedDisplayId = e.detectedDisplayId;
     }
     if (e.debugLocalName != null && e.debugLocalName!.isNotEmpty) {
       existing.debugLocalName = e.debugLocalName!;
@@ -405,8 +424,7 @@ class _MyAppState extends State<MyApp> {
       _selfInfo.formatVersion = _asInt(data["formatVersion"]) ?? _selfInfo.formatVersion;
       _selfInfo.serviceUuid = data["serviceUuid"] as String? ?? _selfInfo.serviceUuid;
       _selfInfo.localName = data["localName"] as String? ?? _selfInfo.localName;
-    } else if (e.name == "gatt_read_rpid") {
-      _selfInfo.lastDisplayId = data["displayId"] as String? ?? _selfInfo.lastDisplayId;
+    } else if (e.name == "gatt_respond_rpid") {
       _selfInfo.formatVersion = _asInt(data["formatVersion"]) ?? _selfInfo.formatVersion;
       _selfInfo.lastPayloadAt = e.timestamp;
     }
@@ -453,11 +471,12 @@ class _EventList extends StatelessWidget {
           final String rpidKey = base64UrlEncode(e.rpid);
           final _SeenEntry? latest = seenById[rpidKey];
           final bool isActive = latest != null && now.difference(latest.lastSeen) <= _MyAppState._staleAfter;
+          final String displayLabel = e.detectedDisplayId ?? "(no B003)";
           return ListTile(
             dense: true,
             leading: const Icon(Icons.wifi_tethering, size: 18),
             title: Text(
-              "detection ${e.displayId}${e.resolvedDisplayId == null ? "" : " resolved=${e.resolvedDisplayId}"} rssi=${e.rssi} age=${age.inSeconds}s${isStale ? " STALE" : ""}${isActive ? " ACTIVE" : ""}",
+              "detection $displayLabel rssi=${e.rssi} enin=${e.enin} age=${age.inSeconds}s${isStale ? " STALE" : ""}${isActive ? " ACTIVE" : ""}",
             ),
             subtitle: Text("${e.timestamp.toIso8601String()} transport=${e.transport.name}"),
           );
@@ -553,21 +572,20 @@ class _StatChip extends StatelessWidget {
 }
 
 class _SeenEntry {
-  _SeenEntry({this.displayId = "", DateTime? lastSeen}) : lastSeen = lastSeen ?? DateTime.fromMillisecondsSinceEpoch(0);
+  _SeenEntry({DateTime? lastSeen}) : lastSeen = lastSeen ?? DateTime.fromMillisecondsSinceEpoch(0);
 
-  String displayId;
+  String? detectedDisplayId;
   String? debugLocalName;
-  String? resolvedDisplayId;
   DateTime lastSeen;
   int count = 0;
   int lastRssi = 0;
+  int lastEnin = 0;
 }
 
 class _SelfAdvertiseInfo {
   int? formatVersion;
   String? serviceUuid;
   String? localName;
-  String? lastDisplayId;
   DateTime? lastPayloadAt;
 }
 
@@ -577,7 +595,7 @@ class _SelfAdvertiseCard extends StatelessWidget {
     required this.serviceUuid,
     required this.localName,
     required this.formatVersion,
-    required this.lastDisplayId,
+    required this.myDisplayId,
     required this.lastPayloadAt,
     required this.staleAfter,
     required this.now,
@@ -587,14 +605,14 @@ class _SelfAdvertiseCard extends StatelessWidget {
   final String serviceUuid;
   final String localName;
   final int formatVersion;
-  final String? lastDisplayId;
+  final String myDisplayId;
   final DateTime? lastPayloadAt;
   final Duration staleAfter;
   final DateTime now;
 
   @override
   Widget build(BuildContext context) {
-    final bool hasPayload = lastPayloadAt != null && lastDisplayId != null && lastDisplayId!.isNotEmpty;
+    final bool hasPayload = lastPayloadAt != null;
     final Duration? age = hasPayload ? now.difference(lastPayloadAt!) : null;
     final bool isStale = age != null && age > staleAfter;
     return Card(
@@ -603,14 +621,15 @@ class _SelfAdvertiseCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            const Text("Self Advertise", style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text("Self Advertise (v2)", style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 6),
             Text("Advertising: ${isAdvertising ? "ON" : "OFF"}"),
             Text("Service UUID: $serviceUuid"),
             Text("Local Name: $localName"),
             Text("Format Version: $formatVersion"),
+            Text("My displayId (SHA256(TEK)[0:4]): $myDisplayId"),
             Text(
-              "Last payload: ${hasPayload ? lastDisplayId : "-"}${age == null ? "" : " age=${age.inSeconds}s${isStale ? " STALE" : ""}"}",
+              "Last B002 read responded: ${hasPayload ? "yes" : "-"}${age == null ? "" : " age=${age.inSeconds}s${isStale ? " STALE" : ""}"}",
             ),
           ],
         ),
@@ -647,10 +666,9 @@ class _SeenCard extends StatelessWidget {
                   final Duration age = now.difference(entry.lastSeen);
                   final bool isStale = age > staleAfter;
                   final String nameLabel = entry.debugLocalName == null ? "" : " name=${entry.debugLocalName}";
-                  final String resolvedLabel =
-                      entry.resolvedDisplayId == null ? "" : " resolved=${entry.resolvedDisplayId}";
+                  final String displayLabel = entry.detectedDisplayId ?? "(no B003)";
                   return Text(
-                    "${entry.displayId.isEmpty ? "-" : entry.displayId}$resolvedLabel$nameLabel age=${age.inSeconds}s rssi=${entry.lastRssi} count=${entry.count}${isStale ? " STALE" : " ACTIVE"}",
+                    "$displayLabel$nameLabel enin=${entry.lastEnin} age=${age.inSeconds}s rssi=${entry.lastRssi} count=${entry.count}${isStale ? " STALE" : " ACTIVE"}",
                     style: TextStyle(color: isStale ? Colors.orange : Colors.green),
                   );
                 },
