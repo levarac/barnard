@@ -36,18 +36,103 @@
 - `BarnardCrypto.{swift,kt}`: `displayId4` / `displayIdString`
   (SHA256-based) added; `resolveRpi` and 3-byte `displayId` removed.
 
-### Migration for host apps
+### Migration guide (v1 → v2)
 
-1. Replace `event.displayId` / `event.resolvedDisplayId` with
-   `event.detectedDisplayId` (now nullable).
-2. Replace `barnard.getEventMode()` with `barnard.getCurrentEventCode()`.
-3. Replace any `getExchangedTeks` / `clearTeks*` usage: v2 has no peer
-   TEK store. Use `exportCurrentTek()` to disclose **your own** TEK out-of-band.
-4. Adjust any consumer that decoded base64 bridge payloads — they are
-   hex strings now.
+The v2 public surface is a breaking change; there is no compatibility
+shim. Apply each of the following before upgrading.
+
+#### 1. `DetectionEvent` field renames
+
+```ts
+// v1
+manager.onDetection((e) => {
+  const peer = e.resolvedDisplayId ?? e.displayId;  // 6-char hex
+  // e.rpid is base64 (16 B), e.resolvedTek is base64 (16 B)
+});
+
+// v2
+manager.onDetection((e) => {
+  // 8 lowercase hex chars (SHA256(TEK)[0:4]), or null when B003 read
+  // failed. The detection is still emitted on failure.
+  const peer = e.detectedDisplayId ?? '(no B003)';
+  // e.rpid is 34-char hex (17 B wire form).
+  // e.enin is a number (floor(unix_seconds / 600)).
+  // e.reporterRpid is 34-char hex for this device's own RPID at the
+  // observation timestamp.
+  // e.resolvedTek is GONE — TEK never travels on the wire in v2.
+});
+```
+
+#### 2. Drop `getEventMode` / `EventMode`
+
+```ts
+// v1
+const mode = await manager.getEventMode(); // { mode: 'anonymous' | 'event', eventCode?: string }
+
+// v2
+const eventCode = await manager.getCurrentEventCode(); // string | null
+const joined = eventCode !== null;
+```
+
+#### 3. Remove TEK-exchange plumbing
+
+```ts
+// v1
+const peerTeks = await manager.getExchangedTeks('CONF-2025'); // TekEntry[]
+await manager.clearTeksForEvent('CONF-2025');
+await manager.clearAllTeks();
+
+// v2 — all three methods removed. v2 does not store peer TEKs.
+// If the host app wants to disclose its OWN TEK, call exportCurrentTek:
+const myTek = await manager.exportCurrentTek(); // 32-char hex
+// The SDK never transmits TEK over BLE. The host app decides whether
+// to upload it.
+```
+
+The `TekEntry` type is removed from `barnard` exports. Delete any
+`import { TekEntry } from 'barnard'` lines.
+
+#### 4. BarnardState field removed
+
+```ts
+// v1
+if (state.eventMode === 'event') { /* joined */ }
+
+// v2 — `eventMode` is gone; use the new eventCode field.
+if (state.eventCode) { /* joined */ }
+```
+
+#### 5. RSSI-update shape
+
+```ts
+// v1
+manager.onDetection(...)  // only detection stream existed.
+
+// v2 — optional high-rate RSSI updates from cached peers.
+manager.onRssiUpdate((e) => {
+  // e.rpid is 34-char hex, e.detectedDisplayId may be a hex string or omitted.
+  console.log('peer', e.detectedDisplayId, 'rssi', e.rssi);
+});
+```
+
+#### 6. Bridge base64 → hex
+
+If you have code that decoded `event.rpid` as base64, switch to a hex
+decoder (or just keep the hex string — it round-trips fine as-is).
+
+#### 7. New v2-only capabilities
+
+```ts
+const myDisplayId  = await manager.getMyDisplayId();     // 8-char hex
+const rpiHex       = await manager.getCurrentRpi();      // 32-char hex
+const enin         = await manager.getCurrentEnin();     // number
+const tekHex       = await manager.exportCurrentTek();   // 32-char hex
+```
 
 See [`specs/004-resolvable-id/spec.md`](../../../../specs/004-resolvable-id/spec.md)
-for the normative v2 description.
+for the normative v2 description, and
+[`schema/barnard/v2/README.md`](../../../../schema/barnard/v2/README.md)
+for a concise field-rename table.
 
 ## 0.1.0
 
