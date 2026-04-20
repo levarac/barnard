@@ -1,13 +1,13 @@
 # Uncomment the next line to define a global platform for your project
 platform :ios, '14.0'
-require_relative '../../../node_modules/react-native/scripts/react_native_pods'
-require_relative '../../../node_modules/@react-native-community/cli-platform-ios/native_modules'
+require_relative '../node_modules/react-native/scripts/react_native_pods'
+require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
 
 target 'BarnardDemo' do
   config = use_native_modules!
 
   use_react_native!(
-    :path => '../../../node_modules/react-native',
+    :path => '../node_modules/react-native',
     # Enables Flipper.
     #
     # Note that if you have use_frameworks! enabled, Flipper will not work and
@@ -17,12 +17,12 @@ target 'BarnardDemo' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
-  pod 'barnard', :path => '../../../packages/react-native/barnard'
+  # barnard is auto-linked via use_native_modules! above.
 
   post_install do |installer|
     react_native_post_install(
       installer,
-      '../../../node_modules/react-native',
+      '../node_modules/react-native',
       :mac_catalyst_enabled => false
     )
   end
