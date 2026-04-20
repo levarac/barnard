@@ -6,12 +6,20 @@ import Flutter
 import Foundation
 import UIKit
 
+/// Barnard v2 BLE controller.
+///
+/// GATT service (fixed UUID):
+/// - B002 RPID (Read, 17 bytes)
+/// - B003 displayId (Read, 4 bytes) — `SHA256(TEK)[0:4]`. v2 no longer serves TEK.
+/// - B004 EventCodeHash (Read, 0 or 8 bytes)
+///
+/// TEK is never transmitted over BLE in v2.
 final class BarnardBleController: NSObject {
   // MARK: - UUIDs
 
   private let discoveryServiceUUID = CBUUID(string: "0000B001-0000-1000-8000-00805F9B34FB")
   private let rpidCharacteristicUUID = CBUUID(string: "0000B002-0000-1000-8000-00805F9B34FB")
-  private let tekCharacteristicUUID = CBUUID(string: "0000B003-0000-1000-8000-00805F9B34FB")
+  private let displayIdCharacteristicUUID = CBUUID(string: "0000B003-0000-1000-8000-00805F9B34FB")
   private let eventCodeHashCharacteristicUUID = CBUUID(string: "0000B004-0000-1000-8000-00805F9B34FB")
   private let localName = "BNRD"
 
@@ -40,7 +48,6 @@ final class BarnardBleController: NSObject {
   // MARK: - Components
 
   private let rpid = BarnardRpidGenerator()
-  private let tekStorage = BarnardTekStorage()
 
   // MARK: - BLE Managers
 
@@ -50,7 +57,7 @@ final class BarnardBleController: NSObject {
   // MARK: - GATT Characteristics (Peripheral)
 
   private var rpidCharacteristic: CBMutableCharacteristic?
-  private var tekCharacteristic: CBMutableCharacteristic?
+  private var displayIdCharacteristic: CBMutableCharacteristic?
   private var eventCodeHashCharacteristic: CBMutableCharacteristic?
 
   // MARK: - State
@@ -80,26 +87,21 @@ final class BarnardBleController: NSObject {
 
   // MARK: - Central GATT State (per connection)
 
-  /// Tracks discovered characteristics per peripheral for multi-characteristic read.
   private var peripheralCharacteristics: [UUID: [CBUUID: CBCharacteristic]] = [:]
-
-  /// Tracks read values during GATT exchange.
   private var peripheralReadValues: [UUID: PeripheralGattValues] = [:]
 
-  /// Values read from a peripheral during GATT exchange.
+  /// Values read from a peripheral during v2 GATT exchange.
   private struct PeripheralGattValues {
     var eventCodeHash: Data?
     var rpid: Data?
-    var tek: Data?
+    var detectedDisplayId: Data?
   }
 
   // MARK: - Known Peers (for high-rate RSSI updates)
 
-  /// Tracks peers that have completed GATT exchange for high-frequency RSSI updates.
   private struct KnownPeer {
-    let displayId: String
     let rpid: Data
-    var resolvedDisplayId: String?
+    var detectedDisplayId: String?
   }
 
   private var knownPeers: [UUID: KnownPeer] = [:]
@@ -147,18 +149,27 @@ final class BarnardBleController: NSObject {
       result([
         "isScanning": isScanning,
         "isAdvertising": isAdvertising,
-        "eventMode": rpid.isEventMode ? "event" : "anonymous",
         "eventCode": rpid.eventCode as Any,
       ])
 
-    case "getEventMode":
-      result([
-        "mode": rpid.isEventMode ? "event" : "anonymous",
-        "eventCode": rpid.eventCode as Any,
-      ])
+    case "getCurrentEventCode":
+      result(rpid.eventCode)
 
-    case "getMyResolvedDisplayId":
-      result(rpid.getCurrentDisplayId())
+    case "getMyDisplayId":
+      result(BarnardCrypto.displayIdString(from: rpid.getCurrentTek()))
+
+    case "getCurrentRpi":
+      let rpik = BarnardCrypto.deriveRpik(from: rpid.getCurrentTek())
+      let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: BarnardCrypto.calculateEnin(for: Date()))
+      result(rpi.hexString)
+
+    case "getCurrentEnin":
+      result(Int(BarnardCrypto.calculateEnin(for: Date())))
+
+    case "exportCurrentTek":
+      // Explicit privacy egress. SDK never transmits TEK over BLE; caller
+      // decides whether/how to transmit it via another channel.
+      result(rpid.getCurrentTek().hexString)
 
     case "startScan":
       let args = (call.arguments as? [String: Any]) ?? [:]
@@ -209,8 +220,6 @@ final class BarnardBleController: NSObject {
       stopAdvertise()
       result(nil)
 
-    // MARK: Event Mode APIs
-
     case "joinEvent":
       guard let args = call.arguments as? [String: Any],
         let eventCode = args["eventCode"] as? String
@@ -219,53 +228,20 @@ final class BarnardBleController: NSObject {
         return
       }
       rpid.joinEvent(eventCode)
-      // Rebuild GATT service with new characteristics
       rebuildGattServiceIfNeeded()
       emitState(reasonCode: "join_event")
       emitDebug(level: "info", name: "join_event", data: [
         "eventCode": eventCode,
-        "displayId": rpid.getCurrentDisplayId(),
+        "myDisplayId": rpid.getCurrentDisplayId(),
       ])
       result(nil)
 
     case "leaveEvent":
       rpid.leaveEvent()
-      // Rebuild GATT service
       rebuildGattServiceIfNeeded()
       emitState(reasonCode: "leave_event")
       emitDebug(level: "info", name: "leave_event", data: nil)
       result(nil)
-
-    case "getExchangedTeks":
-      guard let args = call.arguments as? [String: Any],
-        let eventCode = args["eventCode"] as? String
-      else {
-        result(FlutterError(code: "INVALID_ARGUMENT", message: "eventCode required", details: nil))
-        return
-      }
-      let eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
-      let entries = tekStorage.getEntries(for: eventCodeHash)
-      result(entries.map { $0.toDict() })
-
-    case "clearTeksForEvent":
-      guard let args = call.arguments as? [String: Any],
-        let eventCode = args["eventCode"] as? String
-      else {
-        result(FlutterError(code: "INVALID_ARGUMENT", message: "eventCode required", details: nil))
-        return
-      }
-      let eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
-      let count = tekStorage.clear(for: eventCodeHash)
-      emitDebug(level: "info", name: "clear_teks_for_event", data: [
-        "eventCode": eventCode,
-        "count": count,
-      ])
-      result(count)
-
-    case "clearAllTeks":
-      let count = tekStorage.clearAll()
-      emitDebug(level: "info", name: "clear_all_teks", data: ["count": count])
-      result(count)
 
     default:
       result(FlutterMethodNotImplemented)
@@ -294,7 +270,6 @@ final class BarnardBleController: NSObject {
     connectQueue.removeAll()
     activePeripheral = nil
 
-    // Clear discovery state for clean restart
     discoveredRssi.removeAll()
     discoveredAt.removeAll()
     peripheralsById.removeAll()
@@ -333,7 +308,6 @@ final class BarnardBleController: NSObject {
         "formatVersion": Int(formatVersion),
         "serviceUuid": discoveryServiceUUID.uuidString,
         "localName": debugLocalName,
-        "eventMode": rpid.isEventMode,
       ]
     )
   }
@@ -356,22 +330,18 @@ final class BarnardBleController: NSObject {
   private func rebuildGattServiceIfNeeded() {
     guard peripheralManager.state == .poweredOn else { return }
 
-    // Remove existing service
     peripheralManager.removeAllServices()
     rpidCharacteristic = nil
-    tekCharacteristic = nil
+    displayIdCharacteristic = nil
     eventCodeHashCharacteristic = nil
 
-    // Rebuild
     buildAndAddGattService()
 
-    emitDebug(level: "info", name: "gatt_service_rebuilt", data: [
-      "eventMode": rpid.isEventMode,
-    ])
+    emitDebug(level: "info", name: "gatt_service_rebuilt", data: nil)
   }
 
   private func buildAndAddGattService() {
-    // RPID characteristic (Read) - always present
+    // B002 RPID (Read only)
     let rpidCh = CBMutableCharacteristic(
       type: rpidCharacteristicUUID,
       properties: [.read],
@@ -379,15 +349,15 @@ final class BarnardBleController: NSObject {
       permissions: [.readable]
     )
 
-    // TEK characteristic (Read/Write) - for TEK exchange
-    let tekCh = CBMutableCharacteristic(
-      type: tekCharacteristicUUID,
-      properties: [.read, .write],
+    // B003 displayId (Read only, 4 bytes) — v2: was TEK, now SHA256(TEK)[0:4]
+    let displayIdCh = CBMutableCharacteristic(
+      type: displayIdCharacteristicUUID,
+      properties: [.read],
       value: nil,
-      permissions: [.readable, .writeable]
+      permissions: [.readable]
     )
 
-    // EventCodeHash characteristic (Read) - for event matching
+    // B004 EventCodeHash (Read only)
     let eventCodeHashCh = CBMutableCharacteristic(
       type: eventCodeHashCharacteristicUUID,
       properties: [.read],
@@ -396,15 +366,15 @@ final class BarnardBleController: NSObject {
     )
 
     let svc = CBMutableService(type: discoveryServiceUUID, primary: true)
-    svc.characteristics = [rpidCh, tekCh, eventCodeHashCh]
+    svc.characteristics = [rpidCh, displayIdCh, eventCodeHashCh]
     peripheralManager.add(svc)
 
     rpidCharacteristic = rpidCh
-    tekCharacteristic = tekCh
+    displayIdCharacteristic = displayIdCh
     eventCodeHashCharacteristic = eventCodeHashCh
 
     emitDebug(level: "info", name: "gatt_service_added", data: [
-      "characteristics": ["RPID", "TEK", "EventCodeHash"],
+      "characteristics": ["RPID", "displayId", "EventCodeHash"],
     ])
   }
 
@@ -446,7 +416,6 @@ final class BarnardBleController: NSObject {
     activePeripheral = p
     lastConnectAttemptAt[nextId] = now
 
-    // Initialize state for this peripheral
     peripheralReadValues[nextId] = PeripheralGattValues()
 
     p.delegate = self
@@ -454,9 +423,8 @@ final class BarnardBleController: NSObject {
     emitDebug(level: "trace", name: "connect_attempt", data: ["id": nextId.uuidString])
   }
 
-  // MARK: - GATT Exchange Logic (Central)
+  // MARK: - GATT Exchange (Central side, v2 flow: B004 → B002 → B003)
 
-  /// After discovering characteristics, initiate the read sequence.
   private func startGattExchange(for peripheral: CBPeripheral, service: CBService) {
     let id = peripheral.identifier
     var charMap: [CBUUID: CBCharacteristic] = [:]
@@ -471,11 +439,10 @@ final class BarnardBleController: NSObject {
     }
     peripheralCharacteristics[id] = charMap
 
-    // Step 1: Read EventCodeHash first to determine if TEK exchange is needed
+    // Step 1: EventCodeHash (informational; we emit regardless of match)
     if let eventCodeHashCh = charMap[eventCodeHashCharacteristicUUID] {
       peripheral.readValue(for: eventCodeHashCh)
     } else {
-      // No EventCodeHash characteristic, skip to RPID
       readRpidCharacteristic(for: peripheral)
     }
   }
@@ -491,28 +458,19 @@ final class BarnardBleController: NSObject {
     peripheral.readValue(for: rpidCh)
   }
 
-  private func readTekCharacteristic(for peripheral: CBPeripheral) {
+  private func readDisplayIdCharacteristic(for peripheral: CBPeripheral) {
     let id = peripheral.identifier
     guard let charMap = peripheralCharacteristics[id],
-      let tekCh = charMap[tekCharacteristicUUID]
+      let displayIdCh = charMap[displayIdCharacteristicUUID]
     else {
+      // Missing B003 — per v2 policy, still emit detection with null displayId.
+      emitDebug(level: "warn", name: "gatt_b003_missing", data: [
+        "id": id.uuidString,
+      ])
       completeGattExchange(for: peripheral)
       return
     }
-    peripheral.readValue(for: tekCh)
-  }
-
-  private func writeTekCharacteristic(for peripheral: CBPeripheral) {
-    let id = peripheral.identifier
-    guard let charMap = peripheralCharacteristics[id],
-      let tekCh = charMap[tekCharacteristicUUID]
-    else {
-      completeGattExchange(for: peripheral)
-      return
-    }
-
-    let myTek = rpid.getCurrentTek()
-    peripheral.writeValue(myTek, for: tekCh, type: .withResponse)
+    peripheral.readValue(for: displayIdCh)
   }
 
   private func completeGattExchange(for peripheral: CBPeripheral) {
@@ -522,31 +480,20 @@ final class BarnardBleController: NSObject {
       return
     }
 
-    // Emit detection
     if let rpidData = values.rpid {
       let rssi = discoveredRssi[id] ?? 0
       let ts = discoveredAt[id] ?? Date()
+      let detectedDisplayId = values.detectedDisplayId?.hexString
       emitDetection(
         timestamp: ts,
         rssi: rssi,
         payload: rpidData,
-        resolvedTek: values.tek,
+        detectedDisplayId: detectedDisplayId,
         debugLocalName: lastDiscoveryNameById[id]
       )
 
-      // Register as known peer for high-rate RSSI updates
       if rpidData.count == 17 {
-        let rpidBytes = rpidData.subdata(in: 1 ..< 17)
-        let displayId = rpidBytes.prefix(4).map { String(format: "%02x", $0) }.joined()
-        var resolvedDisplayId: String?
-        if let tek = values.tek {
-          resolvedDisplayId = BarnardCrypto.displayId(from: tek)
-        }
-        knownPeers[id] = KnownPeer(
-          displayId: displayId,
-          rpid: rpidBytes,
-          resolvedDisplayId: resolvedDisplayId
-        )
+        knownPeers[id] = KnownPeer(rpid: rpidData, detectedDisplayId: detectedDisplayId)
       }
     }
 
@@ -561,19 +508,6 @@ final class BarnardBleController: NSObject {
     centralManager.cancelPeripheralConnection(peripheral)
   }
 
-  /// Check if we should exchange TEKs based on EventCodeHash match.
-  private func shouldExchangeTek(remoteEventCodeHash: Data?) -> Bool {
-    // If we're in Anonymous Mode, don't exchange
-    guard rpid.isEventMode else { return false }
-
-    // If remote is Anonymous (empty hash), don't exchange
-    guard let remoteHash = remoteEventCodeHash, !remoteHash.isEmpty else { return false }
-
-    // Check if hashes match
-    let myHash = rpid.getEventCodeHash()
-    return myHash == remoteHash
-  }
-
   // MARK: - Event Emission
 
   private func emitState(reasonCode: String?) {
@@ -583,7 +517,6 @@ final class BarnardBleController: NSObject {
       "state": [
         "isScanning": isScanning,
         "isAdvertising": isAdvertising,
-        "eventMode": rpid.isEventMode ? "event" : "anonymous",
         "eventCode": rpid.eventCode as Any,
       ],
       "reasonCode": reasonCode as Any,
@@ -610,11 +543,12 @@ final class BarnardBleController: NSObject {
     ])
   }
 
+  /// Emit v2 detection event. Byte fields are lowercase hex.
   private func emitDetection(
     timestamp: Date,
     rssi: Int,
     payload: Data,
-    resolvedTek: Data? = nil,
+    detectedDisplayId: String?,
     debugLocalName: String? = nil
   ) {
     guard payload.count == 17 else {
@@ -626,47 +560,26 @@ final class BarnardBleController: NSObject {
       emitDebug(level: "warn", name: "payload_unsupported_version", data: ["formatVersion": version])
       return
     }
-    let rpidBytes = payload.subdata(in: 1 ..< 17)
-    let displayId = rpidBytes.prefix(4).map { String(format: "%02x", $0) }.joined()
 
-    // Try to resolve RPI if we have exchanged TEKs
-    var resolvedTekToEmit: Data? = resolvedTek
-    var resolvedDisplayId: String?
-
-    if resolvedTekToEmit == nil, rpid.isEventMode {
-      // Try to resolve from stored TEKs
-      let eventCodeHash = rpid.getEventCodeHash()
-      let knownTeks = tekStorage.getTeks(for: eventCodeHash)
-
-      if let matched = BarnardCrypto.resolveRpi(rpidBytes, knownTeks: knownTeks) {
-        resolvedTekToEmit = matched
-        // Update lastSeenAt
-        tekStorage.updateLastSeen(tek: matched, eventCodeHash: eventCodeHash)
-      }
-    }
-
-    if let tek = resolvedTekToEmit {
-      resolvedDisplayId = BarnardCrypto.displayId(from: tek)
-    }
+    // Atomic snapshot: use the observation timestamp for both reporterRpid
+    // and enin, so they always agree across ENIN boundaries.
+    let reporterPayload = rpid.currentPayload(formatVersion: formatVersion, now: timestamp)
+    let enin = Int(BarnardCrypto.calculateEnin(for: timestamp))
 
     var event: [String: Any] = [
       "type": "detection",
       "timestamp": iso8601.string(from: timestamp),
       "transport": "ble",
       "formatVersion": version,
-      "rpid": rpidBytes.base64EncodedString(),
-      "displayId": displayId,
+      "rpid": payload.hexString,
+      "reporterRpid": reporterPayload.hexString,
+      "detectedDisplayId": detectedDisplayId as Any,
+      "enin": enin,
       "rssi": rssi,
       "rssiSummary": NSNull(),
-      "payloadRaw": payload.base64EncodedString(),
+      "payloadRaw": payload.hexString,
     ]
 
-    if let tek = resolvedTekToEmit {
-      event["resolvedTek"] = tek.base64EncodedString()
-    }
-    if let dispId = resolvedDisplayId {
-      event["resolvedDisplayId"] = dispId
-    }
     #if DEBUG
     if let name = debugLocalName {
       event["debugLocalName"] = name
@@ -682,13 +595,12 @@ final class BarnardBleController: NSObject {
     var event: [String: Any] = [
       "type": "rssi_update",
       "timestamp": iso8601.string(from: timestamp),
-      "displayId": peer.displayId,
+      "rpid": peer.rpid.hexString,
       "rssi": rssi,
-      "rpid": peer.rpid.base64EncodedString(),
     ]
 
-    if let resolvedId = peer.resolvedDisplayId {
-      event["resolvedDisplayId"] = resolvedId
+    if let detectedId = peer.detectedDisplayId {
+      event["detectedDisplayId"] = detectedId
     }
 
     eventSink?(event)
@@ -737,7 +649,6 @@ extension BarnardBleController: CBCentralManagerDelegate {
     }
     #endif
 
-    // If this is a known peer, emit high-frequency RSSI update instead of GATT connection
     if knownPeers[peripheral.identifier] != nil {
       emitRssiUpdate(peripheralId: peripheral.identifier, rssi: RSSI.intValue, timestamp: now)
     } else {
@@ -782,9 +693,8 @@ extension BarnardBleController: CBPeripheralDelegate {
       finishConnection(peripheral)
       return
     }
-    // Discover all relevant characteristics
     peripheral.discoverCharacteristics(
-      [rpidCharacteristicUUID, tekCharacteristicUUID, eventCodeHashCharacteristicUUID],
+      [rpidCharacteristicUUID, displayIdCharacteristicUUID, eventCodeHashCharacteristicUUID],
       for: svc
     )
   }
@@ -801,7 +711,18 @@ extension BarnardBleController: CBPeripheralDelegate {
   func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
     let id = peripheral.identifier
 
+    // Distinguish B003 read failure (still emit detection with null) from
+    // B002 read failure (drop the detection — no RPID, nothing to emit).
     if let error = error {
+      if characteristic.uuid == displayIdCharacteristicUUID {
+        emitDebug(level: "warn", name: "gatt_b003_read_failed", data: [
+          "id": id.uuidString,
+          "error": error.localizedDescription,
+        ])
+        peripheralReadValues[id]?.detectedDisplayId = nil
+        completeGattExchange(for: peripheral)
+        return
+      }
       emitError(code: "read_failed", message: error.localizedDescription, recoverable: true)
       finishConnection(peripheral)
       return
@@ -817,7 +738,6 @@ extension BarnardBleController: CBPeripheralDelegate {
         "bytes": value.count,
         "isEmpty": value.isEmpty,
       ])
-      // Proceed to RPID read
       readRpidCharacteristic(for: peripheral)
 
     case rpidCharacteristicUUID:
@@ -826,51 +746,27 @@ extension BarnardBleController: CBPeripheralDelegate {
         "id": id.uuidString,
         "bytes": value.count,
       ])
-      // Check if we should exchange TEK
-      let remoteHash = peripheralReadValues[id]?.eventCodeHash
-      if shouldExchangeTek(remoteEventCodeHash: remoteHash) {
-        readTekCharacteristic(for: peripheral)
-      } else {
-        completeGattExchange(for: peripheral)
-      }
+      readDisplayIdCharacteristic(for: peripheral)
 
-    case tekCharacteristicUUID:
-      peripheralReadValues[id]?.tek = value
-      emitDebug(level: "trace", name: "gatt_read_tek", data: [
-        "id": id.uuidString,
-        "bytes": value.count,
-      ])
-      // Store received TEK
-      if value.count == 16, let remoteHash = peripheralReadValues[id]?.eventCodeHash, remoteHash.count == 8 {
-        let entry = TekEntry(
-          tek: value,
-          eventCodeHash: remoteHash,
-          exchangedAt: Date(),
-          lastSeenAt: Date()
-        )
-        tekStorage.store(entry: entry)
-        emitDebug(level: "info", name: "tek_received", data: [
-          "displayId": BarnardCrypto.displayId(from: value),
+    case displayIdCharacteristicUUID:
+      if value.count == 4 {
+        peripheralReadValues[id]?.detectedDisplayId = value
+        emitDebug(level: "trace", name: "gatt_read_display_id", data: [
+          "id": id.uuidString,
+          "displayId": value.hexString,
         ])
+      } else {
+        emitDebug(level: "warn", name: "gatt_b003_invalid_length", data: [
+          "id": id.uuidString,
+          "length": value.count,
+        ])
+        peripheralReadValues[id]?.detectedDisplayId = nil
       }
-      // Write our TEK to complete exchange
-      writeTekCharacteristic(for: peripheral)
+      completeGattExchange(for: peripheral)
 
     default:
       break
     }
-  }
-
-  func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
-    if let error = error {
-      emitError(code: "write_failed", message: error.localizedDescription, recoverable: true)
-    } else {
-      emitDebug(level: "trace", name: "gatt_write_tek", data: [
-        "id": peripheral.identifier.uuidString,
-        "displayId": rpid.getCurrentDisplayId(),
-      ])
-    }
-    completeGattExchange(for: peripheral)
   }
 }
 
@@ -905,37 +801,23 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
       request.value = payload
       peripheral.respond(to: request, withResult: .success)
 
-      var displayId = ""
-      if payload.count >= 5 {
-        let bytes = payload.subdata(in: 1 ..< 5)
-        displayId = bytes.map { String(format: "%02x", $0) }.joined()
-      }
       emitDebug(
         level: "trace",
-        name: "gatt_read_rpid",
+        name: "gatt_respond_rpid",
         data: [
           "bytes": payload.count,
           "formatVersion": Int(formatVersion),
-          "displayId": displayId,
         ]
       )
 
-    case tekCharacteristicUUID:
-      // Only return TEK in Event Mode
-      if rpid.isEventMode {
-        let tekData = rpid.getCurrentTek()
-        request.value = tekData
-        peripheral.respond(to: request, withResult: .success)
-        emitDebug(level: "trace", name: "gatt_respond_tek_read", data: [
-          "displayId": rpid.getCurrentDisplayId(),
-        ])
-      } else {
-        // Return empty or error in Anonymous Mode
-        peripheral.respond(to: request, withResult: .readNotPermitted)
-        emitDebug(level: "trace", name: "gatt_reject_tek_read", data: [
-          "reason": "anonymous_mode",
-        ])
-      }
+    case displayIdCharacteristicUUID:
+      // v2: B003 always serves 4-byte SHA256(TEK)[0:4]. Read-only.
+      let displayId = BarnardCrypto.displayId4(from: rpid.getCurrentTek())
+      request.value = displayId
+      peripheral.respond(to: request, withResult: .success)
+      emitDebug(level: "trace", name: "gatt_respond_display_id", data: [
+        "bytes": displayId.count,
+      ])
 
     case eventCodeHashCharacteristicUUID:
       let hash = rpid.getEventCodeHash()
@@ -951,41 +833,13 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
     }
   }
 
+  // v2 has no writable characteristics. Reject any write attempt.
   func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
     for request in requests {
-      guard request.characteristic.uuid == tekCharacteristicUUID else {
-        peripheral.respond(to: request, withResult: .writeNotPermitted)
-        continue
-      }
-
-      guard let value = request.value, value.count == 16 else {
-        peripheral.respond(to: request, withResult: .invalidAttributeValueLength)
-        continue
-      }
-
-      // Only accept TEK writes in Event Mode
-      guard rpid.isEventMode else {
-        peripheral.respond(to: request, withResult: .writeNotPermitted)
-        emitDebug(level: "trace", name: "gatt_reject_tek_write", data: [
-          "reason": "anonymous_mode",
-        ])
-        continue
-      }
-
-      // Store the received TEK
-      let eventCodeHash = rpid.getEventCodeHash()
-      let entry = TekEntry(
-        tek: value,
-        eventCodeHash: eventCodeHash,
-        exchangedAt: Date(),
-        lastSeenAt: Date()
-      )
-      tekStorage.store(entry: entry)
-
-      peripheral.respond(to: request, withResult: .success)
-      emitDebug(level: "info", name: "tek_received_via_write", data: [
-        "displayId": BarnardCrypto.displayId(from: value),
-      ])
+      peripheral.respond(to: request, withResult: .writeNotPermitted)
     }
+    emitDebug(level: "warn", name: "gatt_write_rejected", data: [
+      "count": requests.count,
+    ])
   }
 }
