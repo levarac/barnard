@@ -1,21 +1,10 @@
+import "dart:typed_data";
+
 import "../domain/rssi.dart";
 import "../domain/capabilities.dart";
 import "../domain/config.dart";
 import "../domain/events.dart";
 import "../domain/state.dart";
-import "../domain/tek_storage.dart";
-
-/// Operating mode for the Barnard client.
-enum EventMode {
-  /// Anonymous mode: detections only, no identification.
-  /// TEK is randomly generated and not exchanged.
-  anonymous,
-
-  /// Event mode: identification and tracking enabled.
-  /// TEK is derived from DeviceSecret + EventCode, exchanged with peers
-  /// that have matching EventCodeHash.
-  event,
-}
 
 class BarnardStartResult {
   const BarnardStartResult({
@@ -47,18 +36,14 @@ abstract class BarnardClient {
   BarnardCapabilities get capabilities;
   BarnardState get state;
 
-  /// Current operating mode: anonymous or event.
-  EventMode get currentMode;
-
-  /// The active event code when in Event Mode, null otherwise.
+  /// The active event code when joined to an event, null otherwise.
   String? get currentEventCode;
 
-  /// The device's own resolved display ID (first 6 hex characters of TEK).
-  ///
-  /// This is derived from the current TEK and represents how this device
-  /// would appear to others who have exchanged TEKs with it.
-  /// Returns null if not yet initialized.
-  String? get myResolvedDisplayId;
+  /// This device's own v2 displayId: `SHA256(TEK)[0:4]` as 8 lowercase hex chars.
+  String get myDisplayId;
+
+  /// Current ENIN: floor(unix_seconds / 600). Computed now.
+  int get currentEnin;
 
   Stream<BarnardEvent> get events;
   Stream<BarnardDebugEvent> get debugEvents;
@@ -70,57 +55,30 @@ abstract class BarnardClient {
   Future<void> stopAdvertise();
 
   /// Starts Scan + Advertise concurrently.
-  ///
-  /// Implementations should represent partial success via events and/or the
-  /// returned result.
   Future<BarnardStartResult> startAuto([AutoConfig? config]);
   Future<void> stopAuto();
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Event Mode APIs
-  // ─────────────────────────────────────────────────────────────────────────
-
-  /// Joins an event, switching from Anonymous to Event Mode.
-  ///
-  /// [eventCode] is the shared event code (e.g., "CONF2025-HALL-A").
-  /// This triggers:
-  /// 1. TEK derivation from DeviceSecret + eventCode
-  /// 2. EventCodeHash calculation (first 8 bytes of SHA256)
-  /// 3. RPID generation using GAEN-compatible derivation
-  /// 4. TEK exchange with peers having matching EventCodeHash
-  ///
-  /// Throws [StateError] if already in Event Mode.
+  /// Joins an event. Regenerates TEK from DeviceSecret + [eventCode].
   Future<void> joinEvent(String eventCode);
 
-  /// Leaves the current event, switching back to Anonymous Mode.
-  ///
-  /// This triggers:
-  /// 1. TEK regeneration (random)
-  /// 2. EventCodeHash cleared (empty)
-  /// 3. Stored TEKs for this event are retained until explicitly cleared
-  ///
-  /// Throws [StateError] if not in Event Mode.
+  /// Leaves the current event. Regenerates TEK deterministically from the
+  /// device secret alone (pre-event derivation).
   Future<void> leaveEvent();
 
-  /// Returns all exchanged TEKs for the specified event code.
+  /// Inner 16-byte RPI for the current ENIN.
   ///
-  /// Each [TekEntry] contains the TEK bytes, timestamp, and optional metadata.
-  /// Returns empty list if no TEKs stored for this event.
-  Future<List<TekEntry>> getExchangedTeks(String eventCode);
+  /// For host-app consumption; the SDK does not transmit bare RPI — the
+  /// wire form via GATT B002 is `[formatVersion(1) + RPI(16)] = 17 bytes`.
+  Future<Uint8List> getCurrentRpi();
 
-  /// Clears all stored TEKs for the specified event code.
+  /// Explicit privacy boundary: returns the raw 16-byte TEK.
   ///
-  /// Returns the number of entries removed.
-  Future<int> clearTeksForEvent(String eventCode);
+  /// The SDK never transmits TEK over BLE. Calling this exposes the TEK
+  /// to the host-app caller, which then decides whether/how to transmit
+  /// it elsewhere (e.g. to a server). The SDK makes no such decision.
+  Future<Uint8List> exportCurrentTek();
 
-  /// Clears all stored TEKs across all events.
-  ///
-  /// Returns the number of entries removed.
-  Future<int> clearAllTeks();
-
-  // ─────────────────────────────────────────────────────────────────────────
   // Pull APIs
-  // ─────────────────────────────────────────────────────────────────────────
 
   /// Pull: read the in-memory debug buffer snapshot.
   List<BarnardDebugEvent> getDebugBuffer({int? limit});

@@ -10,7 +10,6 @@ import "../../domain/crypto.dart";
 import "../../domain/events.dart";
 import "../../domain/rssi.dart";
 import "../../domain/state.dart";
-import "../../domain/tek_storage.dart";
 import "../../domain/transport.dart";
 import "mock_peer.dart";
 import "ring_buffer.dart";
@@ -20,11 +19,16 @@ class MockBarnardOverrides {
     this.rotationSeconds,
     this.minPushIntervalMs,
     this.bufferMaxSamples,
+    this.b003FailureRate,
   });
 
   final int? rotationSeconds;
   final int? minPushIntervalMs;
   final int? bufferMaxSamples;
+
+  /// Probability (0.0 .. 1.0) that a simulated B003 read fails, causing
+  /// [DetectionEvent.detectedDisplayId] to be `null`. Defaults to 0.1 (10%).
+  final double? b003FailureRate;
 }
 
 class MockBarnard implements BarnardClient {
@@ -53,7 +57,7 @@ class MockBarnard implements BarnardClient {
         _overrides?.bufferMaxSamples ?? const RssiConfig().bufferMaxSamples;
     _rssiBuffer = RingBuffer<RssiSample>(bufferMaxSamples);
 
-    // Initialize with a deterministic TEK for Anonymous Mode
+    // Initialize with a deterministic TEK (pre-event "anonymous" derivation).
     _currentTek = BarnardCrypto.deriveTekForAnonymous(_deviceSecret);
   }
 
@@ -74,19 +78,16 @@ class MockBarnard implements BarnardClient {
   Timer? _timer;
   bool _disposed = false;
 
-  // Event Mode state
-  EventMode _currentMode = EventMode.anonymous;
   String? _currentEventCode;
   late Uint8List _currentTek;
-  Uint8List? _currentEventCodeHash;
-
-  // TEK storage: eventCodeHash (base64) -> List<TekEntry>
-  final Map<String, List<TekEntry>> _tekStore = <String, List<TekEntry>>{};
 
   final Map<String, _RssiAgg> _aggByRpidKey = <String, _RssiAgg>{};
   int? _lastWindowIndex;
 
   int get _maxAggEntries => max(2000, min(10000, _peers.length * 3));
+
+  double get _b003FailureRate =>
+      (_overrides?.b003FailureRate ?? 0.1).clamp(0.0, 1.0);
 
   @override
   BarnardCapabilities get capabilities => const BarnardCapabilities(
@@ -101,13 +102,13 @@ class MockBarnard implements BarnardClient {
   BarnardState get state => _state;
 
   @override
-  EventMode get currentMode => _currentMode;
-
-  @override
   String? get currentEventCode => _currentEventCode;
 
   @override
-  String? get myResolvedDisplayId => _tekDisplayId(_currentTek);
+  String get myDisplayId => displayIdFromTek(_currentTek);
+
+  @override
+  int get currentEnin => BarnardCrypto.currentEnin();
 
   @override
   Stream<BarnardEvent> get events => _events.stream;
@@ -183,44 +184,23 @@ class MockBarnard implements BarnardClient {
     await stopAdvertise();
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Event Mode APIs
-  // ─────────────────────────────────────────────────────────────────────────
-
   @override
   Future<void> joinEvent(String eventCode) async {
     _ensureNotDisposed();
-    if (_currentMode == EventMode.event) {
-      throw StateError("Already in Event Mode. Call leaveEvent() first.");
-    }
-
     _currentEventCode = eventCode;
-    _currentMode = EventMode.event;
-
-    // Derive TEK from DeviceSecret + EventCode
     _currentTek = BarnardCrypto.deriveTekForEvent(_deviceSecret, eventCode);
-    _currentEventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode);
 
     _emitDebug(DebugLevel.info, "mock_join_event", <String, Object?>{
       "eventCode": eventCode,
-      "tekDisplayId": _tekDisplayId(_currentTek),
-      "eventCodeHash": base64Encode(_currentEventCodeHash!),
+      "myDisplayId": myDisplayId,
     });
   }
 
   @override
   Future<void> leaveEvent() async {
     _ensureNotDisposed();
-    if (_currentMode == EventMode.anonymous) {
-      throw StateError("Not in Event Mode. Call joinEvent() first.");
-    }
-
-    final String leftEvent = _currentEventCode!;
+    final String? leftEvent = _currentEventCode;
     _currentEventCode = null;
-    _currentMode = EventMode.anonymous;
-    _currentEventCodeHash = null;
-
-    // Generate a deterministic TEK for Anonymous Mode
     _currentTek = BarnardCrypto.deriveTekForAnonymous(_deviceSecret);
 
     _emitDebug(DebugLevel.info, "mock_leave_event", <String, Object?>{
@@ -229,80 +209,18 @@ class MockBarnard implements BarnardClient {
   }
 
   @override
-  Future<List<TekEntry>> getExchangedTeks(String eventCode) async {
+  Future<Uint8List> getCurrentRpi() async {
     _ensureNotDisposed();
-    final Uint8List hash = BarnardCrypto.computeEventCodeHash(eventCode);
-    final String key = base64Encode(hash);
-    return List<TekEntry>.unmodifiable(_tekStore[key] ?? const <TekEntry>[]);
+    final Uint8List rpik = deriveRpik(_currentTek);
+    return generateRpi(rpik, currentEnin);
   }
 
   @override
-  Future<int> clearTeksForEvent(String eventCode) async {
+  Future<Uint8List> exportCurrentTek() async {
     _ensureNotDisposed();
-    final Uint8List hash = BarnardCrypto.computeEventCodeHash(eventCode);
-    final String key = base64Encode(hash);
-    final List<TekEntry>? removed = _tekStore.remove(key);
-    final int count = removed?.length ?? 0;
-
-    _emitDebug(DebugLevel.info, "mock_clear_teks_for_event", <String, Object?>{
-      "eventCode": eventCode,
-      "removed": count,
-    });
-
-    return count;
+    // Explicit privacy boundary: returns a defensive copy.
+    return Uint8List.fromList(_currentTek);
   }
-
-  @override
-  Future<int> clearAllTeks() async {
-    _ensureNotDisposed();
-    int total = 0;
-    for (final List<TekEntry> entries in _tekStore.values) {
-      total += entries.length;
-    }
-    _tekStore.clear();
-
-    _emitDebug(DebugLevel.info, "mock_clear_all_teks", <String, Object?>{
-      "removed": total,
-    });
-
-    return total;
-  }
-
-  /// Simulates receiving a TEK from another peer (for testing).
-  ///
-  /// In the real BLE implementation, this happens via GATT exchange.
-  void simulateReceivedTek(Uint8List tek, Uint8List eventCodeHash) {
-    final String key = base64Encode(eventCodeHash);
-    final List<TekEntry> entries = _tekStore.putIfAbsent(
-      key,
-      () => <TekEntry>[],
-    );
-
-    // Check if we already have this TEK
-    final String tekB64 = base64Encode(tek);
-    final bool alreadyHave = entries.any((e) => base64Encode(e.tek) == tekB64);
-    if (alreadyHave) return;
-
-    final DateTime now = DateTime.now();
-    entries.add(
-      TekEntry(
-        tek: Uint8List.fromList(tek),
-        eventCodeHash: Uint8List.fromList(eventCodeHash),
-        exchangedAt: now,
-        lastSeenAt: now,
-      ),
-    );
-
-    _emitDebug(DebugLevel.info, "mock_tek_received", <String, Object?>{
-      "tekDisplayId": _tekDisplayId(tek),
-      "eventCodeHashB64": key,
-      "totalTeks": entries.length,
-    });
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Pull APIs
-  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   List<BarnardDebugEvent> getDebugBuffer({int? limit}) =>
@@ -375,28 +293,34 @@ class MockBarnard implements BarnardClient {
     final int hits = 1 + _random.nextInt(5);
     for (int i = 0; i < hits; i++) {
       final MockPeer peer = _peers[_random.nextInt(_peers.length)];
-      final Uint8List rpid = peer.rpidForWindow(windowIndex);
+      // Wire-form 17-byte RPID for the detected peer.
+      final Uint8List rpidPayload = peer.rpidPayloadForWindow(windowIndex);
       final int rssi = peer.nextRssi();
 
       _rssiBuffer.add(
         RssiSample(
           timestamp: now,
-          rpid: rpid,
+          rpid: rpidPayload,
           rssi: rssi,
           transport: peer.transport,
         ),
       );
-      _accumulateAndMaybeEmit(now: now, peer: peer, rpid: rpid, rssi: rssi);
+      _accumulateAndMaybeEmit(
+        now: now,
+        peer: peer,
+        rpidPayload: rpidPayload,
+        rssi: rssi,
+      );
     }
   }
 
   void _accumulateAndMaybeEmit({
     required DateTime now,
     required MockPeer peer,
-    required Uint8List rpid,
+    required Uint8List rpidPayload,
     required int rssi,
   }) {
-    final String key = _rpidKey(rpid);
+    final String key = _rpidKey(rpidPayload);
     final _RssiAgg agg = _aggByRpidKey.putIfAbsent(key, () => _RssiAgg());
     agg.add(rssi, now: now);
     _evictAggIfNeeded(now);
@@ -412,22 +336,44 @@ class MockBarnard implements BarnardClient {
     final RssiSummary summary = agg.toSummary();
     agg.resetAfterEmit(now);
 
+    // Capture reporter's own RPID wire form at this observation timestamp.
+    final int enin = calculateEnin(now);
+    final Uint8List myRpik = deriveRpik(_currentTek);
+    final Uint8List myRpi = generateRpi(myRpik, enin);
+    final Uint8List reporterRpid = Uint8List(17);
+    reporterRpid[0] = 1; // formatVersion
+    reporterRpid.setRange(1, 17, myRpi);
+
+    // Simulate B003 read: peer's TEK -> displayId, with configurable failure.
+    final String? detectedDisplayId = _random.nextDouble() < _b003FailureRate
+        ? null
+        : displayIdFromTek(peer.mockTek);
+
+    if (detectedDisplayId == null) {
+      _emitDebug(DebugLevel.warn, "gatt_b003_read_failed", <String, Object?>{
+        "peerId": peer.id,
+      });
+    }
+
     final DetectionEvent event = DetectionEvent(
       timestamp: now,
-      rpid: rpid,
-      rssi: rssi,
       transport: peer.transport,
       formatVersion: 1,
-      displayId: _displayId(rpid),
+      rpid: rpidPayload,
+      reporterRpid: reporterRpid,
+      detectedDisplayId: detectedDisplayId,
+      rssi: rssi,
+      enin: enin,
       rssiSummary: summary,
-      payloadRaw: null,
+      payloadRaw: rpidPayload,
       debugLocalName: null,
     );
 
     _events.add(event);
     _emitDebug(DebugLevel.trace, "mock_detection", <String, Object?>{
-      "displayId": event.displayId,
+      "detectedDisplayId": detectedDisplayId,
       "rssi": rssi,
+      "enin": enin,
       "count": summary.count,
       "min": summary.min,
       "max": summary.max,
@@ -466,8 +412,6 @@ class MockBarnard implements BarnardClient {
   void _evictAggIfNeeded(DateTime now) {
     if (_aggByRpidKey.length <= _maxAggEntries) return;
 
-    // Evict the least-recently-seen entries to keep the mock bounded.
-    // This is O(n) but only triggers when the map exceeds the cap.
     final List<MapEntry<String, _RssiAgg>> entries =
         _aggByRpidKey.entries.toList(growable: false);
     entries.sort((a, b) {
@@ -503,15 +447,6 @@ class MockBarnard implements BarnardClient {
     );
   }
 
-  static String _displayId(Uint8List rpid) {
-    final int take = min(4, rpid.length);
-    final String hex = rpid
-        .sublist(0, take)
-        .map((int b) => b.toRadixString(16).padLeft(2, "0"))
-        .join();
-    return hex;
-  }
-
   static String _rpidKey(Uint8List rpid) => base64UrlEncode(rpid);
 
   static bool _bytesEqual(Uint8List a, Uint8List b) {
@@ -527,14 +462,6 @@ class MockBarnard implements BarnardClient {
     return Uint8List.fromList(
       List<int>.generate(length, (_) => random.nextInt(256)),
     );
-  }
-
-  static String _tekDisplayId(Uint8List tek) {
-    final int take = min(3, tek.length);
-    return tek
-        .sublist(0, take)
-        .map((int b) => b.toRadixString(16).padLeft(2, "0"))
-        .join();
   }
 }
 
