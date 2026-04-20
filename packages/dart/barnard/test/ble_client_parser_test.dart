@@ -12,8 +12,8 @@ void main() {
       "timestamp": "2026-04-20T10:00:00.000Z",
       "transport": "ble",
       "formatVersion": 1,
-      "rpid": "01" + "a" * 32, // 17 bytes
-      "reporterRpid": "01" + "b" * 32,
+      "rpid": "01${"a" * 32}", // 17 bytes
+      "reporterRpid": "01${"b" * 32}",
       "detectedDisplayId": "9abcdef0",
       "rssi": -62,
       "enin": 2948599,
@@ -23,7 +23,7 @@ void main() {
         "max": -55,
         "mean": -62.3,
       },
-      "payloadRaw": "01" + "a" * 32,
+      "payloadRaw": "01${"a" * 32}",
       "debugLocalName": null,
     };
 
@@ -63,6 +63,36 @@ void main() {
       expect(() => parseBarnardEvent(m), throwsFormatException);
     });
 
+    test("wrong-length rpid (even hex but not 17 bytes) throws", () {
+      final Map<Object?, Object?> m = Map<Object?, Object?>.from(baseMap);
+      m["rpid"] = "01" * 16; // 16 bytes, not 17
+      expect(() => parseBarnardEvent(m), throwsFormatException);
+    });
+
+    test("empty rpid throws", () {
+      final Map<Object?, Object?> m = Map<Object?, Object?>.from(baseMap);
+      m["rpid"] = "";
+      expect(() => parseBarnardEvent(m), throwsFormatException);
+    });
+
+    test("wrong-length reporterRpid throws", () {
+      final Map<Object?, Object?> m = Map<Object?, Object?>.from(baseMap);
+      m["reporterRpid"] = "01" * 10;
+      expect(() => parseBarnardEvent(m), throwsFormatException);
+    });
+
+    test("malformed detectedDisplayId (not 8 hex chars) throws", () {
+      final Map<Object?, Object?> m = Map<Object?, Object?>.from(baseMap);
+      m["detectedDisplayId"] = "abc";
+      expect(() => parseBarnardEvent(m), throwsFormatException);
+    });
+
+    test("uppercase detectedDisplayId rejected (lowercase contract)", () {
+      final Map<Object?, Object?> m = Map<Object?, Object?>.from(baseMap);
+      m["detectedDisplayId"] = "ABCDEF01";
+      expect(() => parseBarnardEvent(m), throwsFormatException);
+    });
+
     test("missing enin defaults to 0", () {
       final Map<Object?, Object?> m = Map<Object?, Object?>.from(baseMap);
       m.remove("enin");
@@ -92,7 +122,7 @@ void main() {
       final Map<Object?, Object?> map = <Object?, Object?>{
         "type": "rssi_update",
         "timestamp": "2026-04-20T10:00:00.000Z",
-        "rpid": "01" + "c" * 32,
+        "rpid": "01${"c" * 32}",
         "rssi": -55,
         "detectedDisplayId": "deadbeef",
       };
@@ -108,7 +138,7 @@ void main() {
       final Map<Object?, Object?> map = <Object?, Object?>{
         "type": "rssi_update",
         "timestamp": "2026-04-20T10:00:00.000Z",
-        "rpid": "01" + "c" * 32,
+        "rpid": "01${"c" * 32}",
         "rssi": -55,
       };
       final RssiUpdateEvent u = parseBarnardEvent(map) as RssiUpdateEvent;

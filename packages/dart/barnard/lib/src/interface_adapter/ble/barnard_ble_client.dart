@@ -66,15 +66,11 @@ class BarnardBleClient implements BarnardClient {
       eventCode = null;
     }
 
-    String myDisplayId;
-    try {
-      myDisplayId = (await _methods.invokeMethod<String>("getMyDisplayId")) ??
-          "";
-    } on MissingPluginException {
-      myDisplayId = "";
-    } on PlatformException {
-      myDisplayId = "";
-    }
+    // myDisplayId is a non-nullable 8-char hex string. A missing/malformed
+    // value indicates a native-side protocol error; fail fast.
+    final String myDisplayId = _requireDisplayId(
+      await _methods.invokeMethod<String>("getMyDisplayId"),
+    );
 
     final BarnardBleClient client = BarnardBleClient._(
       capabilities: _parseCapabilities(capsMap),
@@ -198,9 +194,10 @@ class BarnardBleClient implements BarnardClient {
       "eventCode": eventCode,
     });
     _currentEventCode = eventCode;
-    // Refresh displayId after TEK change.
-    _myDisplayId =
-        (await _methods.invokeMethod<String>("getMyDisplayId")) ?? "";
+    // Refresh displayId after TEK change; fail fast on invalid native reply.
+    _myDisplayId = _requireDisplayId(
+      await _methods.invokeMethod<String>("getMyDisplayId"),
+    );
   }
 
   @override
@@ -208,8 +205,9 @@ class BarnardBleClient implements BarnardClient {
     _ensureNotDisposed();
     await _methods.invokeMethod<void>("leaveEvent");
     _currentEventCode = null;
-    _myDisplayId =
-        (await _methods.invokeMethod<String>("getMyDisplayId")) ?? "";
+    _myDisplayId = _requireDisplayId(
+      await _methods.invokeMethod<String>("getMyDisplayId"),
+    );
   }
 
   @override
@@ -217,7 +215,13 @@ class BarnardBleClient implements BarnardClient {
     _ensureNotDisposed();
     final String hex =
         (await _methods.invokeMethod<String>("getCurrentRpi")) ?? "";
-    return hexToBytes(hex);
+    final Uint8List bytes = hexToBytes(hex);
+    if (bytes.length != 16) {
+      throw StateError(
+        "getCurrentRpi: expected 16 bytes from native, got ${bytes.length}",
+      );
+    }
+    return bytes;
   }
 
   @override
@@ -230,7 +234,13 @@ class BarnardBleClient implements BarnardClient {
         "exportCurrentTek: native returned empty TEK — not yet initialized.",
       );
     }
-    return hexToBytes(hex);
+    final Uint8List bytes = hexToBytes(hex);
+    if (bytes.length != 16) {
+      throw StateError(
+        "exportCurrentTek: expected 16 bytes from native, got ${bytes.length}",
+      );
+    }
+    return bytes;
   }
 
   @override
@@ -386,12 +396,14 @@ BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
         recoverable: map["recoverable"] as bool?,
       );
     case "rssi_update":
-      final Uint8List rpid = hexToBytes((map["rpid"] as String?) ?? "");
+      final Uint8List rpid =
+          _decodeRpidHex((map["rpid"] as String?) ?? "", field: "rpid");
       return RssiUpdateEvent(
         timestamp: ts,
         rpid: rpid,
         rssi: (map["rssi"] as int?) ?? 0,
-        detectedDisplayId: map["detectedDisplayId"] as String?,
+        detectedDisplayId:
+            _validateDetectedDisplayId(map["detectedDisplayId"]),
       );
     case "detection":
     default:
@@ -399,10 +411,14 @@ BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
         (e) => e.name == (map["transport"] as String?),
         orElse: () => TransportKind.unknown,
       );
-      final Uint8List rpid = hexToBytes((map["rpid"] as String?) ?? "");
-      final Uint8List reporterRpid =
-          hexToBytes((map["reporterRpid"] as String?) ?? "");
-      final String? detectedDisplayId = map["detectedDisplayId"] as String?;
+      final Uint8List rpid =
+          _decodeRpidHex((map["rpid"] as String?) ?? "", field: "rpid");
+      final Uint8List reporterRpid = _decodeRpidHex(
+        (map["reporterRpid"] as String?) ?? "",
+        field: "reporterRpid",
+      );
+      final String? detectedDisplayId =
+          _validateDetectedDisplayId(map["detectedDisplayId"]);
       final int rssi = (map["rssi"] as int?) ?? 0;
       final int formatVersion = (map["formatVersion"] as int?) ?? 0;
       final int enin = (map["enin"] as int?) ?? 0;
@@ -464,6 +480,51 @@ Map<Object?, Object?> _expectMap(Object? value) {
   if (value is Map<Object?, Object?>) return value;
   if (value is Map) return Map<Object?, Object?>.from(value);
   throw FormatException("Expected map, got ${value.runtimeType}");
+}
+
+/// Decode an RPID wire-form hex string and enforce the 17-byte length
+/// `[formatVersion(1) + RPI(16)]`. Fails fast on wrong length.
+Uint8List _decodeRpidHex(String hex, {required String field}) {
+  if (hex.isEmpty) {
+    throw FormatException("missing $field in v2 event payload");
+  }
+  final Uint8List bytes = hexToBytes(hex);
+  if (bytes.length != 17) {
+    throw FormatException(
+      "invalid $field length: expected 17 bytes, got ${bytes.length}",
+    );
+  }
+  return bytes;
+}
+
+/// Require a non-null 8-char-lowercase-hex displayId. For myDisplayId we
+/// have no null case: it must always be set on the native side.
+String _requireDisplayId(String? value) {
+  if (value == null) {
+    throw StateError(
+      "getMyDisplayId returned null — native plugin is not initialized for v2",
+    );
+  }
+  if (!RegExp(r"^[0-9a-f]{8}$").hasMatch(value)) {
+    throw StateError(
+      "getMyDisplayId returned invalid value '$value' — expected 8 lowercase hex chars",
+    );
+  }
+  return value;
+}
+
+/// Validate v2 displayId: 8 lowercase hex chars, or null.
+String? _validateDetectedDisplayId(Object? value) {
+  if (value == null) return null;
+  if (value is! String) {
+    throw FormatException("detectedDisplayId must be String, got ${value.runtimeType}");
+  }
+  if (!RegExp(r"^[0-9a-f]{8}$").hasMatch(value)) {
+    throw FormatException(
+      "invalid detectedDisplayId: expected 8 lowercase hex chars, got '$value'",
+    );
+  }
+  return value;
 }
 
 bool _bytesEqual(Uint8List a, Uint8List b) {
