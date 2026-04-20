@@ -14,4 +14,7 @@ coverage/
 .flutter-plugins
 .flutter-plugins-dependencies
 .metadata
-.gradle/
+
+# JVM / Gradle local artifacts
+*.hprof
+**/.gradle/
