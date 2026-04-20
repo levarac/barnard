@@ -189,7 +189,7 @@ final class BarnardBleController: NSObject {
   }
 
   func startAdvertise(formatVersion: Int) {
-    self.formatVersion = UInt8(clamping: formatVersion)
+    self.formatVersion = acceptFormatVersion(formatVersion)
     guard peripheralManager.state == .poweredOn else {
       emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(peripheralManager.state.rawValue)")
       return
@@ -537,6 +537,17 @@ final class BarnardBleController: NSObject {
       payload["data"] = value
     }
     onDebugEvent?("BarnardDebug", payload)
+  }
+
+  /// Accept a caller-provided formatVersion. v2 only ships format 1, so
+  /// clamp to 1 and emit a debug warning otherwise.
+  private func acceptFormatVersion(_ raw: Int) -> UInt8 {
+    if raw == 1 { return 1 }
+    emitDebug(level: "warn", name: "format_version_clamped", data: [
+      "requested": raw,
+      "applied": 1,
+    ])
+    return 1
   }
 }
 

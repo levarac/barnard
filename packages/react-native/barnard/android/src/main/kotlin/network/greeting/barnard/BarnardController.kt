@@ -209,7 +209,7 @@ internal class BarnardController(
     }
 
     fun startAdvertise(formatVersion: Int) {
-        this.formatVersion = formatVersion
+        this.formatVersion = acceptFormatVersion(formatVersion)
         startAdvertiseInternal()
     }
 
@@ -621,6 +621,16 @@ internal class BarnardController(
             if (data != null) putMap("data", toWritableMap(data)) else putNull("data")
         }
         mainHandler.post { onDebugEvent?.invoke("BarnardDebug", payload) }
+    }
+
+    /**
+     * Accept a caller-provided formatVersion. v2 only ships format 1, so
+     * clamp to 1 and emit a debug warning otherwise.
+     */
+    private fun acceptFormatVersion(raw: Int): Int {
+        if (raw == 1) return 1
+        emitDebug("warn", "format_version_clamped", mapOf("requested" to raw, "applied" to 1))
+        return 1
     }
 
     private fun toWritableMap(src: Map<String, Any?>): WritableMap {

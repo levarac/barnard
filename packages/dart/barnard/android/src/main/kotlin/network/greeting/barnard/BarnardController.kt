@@ -231,7 +231,7 @@ internal class BarnardController(
 
             "startAdvertise" -> {
                 val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
-                formatVersion = (args["formatVersion"] as? Int) ?: 1
+                formatVersion = acceptFormatVersion(args["formatVersion"])
                 startAdvertise()
                 result.success(null)
             }
@@ -246,7 +246,7 @@ internal class BarnardController(
                 val scan = args["scan"] as? Map<*, *>
                 val adv = args["advertise"] as? Map<*, *>
                 allowDuplicates = scan?.get("allowDuplicates") as? Boolean ?: true
-                formatVersion = adv?.get("formatVersion") as? Int ?: 1
+                formatVersion = acceptFormatVersion(adv?.get("formatVersion"))
 
                 val wasScanning = isScanning
                 val wasAdvertising = isAdvertising
@@ -703,6 +703,18 @@ internal class BarnardController(
             "data" to data,
         )
         mainHandler.post { debugEventSink?.success(payload) }
+    }
+
+    /**
+     * Accept a caller-provided formatVersion. v2 only ships format 1, so
+     * clamp to 1 and emit a debug warning otherwise. Advertising format 2+
+     * would make the device silently undiscoverable to all v2 peers.
+     */
+    private fun acceptFormatVersion(raw: Any?): Int {
+        val v = raw as? Int ?: return 1
+        if (v == 1) return 1
+        emitDebug("warn", "format_version_clamped", mapOf("requested" to v, "applied" to 1))
+        return 1
     }
 
     // MARK: - Permissions

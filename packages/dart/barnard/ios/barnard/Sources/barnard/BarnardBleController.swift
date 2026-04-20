@@ -183,7 +183,7 @@ final class BarnardBleController: NSObject {
 
     case "startAdvertise":
       let args = (call.arguments as? [String: Any]) ?? [:]
-      if let v = args["formatVersion"] as? Int, v >= 0, v <= 255 { formatVersion = UInt8(v) }
+      formatVersion = acceptFormatVersion(args["formatVersion"])
       startAdvertise()
       result(nil)
 
@@ -197,7 +197,7 @@ final class BarnardBleController: NSObject {
         allowDuplicates = (scan["allowDuplicates"] as? Bool) ?? true
       }
       if let adv = args["advertise"] as? [String: Any] {
-        if let v = adv["formatVersion"] as? Int, v >= 0, v <= 255 { formatVersion = UInt8(v) }
+        formatVersion = acceptFormatVersion(adv["formatVersion"])
       }
 
       let wasScanning = isScanning
@@ -614,6 +614,21 @@ final class BarnardBleController: NSObject {
       "name": name,
       "data": data as Any,
     ])
+  }
+
+  /// Accept a caller-provided formatVersion. v2 only ships format 1, so
+  /// clamp to 1 and emit a debug warning when callers request an
+  /// unsupported value — advertising format 2+ would otherwise make the
+  /// device silently undiscoverable to all v2 peers.
+  private func acceptFormatVersion(_ raw: Any?) -> UInt8 {
+    guard let v = raw as? Int else { return 1 }
+    if v == 1 { return 1 }
+    emitDebug(
+      level: "warn",
+      name: "format_version_clamped",
+      data: ["requested": v, "applied": 1]
+    )
+    return 1
   }
 }
 
