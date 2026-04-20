@@ -4,26 +4,29 @@ import React
 @objc(Barnard)
 class Barnard: RCTEventEmitter {
   private var controller: BarnardBleController?
-  
+  private var hasListeners = false
+
   override init() {
     super.init()
     setupController()
   }
-  
+
   private func setupController() {
     let ctrl = BarnardBleController()
-    
+
     ctrl.onEvent = { [weak self] eventName, payload in
-      self?.sendEvent(withName: eventName, body: payload)
+      guard let self = self, self.hasListeners else { return }
+      self.sendEvent(withName: eventName, body: payload)
     }
-    
+
     ctrl.onDebugEvent = { [weak self] eventName, payload in
-      self?.sendEvent(withName: eventName, body: payload)
+      guard let self = self, self.hasListeners else { return }
+      self.sendEvent(withName: eventName, body: payload)
     }
-    
+
     controller = ctrl
   }
-  
+
   override func supportedEvents() -> [String]! {
     return [
       "BarnardDetection",
@@ -33,7 +36,15 @@ class Barnard: RCTEventEmitter {
       "BarnardDebug"
     ]
   }
-  
+
+  override func startObserving() {
+    hasListeners = true
+  }
+
+  override func stopObserving() {
+    hasListeners = false
+  }
+
   override static func requiresMainQueueSetup() -> Bool {
     return false
   }

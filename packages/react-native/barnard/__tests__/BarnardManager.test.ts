@@ -67,7 +67,7 @@ const setup = () => {
       joinEvent: (eventCode: string) => Promise<void>;
       onDetection: (callback: (event: unknown) => void) => () => void;
       onEvent: (callback: (event: unknown) => void) => () => void;
-      dispose: () => void;
+      dispose: () => Promise<void>;
     };
   };
 
@@ -144,8 +144,7 @@ describe('BarnardManager', () => {
     const callback = jest.fn();
 
     manager.onDetection(callback);
-    manager.dispose();
-    await Promise.resolve();
+    await manager.dispose();
 
     emit(listeners, 'BarnardDetection', { type: 'detection' });
 

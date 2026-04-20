@@ -40,6 +40,18 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
         return "Barnard"
     }
 
+    // Required by RN's NativeEventEmitter contract. No-ops here — actual
+    // subscription lifecycle is handled by React Native core; we only need
+    // these to silence "new NativeEventEmitter() with no addListener method"
+    // warnings on the JS side.
+    @ReactMethod
+    fun addListener(eventName: String) {
+    }
+
+    @ReactMethod
+    fun removeListeners(count: Int) {
+    }
+
     @ReactMethod
     fun getCapabilities(promise: Promise) {
         try {

@@ -116,7 +116,9 @@ enum BarnardCrypto {
       let rpik = deriveRpik(from: tek)
 
       for offset in -6 ... 1 {
-        let testEnin = UInt32(Int(enin) + offset)
+        let signed = Int64(enin) + Int64(offset)
+        guard signed >= 0, signed <= Int64(UInt32.max) else { continue }
+        let testEnin = UInt32(signed)
         let candidate = generateRpi(rpik: rpik, enin: testEnin)
 
         if candidate == rpi {

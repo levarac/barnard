@@ -149,16 +149,17 @@ export class BarnardManager {
 
   /**
    * Dispose of the manager and release resources.
+   *
+   * Resolves once the native module has finished releasing its resources.
+   * Always await this when tearing down, to avoid leaking scan/advertise sessions.
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
     // Unsubscribe from all events
     this.subscriptions.forEach((sub) => sub.remove());
     this.subscriptions = [];
 
-    // Call native dispose
-    BarnardModule.dispose().catch((error) => {
-      console.warn('Failed to dispose Barnard:', error);
-    });
+    // Call native dispose and propagate completion to the caller
+    await BarnardModule.dispose();
   }
 
   /**
