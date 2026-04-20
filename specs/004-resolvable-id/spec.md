@@ -18,7 +18,7 @@ The rest of the v1 design (GAEN-compatible HKDF/AES chain, RPID rotation, fixed 
 1. **TEK never transmitted over BLE.** The SDK refuses every path that would send TEK over the wire.
 2. **B003 carries `displayId = SHA256(TEK)[0:4]`.** Read-only, 4 bytes. 32-bit space → birthday bound ~0.05% collision at 2,000 distinct TEKs (`p ≈ 1 − exp(−n(n−1)/2 / 2³²)` for `n = 2000` gives `p ≈ 4.7 × 10⁻⁴`).
 3. **Fixed service UUID.** Not dynamic per-event. iOS background scan requires the service UUID to be pinned into `scanForPeripherals(withServices:)`; dynamic UUIDs break background discovery. Event scoping is done at a higher layer via B004 (EventCodeHash) and out-of-band event membership.
-4. **Detection is event-scoped at the consumer.** B004 still exposes `EventCodeHash` so consumers that want to filter "same-event" can. The SDK itself does not filter; it always emits a `DetectionEvent` on any successful RPID read.
+4. **B004 is still served for GAEN compatibility / future use.** The peripheral publishes `EventCodeHash` on B004, but v2 does not surface the peer's hash on `DetectionEvent` and the SDK does not filter detections by it. Consumers see every peer that answers B002. Event-scoped filtering remains a future extension (and would be a follow-up issue), not a v2 capability.
 5. **Explicit TEK egress.** The host app can request the raw TEK via `exportCurrentTek()`. The SDK never transmits it; the host app decides if/when to send it to a backend.
 
 ## 3. Glossary
@@ -146,6 +146,14 @@ abstract class BarnardClient {
 
   Future<Uint8List> getCurrentRpi();      // 16 bytes
   Future<Uint8List> exportCurrentTek();   // 16 bytes, explicit privacy egress
+
+  // Pull APIs
+  List<BarnardDebugEvent> getDebugBuffer({int? limit});
+  List<RssiSample> getRssiSamples({
+    DateTime? since,
+    int? limit,
+    List<int>? rpidBytes,
+  });
 
   Future<void> dispose();
 }

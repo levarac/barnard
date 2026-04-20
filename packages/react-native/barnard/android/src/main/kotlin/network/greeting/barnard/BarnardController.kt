@@ -572,7 +572,10 @@ internal class BarnardController(
         }
 
         val reporterPayload = computePayload(timestampMs)
-        val enin = BarnardCrypto.calculateEnin(timestampMs).toLong()
+        // ENIN fits comfortably in Int32 for the next ~40 000 years, so
+        // prefer `putInt` to match the schema's `type: integer` contract
+        // and the wire shape of the Flutter-native bridge.
+        val enin = BarnardCrypto.calculateEnin(timestampMs).toInt()
 
         val payload = Arguments.createMap().apply {
             putString("type", "detection")
@@ -582,7 +585,7 @@ internal class BarnardController(
             putString("rpid", payloadBytes.toHex())
             putString("reporterRpid", reporterPayload.toHex())
             if (detectedDisplayIdHex != null) putString("detectedDisplayId", detectedDisplayIdHex) else putNull("detectedDisplayId")
-            putDouble("enin", enin.toDouble())
+            putInt("enin", enin)
             putInt("rssi", rssi)
             putNull("rssiSummary")
             putString("payloadRaw", payloadBytes.toHex())

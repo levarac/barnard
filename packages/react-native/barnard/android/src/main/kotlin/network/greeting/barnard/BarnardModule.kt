@@ -122,8 +122,8 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
                 promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
                 return
             }
-            // ENIN fits in Int for the next ~40,000 years; use Double to
-            // avoid Kotlin UInt -> JS bridge ambiguity.
+            // ENIN fits in Int32 for the next ~40 000 years; promote to
+            // Double only at the bridge to match JS number semantics.
             promise.resolve(ctrl.getCurrentEnin().toDouble())
         } catch (e: Exception) {
             promise.reject("E_GET_CURRENT_ENIN", e.message, e)
