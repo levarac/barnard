@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v2/common.schema.json",
+  "title": "Barnard Common Types (v2)",
+  "description": "Shared definitions for Barnard v2 event and config schemas. Byte-valued fields are encoded as lowercase hex at the SDK/native bridge boundary.",
+  "type": "object",
+  "$defs": {
+    "TransportKind": {
+      "type": "string",
+      "enum": ["ble", "uwb", "thread", "unknown"]
+    },
+    "DebugLevel": {
+      "type": "string",
+      "enum": ["trace", "info", "warn", "error"]
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp with fractional seconds, UTC."
+    },
+    "HexBytes": {
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "description": "Lowercase hex string, even length (may be empty)."
+    },
+    "RpidHex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{34}$",
+      "description": "RPID wire form [formatVersion(1) + RPI(16)] = 17 bytes as 34 lowercase hex chars."
+    },
+    "DisplayIdHex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}$",
+      "description": "v2 displayId = SHA256(TEK)[0:4] = 4 bytes as 8 lowercase hex chars."
+    },
+    "TekHex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "TEK = 16 bytes as 32 lowercase hex chars. Never emitted over BLE; only exposed via explicit host API (exportCurrentTek)."
+    },
+    "EventCodeHashHex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "EventCodeHash = SHA256(EventCode)[0:8] = 8 bytes as 16 lowercase hex chars."
+    }
+  }
+}

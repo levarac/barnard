@@ -1,515 +1,248 @@
-# Feature Specification: Resolvable ID
+# Feature Spec 004 — Resolvable ID v2
 
-**Feature Directory**: `specs/004-resolvable-id`  
-**Created**: 2026-01-22  
-**Status**: In Progress  
-**Issue**: [#31](https://github.com/thegreeting/barnard/issues/31)
+**Issue:** [#42](https://github.com/thegreeting/barnard/issues/42)
+**Ancestor:** [#31](https://github.com/thegreeting/barnard/issues/31), [spec 003](../003-flutter-poc-real-ble/spec.md)
+**Status:** Implemented in `feature/42-barnard-v2`.
 
-## Problem Statement
+## 1. Problem with v1
 
-The current RPID implementation uses simple random value rotation (`HMAC-SHA256(rpidSeed, windowIndex)`), but lacks a mechanism for **authorized parties to identify a device within an event**.
+Resolvable ID v1 had two hard-to-fix problems:
 
-Current limitations:
-- **Detection only**: We can detect "a Barnard user is nearby"
-- **No identification**: We cannot determine "who it is" (event-scoped device ID)
-- **No continuous tracking**: We cannot correlate "the person at 10:00 and 10:15 is the same"
+1. **TEK exchanged over BLE.** The GATT flow was *RPID read → EventCodeHash read → TEK read → TEK write*. Whoever could observe either direction of the exchange had access to the other device's TEK, which is equivalent to unmasking every RPID that device would ever broadcast under that event. Whether two devices in the same event "really" belonged there was decided by a client-side hash match (EventCodeHash, `SHA256(EventCode)[0:8]`), but nothing stopped a hostile client from simulating the hash check and completing the exchange anyway.
+2. **displayId collisions at modest crowd sizes.** v1 used `TEK[0:3]` (3 bytes, 6 hex chars). Birthday bound in a 24-bit space exceeds 50% collision probability around 4,800 distinct TEKs — well inside real-world event scale.
 
-Key constraint: **No global device uniqueness** - identity must be scoped to a specific event only.
+The rest of the v1 design (GAEN-compatible HKDF/AES chain, RPID rotation, fixed service UUID for iOS background discovery) stays sound. v2 only replaces the broken parts.
 
-## Goals
+## 2. v2 design principles
 
-- Implement GAEN (Google/Apple Exposure Notification) v1.2 compatible key derivation
-- Enable event-scoped device identification via GATT TEK exchange
-- Support two modes: Anonymous Mode and Event Mode
-- Maintain privacy: no device-unique persistent identifiers on-wire
-- No server required for TEK exchange
+1. **TEK never transmitted over BLE.** The SDK refuses every path that would send TEK over the wire.
+2. **B003 carries `displayId = SHA256(TEK)[0:4]`.** Read-only, 4 bytes. 32-bit space → birthday bound ~0.05% collision at 2,000 distinct TEKs (`p ≈ 1 − exp(−n(n−1)/2 / 2³²)` for `n = 2000` gives `p ≈ 4.7 × 10⁻⁴`).
+3. **Fixed service UUID.** Not dynamic per-event. iOS background scan requires the service UUID to be pinned into `scanForPeripherals(withServices:)`; dynamic UUIDs break background discovery. Event scoping is done at a higher layer via B004 (EventCodeHash) and out-of-band event membership.
+4. **Detection is event-scoped at the consumer.** B004 still exposes `EventCodeHash` so consumers that want to filter "same-event" can. The SDK itself does not filter; it always emits a `DetectionEvent` on any successful RPID read.
+5. **Explicit TEK egress.** The host app can request the raw TEK via `exportCurrentTek()`. The SDK never transmits it; the host app decides if/when to send it to a backend.
 
-## Non-goals
+## 3. Glossary
 
-- Server-side TEK registry (GAEN's diagnosis key upload model)
-- Daily key rotation (TEKi derivation)
-- Background TEK exchange
-- Cross-event device tracking (by design)
+| Term | Description |
+|------|-------------|
+| DeviceSecret | Random 32 bytes, device-unique, never transmitted. |
+| TEK | Temporary Exposure Key. 16 bytes. HKDF-derived from DeviceSecret (+ optional EventCode). |
+| RPIK | Rolling Proximity Identifier Key. 16 bytes. `HKDF(TEK, "EN-RPIK", 16)`. |
+| RPI | Rolling Proximity Identifier. 16 bytes. `AES-128-ECB(RPIK, paddedData(enin))`. Rotates per ENIN. |
+| RPID (wire form) | `[formatVersion(1) + RPI(16)] = 17 bytes`. Served by B002 and emitted as `rpid` / `reporterRpid` fields. |
+| ENIN | Exposure Notification Interval Number. `floor(unix_seconds / 600)`. One ENIN per 10-minute window. |
+| displayId (v2) | `SHA256(TEK)[0:4] = 4 bytes`, 8 lowercase hex chars. Served by B003. |
+| EventCodeHash | `SHA256(EventCode)[0:8] = 8 bytes`. Served by B004. Empty when no event is joined. |
+| formatVersion | Protocol version byte, currently `1`. |
 
-## Glossary
-
-| Term | Definition |
-|------|------------|
-| **Detection** | Knowing "a Barnard user is nearby" |
-| **Identification** | Knowing "this is the holder of TEK_A" (event-scoped device ID) |
-| **Continuous Tracking** | Knowing "RPI at 10:00 and RPI at 10:15 belong to the same device" |
-| **DeviceSecret** | 32-byte random value, generated once per device, never leaves device |
-| **Event Code** | User-input string (e.g., "TECH2026") shared among event participants |
-| **TEK** | Temporary Exposure Key (16 bytes), derived from DeviceSecret + Event Code |
-| **RPIK** | RPI Key (16 bytes), derived from TEK |
-| **RPI** | Rolling Proximity Identifier (16 bytes), rotates every 10-15 minutes |
-| **ENIN** | EN Interval Number = floor(unix_timestamp / 600) |
-| **displayId** | Event-scoped device ID: first 3 bytes of TEK as hex (6 chars) |
-
-## Two Modes
-
-| Mode | EventCodeHash | TEK Exchange | Identification | Continuous Tracking |
-|------|---------------|--------------|----------------|---------------------|
-| **Anonymous Mode** | Empty (0 bytes) | No | No | No |
-| **Event Mode** | 8 bytes | Yes | Yes | Yes |
-
-### Anonymous Mode
-
-- Default mode when no Event Code is set
-- RPI generation uses GAEN algorithm with a deterministic TEK derived from DeviceSecret
-- Other devices can detect presence but cannot identify or track
-- Privacy-first for users who don't want to be identifiable
-
-### Event Mode
-
-- Activated when user joins an event with an Event Code
-- TEK derived from DeviceSecret + Event Code
-- TEK exchanged via GATT with other Event Mode participants
-- Enables identification and continuous tracking within event scope
-
-## Key Derivation (GAEN v1.2 Compatible)
+## 4. Cryptographic chain
 
 ```
-DeviceSecret (32 bytes, device-generated, never transmitted)
-     │
-     ├── Anonymous Mode (no Event Code)
-     │   └── TEK = HKDF-SHA256(DeviceSecret, info="barnard-tek-anonymous", length=16)
-     │
-     └── Event Mode (Event Code present)
-         │
-         ▼
-    TEK = HKDF-SHA256(DeviceSecret ‖ EventCode, info="barnard-tek", length=16)
-         │
-         ▼
-    RPIK = HKDF-SHA256(TEK, info="EN-RPIK", length=16)
-         │
-         ▼
-    RPI = AES128-ECB(RPIK, PaddedData)
-    
-    where PaddedData = "EN-RPI" (6 bytes) ‖ 0x000000000000 (6 bytes) ‖ ENIN (4 bytes, big-endian)
+DeviceSecret (32 B)
+    │
+    ├── no event:     TEK = HKDF(DeviceSecret, info="barnard-tek-anonymous", 16)
+    └── event joined: TEK = HKDF(DeviceSecret || EventCode, info="barnard-tek", 16)
+        │
+        └── RPIK = HKDF(TEK, info="EN-RPIK", 16)
+            │
+            └── RPI(enin) = AES128-ECB(RPIK, "EN-RPI" || 0x000000000000 || ENIN_be32)
+
+displayId = SHA256(TEK)[0:4]       // 4 bytes, 8 hex chars
 ```
 
-### ENIN Calculation
+HKDF salt is 32 zero bytes (RFC 5869 §2.2). AES-ECB is appropriate here because the plaintext is a single 16-byte block per ENIN and uniqueness comes from the ENIN counter, not IV nonces (GAEN v1.2 convention).
+
+## 5. GATT service
+
+Service UUID: `0000B001-0000-1000-8000-00805F9B34FB`.
+
+| UUID | Role | Properties | Value | Length |
+|------|------|------------|-------|--------|
+| `0000B002-…` | RPID | Read | `[formatVersion + RPI(enin_now)]` | 17 B |
+| `0000B003-…` | displayId | Read | `SHA256(TEK)[0:4]` | 4 B |
+| `0000B004-…` | EventCodeHash | Read | `SHA256(EventCode)[0:8]` when joined, empty otherwise | 0 or 8 B |
+
+**v2 has no Write characteristics.** Any inbound write request is rejected with `.writeNotPermitted` (iOS) / `GATT_WRITE_NOT_PERMITTED` (Android).
+
+### 5.1 GATT exchange flow
 
 ```
-ENIN = floor(unix_timestamp_seconds / 600)
+Central                                   Peripheral
+   │ ── connect ─────────────────────────▶ │
+   │ ◀───── services/chars discovered ─── │
+   │                                       │
+   │ ── read B004 (EventCodeHash) ──────▶ │
+   │ ◀──── 0 or 8 bytes ─────────────── │
+   │                                       │
+   │ ── read B002 (RPID wire form) ─────▶ │
+   │ ◀──── 17 bytes ─────────────────── │
+   │                                       │
+   │ ── read B003 (displayId) ──────────▶ │
+   │ ◀──── 4 bytes ──────────────────── │   (or error → see §5.2)
+   │                                       │
+   │ ── disconnect ─────────────────────▶ │
+   │                                       │
+   Central emits DetectionEvent with
+   rpid, reporterRpid, enin, rssi,
+   detectedDisplayId = hex(B003).
 ```
 
-Each ENIN represents a 10-minute interval. RPI rotates at ENIN boundaries.
+### 5.2 B003 read-failure policy
 
-### EventCodeHash Calculation
+If B002 succeeds but the subsequent B003 read fails (timeout, error, missing characteristic, invalid length), the central side **still emits a `DetectionEvent`** with `detectedDisplayId = null`. Consumers always see the detection.
 
-```
-EventCodeHash = SHA256(EventCode)[0:8]  // First 8 bytes
-```
+A debug event with name `gatt_b003_read_failed` (error path) or `gatt_b003_missing` / `gatt_b003_invalid_length` accompanies the detection for diagnostics.
 
-Used to verify same-event participation before TEK exchange.
+If B002 itself fails, no detection is emitted (no identifier available).
 
-## GATT Service Specification
-
-### Service and Characteristic UUIDs
-
-| Name | UUID | Notes |
-|------|------|-------|
-| Discovery Service | `0000B001-0000-1000-8000-00805F9B34FB` | Existing |
-| RPID Characteristic | `0000B002-0000-1000-8000-00805F9B34FB` | Existing |
-| TEK Characteristic | `0000B003-0000-1000-8000-00805F9B34FB` | **New** |
-| EventCodeHash Characteristic | `0000B004-0000-1000-8000-00805F9B34FB` | **New** |
-
-### Characteristic Details
-
-#### RPID Characteristic (existing, unchanged)
-
-- **Properties**: Read
-- **Value**: `[formatVersion(1 byte) + RPI(16 bytes)]` = 17 bytes
-- **formatVersion**: `1` (unchanged)
-
-#### TEK Characteristic (new)
-
-- **Properties**: Read, Write
-- **Value**: `[TEK(16 bytes)]` = 16 bytes
-- **Behavior**:
-  - Read: Returns this device's TEK (only in Event Mode)
-  - Write: Stores the remote device's TEK
-- **Access Control**: Only accessible when EventCodeHash matches
-
-#### EventCodeHash Characteristic (new)
-
-- **Properties**: Read
-- **Value**: `[SHA256(EventCode)[0:8]]` = 8 bytes, or empty (0 bytes) in Anonymous Mode
-- **Purpose**: Verify same-event participation before TEK exchange
-
-## GATT Exchange Flow
-
-### Case 1: Both in Event Mode (Same Event)
+## 6. `DetectionEvent` (v2)
 
 ```
-Central (B)                    Peripheral (A)
-    │                              │
-    │◄── Advertisement ────────────│  (Service UUID only)
-    │──── GATT Connect ───────────►│
-    │                              │
-    │──── EventCodeHash Read ─────►│
-    │◄─── [hash_A = 8 bytes] ──────│
-    │                              │
-    │   hash_A == hash_B? → YES    │
-    │                              │
-    │──── RPID Read ──────────────►│
-    │◄─── [ver + RPI_A] ───────────│
-    │                              │
-    │──── TEK Read ───────────────►│
-    │◄─── [TEK_A] ─────────────────│
-    │                              │
-    │──── TEK Write ──────────────►│
-    │     [TEK_B] ─────────────────►│
-    │                              │
-    │◄─── Disconnect ──────────────│
-```
-
-**Result**: Both devices store each other's TEK → Identification & continuous tracking enabled
-
-### Case 2: Both in Event Mode (Different Events)
-
-```
-Central (B)                    Peripheral (A)
-    │                              │
-    │──── EventCodeHash Read ─────►│
-    │◄─── [hash_A = 8 bytes] ──────│
-    │                              │
-    │   hash_A == hash_B? → NO     │
-    │                              │
-    │──── RPID Read ──────────────►│  (detection only)
-    │◄─── [ver + RPI_A] ───────────│
-    │                              │
-    │   (skip TEK exchange)        │
-    │                              │
-    │◄─── Disconnect ──────────────│
-```
-
-**Result**: Detection only, no TEK exchange
-
-### Case 3: Either in Anonymous Mode
-
-```
-Central (B)                    Peripheral (A)
-    │                              │
-    │──── EventCodeHash Read ─────►│
-    │◄─── [empty = 0 bytes] ───────│  ← A is Anonymous
-    │                              │
-    │   A is Anonymous → skip TEK  │
-    │                              │
-    │──── RPID Read ──────────────►│
-    │◄─── [ver + RPI_A] ───────────│
-    │                              │
-    │   (skip TEK exchange)        │
-    │                              │
-    │◄─── Disconnect ──────────────│
-```
-
-**Result**: Detection only, Anonymous party's privacy preserved
-
-## TEK Storage Specification
-
-### Storage Structure
-
-```
-TEK Storage Entry:
-├── tek: 16 bytes (primary key)
-├── eventCodeHash: 8 bytes
-├── exchangedAt: timestamp (when TEK was received)
-├── lastSeenAt: timestamp (updated on successful RPI resolution)
-└── ttl: configurable (default 24 hours)
-```
-
-### Eviction Policy
-
-```
-if (now - lastSeenAt > ttl):
-    delete entry
-```
-
-Eviction runs periodically (e.g., on app launch, every hour).
-
-### Re-exchange Behavior
-
-| Case | Condition | Action |
-|------|-----------|--------|
-| **First exchange** | TEK not in storage | Save new entry |
-| **Re-exchange (same TEK)** | TEK already exists | Update `lastSeenAt` |
-| **Re-exchange (different TEK)** | Same peer, different TEK | Add as new entry |
-
-### Storage Limits
-
-- **maxEntries**: 1000 (configurable)
-- **Eviction**: LRU when limit exceeded
-
-### Platform Implementation
-
-- **iOS**: UserDefaults (JSON-encoded array)
-- **Android**: SharedPreferences (JSON-encoded array)
-
-## Identification Algorithm
-
-```python
-def resolve_rpi(received_rpi: bytes, known_teks: List[bytes], current_enin: int) -> Optional[Match]:
-    """
-    Attempt to resolve a received RPI to a known TEK.
-    
-    Args:
-        received_rpi: 16-byte RPI from remote device
-        known_teks: List of TEKs from exchanged peers
-        current_enin: Current EN Interval Number
-    
-    Returns:
-        Match object with tek and display_id if resolved, None otherwise
-    """
-    for tek in known_teks:
-        rpik = hkdf_sha256(tek, info=b"EN-RPIK", length=16)
-        
-        # Search within ±1 hour window (±6 intervals)
-        for enin in range(current_enin - 6, current_enin + 2):
-            padded_data = b"EN-RPI" + b"\x00" * 6 + enin.to_bytes(4, 'big')
-            candidate_rpi = aes128_ecb_encrypt(rpik, padded_data)
-            
-            if candidate_rpi == received_rpi:
-                display_id = tek[:3].hex()  # First 3 bytes as hex
-                return Match(tek=tek, display_id=display_id, enin=enin)
-    
-    return None
-```
-
-### Performance Considerations
-
-- **Lookup complexity**: O(known_teks × enin_window) = O(N × 8)
-- **Optimization**: Pre-compute RPIK for all known TEKs on storage load
-- **Caching**: Cache recent (RPI, TEK) resolutions to avoid repeated computation
-
-## Barnard Library Interface
-
-### Configuration
-
-```dart
-class BarnardConfig {
-  const BarnardConfig({
-    this.transport = TransportKind.ble,
-    this.eventCode,  // null for Anonymous Mode
-    this.tekStorage = const TekStorageConfig(),
-    // ... existing fields
-  });
-  
-  final String? eventCode;
-  final TekStorageConfig tekStorage;
-}
-
-class TekStorageConfig {
-  const TekStorageConfig({
-    this.ttlSeconds = 86400,  // 24 hours
-    this.maxEntries = 1000,
-  });
-  
-  final int ttlSeconds;
-  final int maxEntries;
+{
+  "type": "detection",
+  "timestamp": "2026-04-20T10:00:00.000Z",
+  "transport": "ble",
+  "formatVersion": 1,
+  "rpid":          "01<32 hex>",           // 17 B wire form of the detected peer
+  "reporterRpid":  "01<32 hex>",           // 17 B wire form of this device at `timestamp`
+  "detectedDisplayId": "9abcdef0" | null,  // 8 hex chars or null (B003 read failed)
+  "enin": 2948599,                          // floor(unix_s / 600) at `timestamp`
+  "rssi": -62,
+  "rssiSummary": null | { count, min, max, mean },
+  "payloadRaw":    "01<32 hex>",           // same 17 B as rpid, for consumers that want raw
+  "debugLocalName": "…" | null             // debug builds only
 }
 ```
 
-### Client API
+**Atomic reporter snapshot.** Native layers compute `enin` and `reporterRpid` from the **same observation `timestamp`**. The pair is coherent across ENIN rotation boundaries.
+
+**Byte-vs-hex.** At the Dart method-channel / RN bridge boundary, byte-valued fields are **lowercase hex strings**. Native layers use raw `Data`/`ByteArray` internally. Dart public-API return types re-decode to `Uint8List` for ergonomics.
+
+## 7. SDK public API
+
+### 7.1 Dart (`BarnardClient`)
 
 ```dart
 abstract class BarnardClient {
-  // Existing methods...
-  
-  /// Join an event, switching to Event Mode.
-  /// Derives TEK from DeviceSecret + eventCode.
+  BarnardCapabilities get capabilities;
+  BarnardState get state;
+
+  String? get currentEventCode;
+  String get myDisplayId;       // 8 lowercase hex chars (SHA256(TEK)[0:4])
+  int    get currentEnin;
+
+  Stream<BarnardEvent> get events;
+  Stream<BarnardDebugEvent> get debugEvents;
+
+  Future<void> startScan([ScanConfig? config]);
+  Future<void> stopScan();
+  Future<void> startAdvertise([AdvertiseConfig? config]);
+  Future<void> stopAdvertise();
+  Future<BarnardStartResult> startAuto([AutoConfig? config]);
+  Future<void> stopAuto();
+
   Future<void> joinEvent(String eventCode);
-  
-  /// Leave the current event, switching to Anonymous Mode.
   Future<void> leaveEvent();
-  
-  /// Current operating mode.
-  EventMode get currentMode;
-  
-  /// List all exchanged TEKs (for debugging/UI).
-  Future<List<ExchangedTek>> getExchangedTeks();
-  
-  /// Clear TEKs for a specific event.
-  Future<void> clearTeksForEvent(String eventCode);
-  
-  /// Clear all stored TEKs.
-  Future<void> clearAllTeks();
-}
 
-enum EventMode { anonymous, event }
+  Future<Uint8List> getCurrentRpi();      // 16 bytes
+  Future<Uint8List> exportCurrentTek();   // 16 bytes, explicit privacy egress
 
-class ExchangedTek {
-  final Uint8List tek;
-  final String displayId;  // TEK[0:3] as hex (6 chars)
-  final Uint8List eventCodeHash;
-  final DateTime exchangedAt;
-  final DateTime lastSeenAt;
+  Future<void> dispose();
 }
 ```
 
-### Detection Event Extension
+### 7.2 React Native (`BarnardManager`)
 
-```dart
-class DetectionEvent extends BarnardEvent {
-  // Existing fields...
-  
-  /// TEK of the resolved peer (null if not resolved).
-  final Uint8List? resolvedTek;
-  
-  /// Display ID of the resolved peer (null if not resolved).
-  /// Format: first 3 bytes of TEK as lowercase hex (6 chars).
-  final String? resolvedDisplayId;
+```ts
+class BarnardManager {
+  getCapabilities(): Promise<BarnardCapabilities>;
+  getState(): Promise<BarnardState>;
+  getCurrentEventCode(): Promise<string | null>;
+  getMyDisplayId(): Promise<string>;            // 8 hex chars
+  getCurrentRpi(): Promise<string>;             // 32 hex chars
+  getCurrentEnin(): Promise<number>;
+  exportCurrentTek(): Promise<string>;          // 32 hex chars, privacy egress
 
-  /// Debug-only local name observed in advertisements, if present.
-  /// May be omitted in release builds.
-  final String? debugLocalName;
+  startScan / stopScan / startAdvertise / stopAdvertise /
+    startAuto / stopAuto / joinEvent / leaveEvent / dispose;
+
+  onDetection / onRssiUpdate / onStateChange /
+    onConstraint / onError / onDebug / onEvent;
 }
 ```
 
-## Concrete Example
+### 7.3 TEK disclosure boundary
 
-### Setup
+`exportCurrentTek()` is the sole TEK egress path. The SDK does not transmit TEK over BLE, IP, or any other transport. What the host app does with the returned bytes is the host app's responsibility.
 
-```
-Event Code: "TECH2026"
+Host apps are expected to document to end-users (a) when TEK is disclosed, (b) to which party, and (c) for what purpose. The SDK makes no claims on behalf of the host about such disclosure.
 
-Device A:
-  DeviceSecret_A: 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
-  TEK_A = HKDF(DeviceSecret_A ‖ "TECH2026", info="barnard-tek", 16)
-        = 0x7A3F8B2C91D4E6F0A2B5C8D1E4F7A0B3
-  displayId_A = "7a3f8b"
+## 8. Byte serialization at the bridge
 
-Device B:
-  DeviceSecret_B: 0xABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789
-  TEK_B = HKDF(DeviceSecret_B ‖ "TECH2026", info="barnard-tek", 16)
-        = 0x4E2D9A1BF8C7E6D5A4B3C2D1E0F9A8B7
-  displayId_B = "4e2d9a"
+| Field | Native type | Bridge type (Dart channel / RN bridge) | Length |
+|-------|-------------|-----------------------------------------|--------|
+| `rpid`, `reporterRpid`, `payloadRaw` | bytes | lowercase hex string | 34 chars (17 B) |
+| `detectedDisplayId` | bytes \| null | lowercase hex string \| null | 8 chars (4 B) or null |
+| `getCurrentRpi` result | bytes | hex string (Dart: decoded to `Uint8List`) | 32 chars (16 B) |
+| `exportCurrentTek` result | bytes | hex string (Dart: decoded to `Uint8List`) | 32 chars (16 B) |
+| `enin`, `rssi`, `formatVersion` | int | int | — |
+| `timestamp` | Date | ISO 8601 string | — |
+| `transport` | enum | string `"ble"` | — |
 
-EventCodeHash = SHA256("TECH2026")[0:8] = 0x9F8E7D6C5B4A3928
-```
+Strict validation: malformed or wrong-length hex at the Dart parser boundary raises `FormatException`.
 
-### GATT Exchange
+## 9. Attack vectors and mitigations
 
-```
-1. B connects to A
-2. B reads EventCodeHash from A → 0x9F8E7D6C5B4A3928
-3. B compares with own hash → Match!
-4. B reads RPID from A → [0x01, RPI_A...]
-5. B reads TEK from A → 0x7A3F8B2C91D4E6F0A2B5C8D1E4F7A0B3
-6. B writes TEK_B to A → 0x4E2D9A1BF8C7E6D5A4B3C2D1E0F9A8B7
-7. Disconnect
-```
+| Vector | v1 behaviour | v2 behaviour |
+|--------|--------------|--------------|
+| Passive BLE sniffer | Can extract TEK via GATT read (even without event code). | TEK never on wire. Sniffer sees RPID and 4-byte displayId only. |
+| Active GATT write | Can inject TEK entries into peer storage. | No writable characteristics. Writes are rejected. |
+| On-device peer TEK extraction by hostile app | Plugin exposed exchanged TEK store. | No TEK store. `exportCurrentTek()` returns **own** TEK only. |
+| displayId collision at scale | 3 bytes → ~50% at ~4.8k users. | 4 bytes → ~0.05% at 2k, ~11% at 25k. Acceptable for same-event disambiguation at realistic scale. |
+| Cross-event linkability | TEK pinned to (DeviceSecret, EventCode). Leaving one event and joining another regenerates TEK. | Unchanged. TEK egress is explicit per `exportCurrentTek()` call. |
+| RPI replay outside ENIN window | RPI is valid only for one ENIN (10 min). | Unchanged. |
 
-### After Exchange
+## 10. Non-normative: server-report projection example
 
-```
-Device A's TEK Storage:
-  └── { tek: TEK_B, displayId: "4e2d9a", eventCodeHash: 0x9F8E..., exchangedAt: ..., lastSeenAt: ... }
+An operator wishing to receive proximity reports on a backend might project v2 DetectionEvents into a record like:
 
-Device B's TEK Storage:
-  └── { tek: TEK_A, displayId: "7a3f8b", eventCodeHash: 0x9F8E..., exchangedAt: ..., lastSeenAt: ... }
-```
-
-### Later Detection
-
-```
-Time: 10:15 AM, ENIN = 2948599
-
-Device B receives RPI from advertisement, connects, reads RPID characteristic:
-  RPI = 0x2C5E8A1F7B4D9C3E6A2F8D1B5C7E4A9F
-
-Resolution by Device B:
-  for tek in [TEK_A]:
-    rpik = HKDF(TEK_A, info="EN-RPIK", 16) = 0x91B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6
-    for enin in [2948593..2948600]:
-      candidate = AES128(rpik, "EN-RPI" ‖ 0x000000000000 ‖ enin)
-      if enin == 2948599:
-        candidate == received_rpi → Match!
-        
-Result: DetectionEvent with:
-  - rpid: RPI
-  - displayId: "2c5e8a1f" (from RPI, for non-resolved display)
-  - resolvedTek: TEK_A
-  - resolvedDisplayId: "7a3f8b" (from TEK_A)
+```json
+{
+  "reporterRpid": "01a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+  "detectedRpid": "01d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9",
+  "detectedDisplayId": "9abcdef0",
+  "rssi": -62,
+  "enin": 2948599,
+  "timestamp": "2026-04-20T10:00:00.000Z"
+}
 ```
 
-## Security & Privacy Analysis
+This is **not** part of the Barnard schema. Consumers customise the projection and the upload path per product.
 
-| Property | Status | Notes |
-|----------|--------|-------|
-| No device-unique persistent identifiers on-wire | ✓ | RPI rotates every 10-15 min |
-| No cross-event tracking | ✓ | Different TEK per event |
-| Third-party unlinkability | ✓ | RPI appears random without RPIK |
-| Event Code leak safety | ✓ | TEK requires DeviceSecret (never shared) |
-| Minimum privilege | ✓ | Only GATT-exchanged peers can identify |
+## 11. Changes from v1
 
-### Replay Attack Protection
+### Removed
+- TEK on-wire transmission (Read+Write on B003).
+- TEK storage (`BarnardTekStorage` on both platforms, `tek_storage.dart` on Dart side).
+- On-device peer-RPI resolution (`resolveRpi`, `tryResolveRpi`).
+- `DetectionEvent.resolvedTek`, `resolvedDisplayId`, v1 `displayId`.
+- `EventMode` enum, `currentMode`, `myResolvedDisplayId`, `getExchangedTeks`, `clearTeksForEvent`, `clearAllTeks`.
+- "eventMode" key on state events.
 
-- **ENIN window**: Only accept RPIs within ±1 hour of current time
-- **Duplicate detection**: Cache seen (RPI, timestamp) pairs, reject exact duplicates
-- **Cache bounds**: TTL = 2 hours, max = 10000 entries (LRU eviction)
+### Added
+- B003 serves 4-byte `SHA256(TEK)[0:4]`, Read-only.
+- `DetectionEvent.enin`, `reporterRpid`, `detectedDisplayId` (nullable).
+- `BarnardClient.myDisplayId`, `currentEnin`, `getCurrentRpi()`, `exportCurrentTek()`.
+- Lowercase-hex at the bridge boundary (was base64 in v1).
+- Atomic reporter RPID + ENIN snapshot.
 
-### EventCodeHash Collision
+### Compatibility
+- **v1 ⇄ v2 BLE interoperability is not supported.** A v1 peer attempts a TEK Write on B003, which a v2 peripheral rejects; a v2 peer expects 4 bytes on B003, which a v1 peripheral cannot provide.
+- Existing host apps must migrate to the new API surface (no shim).
 
-- **Probability**: 8 bytes = 64 bits → ~10^19 possible values
-- **Impact**: If collision occurs, TEK exchange proceeds but identification fails
-- **Mitigation**: Acceptable for practical use; no security impact
+## 12. References
 
-## Compatibility
-
-### With Existing Implementation
-
-- **formatVersion**: Remains `1` (internal logic change only)
-- **RPID Characteristic**: Unchanged (17 bytes: version + RPI)
-- **Advertisement**: Unchanged (Service UUID only)
-- **Backward compatibility**: None required (development phase)
-
-### With GAEN v1.2
-
-- **Key derivation**: Compatible (HKDF-SHA256, AES-128)
-- **RPI format**: Compatible (16 bytes, ENIN-based rotation)
-- **Differences**:
-  - GAEN uses daily TEK rotation; Barnard uses event-scoped TEK
-  - GAEN uses server for TEK distribution; Barnard uses GATT exchange
-
-## Test Plan
-
-### Unit Tests
-
-1. **Key derivation tests** (`test/crypto_test.dart`)
-   - HKDF-SHA256 output matches expected values
-   - AES-128-ECB encryption matches expected values
-   - TEK derivation is deterministic for same inputs
-   - RPIK derivation is deterministic
-   - RPI generation matches GAEN spec
-
-2. **TEK storage tests** (`test/tek_storage_test.dart`)
-   - Add/retrieve TEK entries
-   - TTL-based eviction
-   - LRU eviction when limit exceeded
-   - Re-exchange updates lastSeenAt
-   - Event-specific clearing
-
-3. **Identifier tests** (`test/identifier_test.dart`)
-   - Resolve RPI to known TEK
-   - Handle unknown RPI (no match)
-   - ENIN window boundaries
-   - Multiple known TEKs
-
-### Integration Tests
-
-4. **GATT exchange tests** (`test/gatt_exchange_integration_test.dart`)
-   - Same event: full TEK exchange
-   - Different event: detection only
-   - Anonymous mode: detection only
-   - Re-exchange: lastSeenAt update
-
-## References
-
-- [GAEN Cryptography Specification v1.2](https://blog.google/documents/69/Exposure_Notification_-_Cryptography_Specification_v1.2.1.pdf)
-- [Wikipedia: Exposure Notification](https://en.wikipedia.org/wiki/Exposure_Notification)
-- [DP-3T Protocol](https://github.com/DP-3T/documents)
-- HKDF (RFC 5869)
-- AES-128 (FIPS 197)
+- GAEN Cryptography Spec v1.2 — https://covid19-static.cdn-apple.com/applications/covid19/current/static/contact-tracing/pdf/ExposureNotification-CryptographySpecificationv1.2.pdf
+- RFC 5869 (HKDF) — https://datatracker.ietf.org/doc/html/rfc5869
+- FIPS 197 (AES) — https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.197.pdf
+- Barnard issue #42 (this spec's primary source) — https://github.com/thegreeting/barnard/issues/42
