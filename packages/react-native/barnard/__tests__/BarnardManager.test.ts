@@ -151,4 +151,42 @@ describe('BarnardManager', () => {
     expect(nativeModule.dispose).toHaveBeenCalledTimes(1);
     expect(callback).not.toHaveBeenCalled();
   });
+
+  it('dispose() awaits native completion before resolving', async () => {
+    const { BarnardManager, nativeModule } = setup();
+    const manager = new BarnardManager();
+
+    let resolveNative: (() => void) | undefined;
+    const nativePending = new Promise<void>((resolve) => {
+      resolveNative = resolve;
+    });
+    nativeModule.dispose.mockReturnValueOnce(nativePending);
+
+    const disposeResult = manager.dispose();
+
+    let settled = false;
+    void disposeResult.then(() => {
+      settled = true;
+    });
+
+    // Let any microtasks run; native is still pending, so dispose must not have resolved.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    // Resolving the native side lets dispose() complete.
+    resolveNative?.();
+    await disposeResult;
+    expect(settled).toBe(true);
+  });
+
+  it('dispose() propagates native rejection to the caller', async () => {
+    const { BarnardManager, nativeModule } = setup();
+    const manager = new BarnardManager();
+
+    const nativeError = new Error('native dispose failed');
+    nativeModule.dispose.mockRejectedValueOnce(nativeError);
+
+    await expect(manager.dispose()).rejects.toThrow('native dispose failed');
+  });
 });
