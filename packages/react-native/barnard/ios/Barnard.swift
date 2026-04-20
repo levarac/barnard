@@ -30,6 +30,7 @@ class Barnard: RCTEventEmitter {
   override func supportedEvents() -> [String]! {
     return [
       "BarnardDetection",
+      "BarnardRssiUpdate",
       "BarnardState",
       "BarnardConstraint",
       "BarnardError",
@@ -48,7 +49,7 @@ class Barnard: RCTEventEmitter {
   override static func requiresMainQueueSetup() -> Bool {
     return false
   }
-  
+
   @objc
   func getCapabilities(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -60,7 +61,7 @@ class Barnard: RCTEventEmitter {
     }
     resolve(controller.getCapabilities())
   }
-  
+
   @objc
   func getState(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -73,8 +74,10 @@ class Barnard: RCTEventEmitter {
     resolve(controller.getState())
   }
 
+  // v2 API
+
   @objc
-  func getEventMode(
+  func getCurrentEventCode(
     _ resolve: @escaping RCTPromiseResolveBlock,
     reject: @escaping RCTPromiseRejectBlock
   ) {
@@ -82,9 +85,57 @@ class Barnard: RCTEventEmitter {
       reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
       return
     }
-    resolve(controller.getEventMode())
+    resolve(controller.getCurrentEventCode())
   }
-  
+
+  @objc
+  func getMyDisplayId(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let controller = controller else {
+      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
+      return
+    }
+    resolve(controller.getMyDisplayId())
+  }
+
+  @objc
+  func getCurrentRpi(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let controller = controller else {
+      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
+      return
+    }
+    resolve(controller.getCurrentRpi())
+  }
+
+  @objc
+  func getCurrentEnin(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let controller = controller else {
+      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
+      return
+    }
+    resolve(controller.getCurrentEnin())
+  }
+
+  @objc
+  func exportCurrentTek(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let controller = controller else {
+      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
+      return
+    }
+    resolve(controller.exportCurrentTek())
+  }
+
   @objc
   func startScan(
     _ config: NSDictionary?,
@@ -99,7 +150,7 @@ class Barnard: RCTEventEmitter {
     controller.startScan(allowDuplicates: allowDuplicates)
     resolve(nil)
   }
-  
+
   @objc
   func stopScan(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -112,7 +163,7 @@ class Barnard: RCTEventEmitter {
     controller.stopScan()
     resolve(nil)
   }
-  
+
   @objc
   func startAdvertise(
     _ config: NSDictionary?,
@@ -127,7 +178,7 @@ class Barnard: RCTEventEmitter {
     controller.startAdvertise(formatVersion: formatVersion)
     resolve(nil)
   }
-  
+
   @objc
   func stopAdvertise(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -140,7 +191,7 @@ class Barnard: RCTEventEmitter {
     controller.stopAdvertise()
     resolve(nil)
   }
-  
+
   @objc
   func startAuto(
     _ config: NSDictionary?,
@@ -151,36 +202,36 @@ class Barnard: RCTEventEmitter {
       reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
       return
     }
-    
+
     var allowDuplicates = true
     var formatVersion = 1
-    
+
     if let scan = config?["scan"] as? NSDictionary {
       allowDuplicates = scan["allowDuplicates"] as? Bool ?? true
     }
-    
+
     if let advertise = config?["advertise"] as? NSDictionary {
       formatVersion = advertise["formatVersion"] as? Int ?? 1
     }
-    
+
     let wasScanning = controller.getState()["isScanning"] as? Bool ?? false
     let wasAdvertising = controller.getState()["isAdvertising"] as? Bool ?? false
-    
+
     controller.startScan(allowDuplicates: allowDuplicates)
     controller.startAdvertise(formatVersion: formatVersion)
-    
+
     let nowScanning = controller.getState()["isScanning"] as? Bool ?? false
     let nowAdvertising = controller.getState()["isAdvertising"] as? Bool ?? false
-    
+
     let result: [String: Any] = [
       "scanningStarted": !wasScanning && nowScanning,
       "advertisingStarted": !wasAdvertising && nowAdvertising,
       "issues": []
     ]
-    
+
     resolve(result)
   }
-  
+
   @objc
   func stopAuto(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -226,52 +277,6 @@ class Barnard: RCTEventEmitter {
     resolve(nil)
   }
 
-  @objc
-  func getExchangedTeks(
-    _ eventCode: String,
-    resolve: @escaping RCTPromiseResolveBlock,
-    reject: @escaping RCTPromiseRejectBlock
-  ) {
-    guard let controller = controller else {
-      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
-      return
-    }
-    guard !eventCode.isEmpty else {
-      reject("E_INVALID_ARGUMENT", "eventCode required", nil)
-      return
-    }
-    resolve(controller.getExchangedTeks(eventCode: eventCode))
-  }
-
-  @objc
-  func clearTeksForEvent(
-    _ eventCode: String,
-    resolve: @escaping RCTPromiseResolveBlock,
-    reject: @escaping RCTPromiseRejectBlock
-  ) {
-    guard let controller = controller else {
-      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
-      return
-    }
-    guard !eventCode.isEmpty else {
-      reject("E_INVALID_ARGUMENT", "eventCode required", nil)
-      return
-    }
-    resolve(controller.clearTeksForEvent(eventCode: eventCode))
-  }
-
-  @objc
-  func clearAllTeks(
-    _ resolve: @escaping RCTPromiseResolveBlock,
-    reject: @escaping RCTPromiseRejectBlock
-  ) {
-    guard let controller = controller else {
-      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
-      return
-    }
-    resolve(controller.clearAllTeks())
-  }
-  
   @objc
   func dispose(
     _ resolve: @escaping RCTPromiseResolveBlock,

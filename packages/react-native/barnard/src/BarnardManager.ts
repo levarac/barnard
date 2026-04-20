@@ -3,13 +3,12 @@ import { BarnardModule, BarnardEventEmitter } from './NativeBarnard';
 import type {
   BarnardCapabilities,
   BarnardState,
-  EventModeState,
   ScanConfig,
   AdvertiseConfig,
   AutoConfig,
   AutoStartResult,
-  TekEntry,
   DetectionEvent,
+  RssiUpdateEvent,
   StateEvent,
   ConstraintEvent,
   ErrorEvent,
@@ -18,225 +17,149 @@ import type {
 } from './types';
 
 /**
- * High-level API for Barnard SDK.
+ * High-level API for Barnard SDK (v2).
  *
- * Provides BLE Scan/Advertise functionality with GATT-based RPID detection.
+ * - `myDisplayId` is `SHA256(TEK)[0:4]` as 8 lowercase hex chars.
+ * - `exportCurrentTek` is the only explicit TEK egress; the SDK never
+ *   transmits TEK over BLE.
+ * - Byte-valued return types (`getCurrentRpi`, `exportCurrentTek`) are
+ *   lowercase hex strings.
  *
  * @example
  * ```typescript
  * const barnard = new BarnardManager();
+ * const myId = await barnard.getMyDisplayId();
+ * console.log('My displayId:', myId);
  *
- * // Listen for detections
- * const unsubscribe = barnard.onDetection((event) => {
- *   console.log('Detected:', event.displayId, event.rssi);
+ * const unsub = barnard.onDetection((e) => {
+ *   console.log('peer', e.detectedDisplayId, 'rssi', e.rssi);
  * });
  *
- * // Start scanning and advertising
  * await barnard.startAuto();
- *
- * // Later: cleanup
- * unsubscribe();
+ * // ...
+ * unsub();
  * await barnard.dispose();
  * ```
  */
 export class BarnardManager {
   private subscriptions: EmitterSubscription[] = [];
 
-  /**
-   * Get platform capabilities.
-   */
   async getCapabilities(): Promise<BarnardCapabilities> {
     return BarnardModule.getCapabilities();
   }
 
-  /**
-   * Get current state (scanning/advertising status).
-   */
   async getState(): Promise<BarnardState> {
     return BarnardModule.getState();
   }
 
-  /**
-   * Get current event mode state.
-   */
-  async getEventMode(): Promise<EventModeState> {
-    return BarnardModule.getEventMode();
+  /** v2: currently joined event code, or null. */
+  async getCurrentEventCode(): Promise<string | null> {
+    return BarnardModule.getCurrentEventCode();
+  }
+
+  /** v2: this device's displayId (8 lowercase hex chars). */
+  async getMyDisplayId(): Promise<string> {
+    return BarnardModule.getMyDisplayId();
+  }
+
+  /** v2: inner 16-byte RPI for the current ENIN as 32-char hex. */
+  async getCurrentRpi(): Promise<string> {
+    return BarnardModule.getCurrentRpi();
+  }
+
+  /** v2: current ENIN (floor(unix_seconds / 600)). */
+  async getCurrentEnin(): Promise<number> {
+    return BarnardModule.getCurrentEnin();
   }
 
   /**
-   * Start BLE scanning for nearby devices.
-   *
-   * @param config - Optional scan configuration
+   * v2: raw 16-byte TEK as 32-char lowercase hex. Explicit privacy egress;
+   * the SDK never transmits TEK over BLE.
    */
+  async exportCurrentTek(): Promise<string> {
+    return BarnardModule.exportCurrentTek();
+  }
+
   async startScan(config?: ScanConfig): Promise<void> {
     return BarnardModule.startScan(config);
   }
 
-  /**
-   * Stop BLE scanning.
-   */
   async stopScan(): Promise<void> {
     return BarnardModule.stopScan();
   }
 
-  /**
-   * Start BLE advertising as a peripheral.
-   *
-   * @param config - Optional advertise configuration
-   */
   async startAdvertise(config?: AdvertiseConfig): Promise<void> {
     return BarnardModule.startAdvertise(config);
   }
 
-  /**
-   * Stop BLE advertising.
-   */
   async stopAdvertise(): Promise<void> {
     return BarnardModule.stopAdvertise();
   }
 
-  /**
-   * Start both scanning and advertising simultaneously.
-   *
-   * @param config - Optional auto configuration
-   * @returns Result indicating which operations started successfully
-   */
   async startAuto(config?: AutoConfig): Promise<AutoStartResult> {
     return BarnardModule.startAuto(config);
   }
 
-  /**
-   * Stop both scanning and advertising.
-   */
   async stopAuto(): Promise<void> {
     return BarnardModule.stopAuto();
   }
 
-  /**
-   * Join an event and enable TEK exchange/resolution.
-   */
   async joinEvent(eventCode: string): Promise<void> {
     return BarnardModule.joinEvent(eventCode);
   }
 
-  /**
-   * Leave event mode and return to anonymous mode.
-   */
   async leaveEvent(): Promise<void> {
     return BarnardModule.leaveEvent();
   }
 
-  /**
-   * Get exchanged TEKs for the specified event code.
-   */
-  async getExchangedTeks(eventCode: string): Promise<TekEntry[]> {
-    return BarnardModule.getExchangedTeks(eventCode);
-  }
-
-  /**
-   * Clear TEKs for the specified event code.
-   */
-  async clearTeksForEvent(eventCode: string): Promise<number> {
-    return BarnardModule.clearTeksForEvent(eventCode);
-  }
-
-  /**
-   * Clear all exchanged TEKs.
-   */
-  async clearAllTeks(): Promise<number> {
-    return BarnardModule.clearAllTeks();
-  }
-
-  /**
-   * Dispose of the manager and release resources.
-   *
-   * Resolves once the native module has finished releasing its resources.
-   * Always await this when tearing down, to avoid leaking scan/advertise sessions.
-   */
   async dispose(): Promise<void> {
-    // Unsubscribe from all events
     this.subscriptions.forEach((sub) => sub.remove());
     this.subscriptions = [];
-
-    // Call native dispose and propagate completion to the caller
     await BarnardModule.dispose();
   }
 
-  /**
-   * Subscribe to detection events.
-   *
-   * @param callback - Function to call when a detection occurs
-   * @returns Function to unsubscribe
-   */
   onDetection(callback: (event: DetectionEvent) => void): () => void {
     return this.addEventListener('BarnardDetection', callback);
   }
 
-  /**
-   * Subscribe to state change events.
-   *
-   * @param callback - Function to call when state changes
-   * @returns Function to unsubscribe
-   */
+  onRssiUpdate(callback: (event: RssiUpdateEvent) => void): () => void {
+    return this.addEventListener('BarnardRssiUpdate', callback);
+  }
+
   onStateChange(callback: (event: StateEvent) => void): () => void {
     return this.addEventListener('BarnardState', callback);
   }
 
-  /**
-   * Subscribe to constraint violation events.
-   *
-   * @param callback - Function to call when a constraint is violated
-   * @returns Function to unsubscribe
-   */
   onConstraint(callback: (event: ConstraintEvent) => void): () => void {
     return this.addEventListener('BarnardConstraint', callback);
   }
 
-  /**
-   * Subscribe to error events.
-   *
-   * @param callback - Function to call when an error occurs
-   * @returns Function to unsubscribe
-   */
   onError(callback: (event: ErrorEvent) => void): () => void {
     return this.addEventListener('BarnardError', callback);
   }
 
-  /**
-   * Subscribe to debug events.
-   *
-   * @param callback - Function to call when a debug event occurs
-   * @returns Function to unsubscribe
-   */
   onDebug(callback: (event: DebugEvent) => void): () => void {
     return this.addEventListener('BarnardDebug', callback);
   }
 
-  /**
-   * Subscribe to all events.
-   *
-   * @param callback - Function to call when any event occurs
-   * @returns Function to unsubscribe
-   */
   onEvent(callback: (event: BarnardEvent) => void): () => void {
-    const detectionUnsub = this.onDetection(callback);
-    const stateUnsub = this.onStateChange(callback);
-    const constraintUnsub = this.onConstraint(callback);
-    const errorUnsub = this.onError(callback);
-    const debugUnsub = this.onDebug(callback);
+    const detection = this.onDetection(callback);
+    const rssi = this.onRssiUpdate(callback);
+    const state = this.onStateChange(callback);
+    const constraint = this.onConstraint(callback);
+    const error = this.onError(callback);
+    const debug = this.onDebug(callback);
 
     return () => {
-      detectionUnsub();
-      stateUnsub();
-      constraintUnsub();
-      errorUnsub();
-      debugUnsub();
+      detection();
+      rssi();
+      state();
+      constraint();
+      error();
+      debug();
     };
   }
 
-  /**
-   * Internal helper to subscribe to native events.
-   */
   private addEventListener<T>(
     eventName: string,
     callback: (event: T) => void

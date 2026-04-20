@@ -1,8 +1,29 @@
+// Copyright 2024-2026 The Greeting Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style license.
+
 import CommonCrypto
 import CryptoKit
 import Foundation
 
+/// GAEN v1.2-compatible cryptographic utilities for Resolvable ID.
+///
+/// Key derivation chain:
+/// ```
+/// DeviceSecret (32 bytes)
+///      |
+///      +-- Anonymous Mode: TEK = HKDF(DeviceSecret, "barnard-tek-anonymous", 16)
+///      |
+///      +-- Event Mode: TEK = HKDF(DeviceSecret || EventCode, "barnard-tek", 16)
+///                           |
+///                           v
+///                      RPIK = HKDF(TEK, "EN-RPIK", 16)
+///                           |
+///                           v
+///                      RPI = AES128-ECB(RPIK, PaddedData)
+/// ```
 enum BarnardCrypto {
+  // MARK: - TEK Derivation
+
   static func deriveTekForEvent(deviceSecret: Data, eventCode: String) -> Data {
     guard let eventCodeData = eventCode.data(using: .utf8) else {
       return generateRandomBytes(16)
@@ -31,6 +52,8 @@ enum BarnardCrypto {
     return derived.withUnsafeBytes { Data($0) }
   }
 
+  // MARK: - RPIK Derivation
+
   static func deriveRpik(from tek: Data) -> Data {
     guard tek.count == 16 else {
       return Data(count: 16)
@@ -45,6 +68,8 @@ enum BarnardCrypto {
 
     return derived.withUnsafeBytes { Data($0) }
   }
+
+  // MARK: - RPI Generation
 
   static func generateRpi(rpik: Data, enin: UInt32) -> Data {
     guard rpik.count == 16 else {
@@ -77,13 +102,10 @@ enum BarnardCrypto {
           CCOperation(kCCEncrypt),
           CCAlgorithm(kCCAlgorithmAES128),
           CCOptions(kCCOptionECBMode),
-          keyPtr.baseAddress,
-          key.count,
+          keyPtr.baseAddress, key.count,
           nil,
-          inputPtr.baseAddress,
-          plaintext.count,
-          &outputBuffer,
-          outputBuffer.count,
+          inputPtr.baseAddress, plaintext.count,
+          &outputBuffer, outputBuffer.count,
           &dataOutMoved
         )
       }
@@ -92,9 +114,13 @@ enum BarnardCrypto {
     return status == kCCSuccess ? Data(outputBuffer) : Data(count: 16)
   }
 
+  // MARK: - ENIN Calculation
+
   static func calculateEnin(for date: Date = Date()) -> UInt32 {
     UInt32(Int(date.timeIntervalSince1970) / 600)
   }
+
+  // MARK: - EventCodeHash
 
   static func computeEventCodeHash(_ eventCode: String) -> Data {
     guard let eventCodeData = eventCode.data(using: .utf8) else {
@@ -105,38 +131,31 @@ enum BarnardCrypto {
     return Data(hash).prefix(8)
   }
 
-  static func resolveRpi(_ rpi: Data, knownTeks: [Data], currentEnin: UInt32? = nil) -> Data? {
-    guard rpi.count == 16 else { return nil }
+  // MARK: - Display ID (v2)
 
-    let enin = currentEnin ?? calculateEnin()
-
-    for tek in knownTeks {
-      guard tek.count == 16 else { continue }
-
-      let rpik = deriveRpik(from: tek)
-
-      for offset in -6 ... 1 {
-        let signed = Int64(enin) + Int64(offset)
-        guard signed >= 0, signed <= Int64(UInt32.max) else { continue }
-        let testEnin = UInt32(signed)
-        let candidate = generateRpi(rpik: rpik, enin: testEnin)
-
-        if candidate == rpi {
-          return tek
-        }
-      }
-    }
-
-    return nil
+  /// v2 displayId: `SHA256(TEK)[0:4]` = 4 bytes.
+  static func displayId4(from tek: Data) -> Data {
+    let hash = SHA256.hash(data: tek)
+    return Data(hash).prefix(4)
   }
 
-  static func displayId(from tek: Data) -> String {
-    tek.prefix(3).map { String(format: "%02x", $0) }.joined()
+  /// v2 displayId hex: 8 lowercase hex chars.
+  static func displayIdString(from tek: Data) -> String {
+    displayId4(from: tek).hexString
   }
+
+  // MARK: - Random Bytes
 
   static func generateRandomBytes(_ count: Int) -> Data {
     var bytes = [UInt8](repeating: 0, count: count)
     _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
     return Data(bytes)
+  }
+}
+
+/// Lowercase-hex helpers for the RN bridge boundary.
+extension Data {
+  var hexString: String {
+    map { String(format: "%02x", $0) }.joined()
   }
 }

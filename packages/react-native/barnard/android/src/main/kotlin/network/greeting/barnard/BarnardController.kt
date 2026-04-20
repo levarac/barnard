@@ -1,3 +1,6 @@
+// Copyright 2024-2026 The Greeting Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style license.
+
 package network.greeting.barnard
 
 import android.Manifest
@@ -31,10 +34,23 @@ import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
+import network.greeting.barnard.BarnardCrypto.toHex
 import java.util.UUID
 
 private const val TAG = "BarnardBLE"
 
+/**
+ * Barnard v2 BLE controller (React Native bridge variant).
+ *
+ * Mirrors the Flutter v2 controller but emits events via WritableMap
+ * callbacks (onEvent / onDebugEvent) instead of a method channel.
+ *
+ * - B002 RPID (Read, 17 bytes)
+ * - B003 displayId (Read, 4 bytes) — SHA256(TEK)[0:4]
+ * - B004 EventCodeHash (Read, 0 or 8 bytes)
+ *
+ * TEK is never transmitted over BLE in v2.
+ */
 internal class BarnardController(
     private val appContext: Context
 ) {
@@ -47,7 +63,7 @@ internal class BarnardController(
 
     private val serviceUuid: UUID = UUID.fromString("0000B001-0000-1000-8000-00805F9B34FB")
     private val rpidCharUuid: UUID = UUID.fromString("0000B002-0000-1000-8000-00805F9B34FB")
-    private val tekCharUuid: UUID = UUID.fromString("0000B003-0000-1000-8000-00805F9B34FB")
+    private val displayIdCharUuid: UUID = UUID.fromString("0000B003-0000-1000-8000-00805F9B34FB")
     private val eventCodeHashCharUuid: UUID = UUID.fromString("0000B004-0000-1000-8000-00805F9B34FB")
 
     // MARK: - Bluetooth
@@ -71,8 +87,6 @@ internal class BarnardController(
     private var eventCode: String? = null
     private var currentTek: ByteArray = ByteArray(16)
 
-    private val tekStorage: BarnardTekStorage by lazy { BarnardTekStorage(appContext) }
-
     // MARK: - Discovery State
 
     private val discoveredRssi: MutableMap<String, Int> = mutableMapOf()
@@ -88,15 +102,24 @@ internal class BarnardController(
     private val maxConnectQueue: Int = 20
     private val cooldownPerPeerMs: Long = 10_000
 
-    // MARK: - Central GATT State
+    // MARK: - Central GATT State (v2)
 
     private data class GattReadValues(
         var eventCodeHash: ByteArray? = null,
         var rpid: ByteArray? = null,
-        var tek: ByteArray? = null
+        var detectedDisplayId: ByteArray? = null
     )
 
     private val peripheralReadValues: MutableMap<String, GattReadValues> = mutableMapOf()
+
+    // MARK: - Known Peers
+
+    private data class KnownPeer(
+        val rpid: ByteArray,
+        val detectedDisplayId: String?
+    )
+
+    private val knownPeers: MutableMap<String, KnownPeer> = mutableMapOf()
 
     // MARK: - Storage
 
@@ -129,10 +152,10 @@ internal class BarnardController(
         onDebugEvent = null
     }
 
+    // MARK: - Public API
+
     fun getCapabilities(): WritableMap {
-        val transports = Arguments.createArray().apply {
-            pushString("ble")
-        }
+        val transports = Arguments.createArray().apply { pushString("ble") }
         return Arguments.createMap().apply {
             putArray("supportedTransports", transports)
             putBoolean("supportsConnectionlessRpid", false)
@@ -146,7 +169,6 @@ internal class BarnardController(
         return Arguments.createMap().apply {
             putBoolean("isScanning", isScanning)
             putBoolean("isAdvertising", isAdvertising)
-            putString("eventMode", if (isEventMode) "event" else "anonymous")
             if (eventCode != null) {
                 putString("eventCode", eventCode)
             } else {
@@ -155,16 +177,27 @@ internal class BarnardController(
         }
     }
 
-    fun getEventMode(): WritableMap {
-        return Arguments.createMap().apply {
-            putString("mode", if (isEventMode) "event" else "anonymous")
-            if (eventCode != null) {
-                putString("eventCode", eventCode)
-            } else {
-                putNull("eventCode")
-            }
-        }
+    /** v2 API: current event code (or null). */
+    fun getCurrentEventCode(): String? = eventCode
+
+    /** v2 API: 8-char lowercase hex `SHA256(TEK)[0:4]`. */
+    fun getMyDisplayId(): String = BarnardCrypto.displayIdString(currentTek)
+
+    /** v2 API: 32-char lowercase hex for the inner 16-byte RPI. */
+    fun getCurrentRpi(): String {
+        val rpik = BarnardCrypto.deriveRpik(currentTek)
+        val rpi = BarnardCrypto.generateRpi(rpik, BarnardCrypto.calculateEnin())
+        return rpi.toHex()
     }
+
+    /** v2 API: current ENIN as Long. */
+    fun getCurrentEnin(): Long = BarnardCrypto.calculateEnin().toLong()
+
+    /**
+     * v2 API: raw TEK as 32-char lowercase hex. Explicit privacy egress;
+     * the SDK never transmits TEK over BLE.
+     */
+    fun exportCurrentTek(): String = currentTek.toHex()
 
     fun startScan(allowDuplicates: Boolean) {
         this.allowDuplicates = allowDuplicates
@@ -199,7 +232,7 @@ internal class BarnardController(
             "join_event",
             mapOf(
                 "eventCode" to code,
-                "displayId" to BarnardCrypto.displayId(currentTek)
+                "myDisplayId" to BarnardCrypto.displayIdString(currentTek)
             )
         )
     }
@@ -215,33 +248,6 @@ internal class BarnardController(
 
         emitState("leave_event")
         emitDebug("info", "leave_event", null)
-    }
-
-    fun getExchangedTeks(eventCode: String): WritableArray {
-        val eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
-        val entries = tekStorage.getEntries(eventCodeHash)
-        return Arguments.createArray().apply {
-            entries.forEach { entry ->
-                pushMap(toWritableMap(entry.toMap()))
-            }
-        }
-    }
-
-    fun clearTeksForEvent(eventCode: String): Int {
-        val eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
-        val count = tekStorage.clear(eventCodeHash)
-        emitDebug(
-            "info",
-            "clear_teks_for_event",
-            mapOf("eventCode" to eventCode, "count" to count)
-        )
-        return count
-    }
-
-    fun clearAllTeks(): Int {
-        val count = tekStorage.clearAll()
-        emitDebug("info", "clear_all_teks", mapOf("count" to count))
-        return count
     }
 
     private val isEventMode: Boolean
@@ -309,12 +315,9 @@ internal class BarnardController(
             .setServiceUuid(ParcelUuid(serviceUuid))
             .build()
 
-        Log.i(TAG, "Starting BLE scan with scanner: $scanner, callback: $cb, filter: $serviceUuid")
         scanner.startScan(listOf(filter), settings, cb)
         isScanning = true
-
         scanner.flushPendingScanResults(cb)
-        Log.i(TAG, "BLE scan started (LOW_LATENCY, service UUID filter)")
         emitState("scan_start")
         emitDebug("info", "scan_start", mapOf("allowDuplicates" to allowDuplicates))
     }
@@ -337,6 +340,7 @@ internal class BarnardController(
         lastDiscoveryNameById.clear()
         lastConnectAttemptAtMs.clear()
         peripheralReadValues.clear()
+        knownPeers.clear()
 
         emitState("scan_stop")
         emitDebug("info", "scan_stop", null)
@@ -373,8 +377,7 @@ internal class BarnardController(
             )
             return
         }
-
-        val advertiser = a.bluetoothLeAdvertiser ?: run {
+        val adv = a.bluetoothLeAdvertiser ?: run {
             emitError("advertise_failed", "BluetoothLeAdvertiser is null", recoverable = true)
             return
         }
@@ -407,13 +410,11 @@ internal class BarnardController(
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .build()
-
         val data = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(serviceUuid))
             .setIncludeDeviceName(isDebugBuild())
             .build()
-
-        advertiser.startAdvertising(settings, data, advertiseCallback)
+        adv.startAdvertising(settings, data, advertiseCallback)
         isAdvertising = true
         emitState("advertise_start")
         emitDebug(
@@ -423,7 +424,6 @@ internal class BarnardController(
                 "formatVersion" to formatVersion,
                 "serviceUuid" to serviceUuid.toString(),
                 "localName" to localName,
-                "eventMode" to isEventMode
             )
         )
     }
@@ -447,7 +447,7 @@ internal class BarnardController(
         emitDebug("info", "advertise_stop", null)
     }
 
-    // MARK: - GATT Server
+    // MARK: - GATT Server (v2)
 
     @SuppressLint("MissingPermission")
     private fun ensureGattServer() {
@@ -468,11 +468,7 @@ internal class BarnardController(
     @SuppressLint("MissingPermission")
     private fun buildAndAddGattServer() {
         if (!hasConnectPermission()) {
-            emitConstraint(
-                "permission_denied",
-                "Missing BLUETOOTH_CONNECT permission",
-                requiredAction = "grant_permission"
-            )
+            emitConstraint("permission_denied", "Missing BLUETOOTH_CONNECT permission", requiredAction = "grant_permission")
             return
         }
         val manager = bluetoothManager ?: return
@@ -480,34 +476,30 @@ internal class BarnardController(
 
         val service = BluetoothGattService(serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY)
 
-        val rpidCh = BluetoothGattCharacteristic(
+        service.addCharacteristic(BluetoothGattCharacteristic(
             rpidCharUuid,
             BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ,
-        )
-        service.addCharacteristic(rpidCh)
+        ))
 
-        val tekCh = BluetoothGattCharacteristic(
-            tekCharUuid,
-            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
-            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE,
-        )
-        service.addCharacteristic(tekCh)
+        // v2: B003 = 4-byte displayId, Read only.
+        service.addCharacteristic(BluetoothGattCharacteristic(
+            displayIdCharUuid,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ,
+        ))
 
-        val eventCodeHashCh = BluetoothGattCharacteristic(
+        service.addCharacteristic(BluetoothGattCharacteristic(
             eventCodeHashCharUuid,
             BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ,
-        )
-        service.addCharacteristic(eventCodeHashCh)
+        ))
 
         server.addService(service)
         gattServer = server
-        emitDebug(
-            "info",
-            "gatt_server_started",
-            mapOf("characteristics" to listOf("RPID", "TEK", "EventCodeHash"))
-        )
+        emitDebug("info", "gatt_server_started", mapOf(
+            "characteristics" to listOf("RPID", "displayId", "EventCodeHash")
+        ))
     }
 
     // MARK: - RPID Payload Generation
@@ -523,16 +515,19 @@ internal class BarnardController(
         return payload
     }
 
-    // MARK: - Event Emission
+    // MARK: - Event Emission (v2 payload via WritableMap)
 
     private fun emitState(reasonCode: String?) {
+        val state = Arguments.createMap().apply {
+            putBoolean("isScanning", isScanning)
+            putBoolean("isAdvertising", isAdvertising)
+            if (eventCode != null) putString("eventCode", eventCode) else putNull("eventCode")
+        }
         val payload = Arguments.createMap().apply {
             putString("type", "state")
             putString("timestamp", BarnardIso8601.now())
-            putMap("state", getState())
-            if (reasonCode != null) {
-                putString("reasonCode", reasonCode)
-            }
+            putMap("state", state)
+            if (reasonCode != null) putString("reasonCode", reasonCode) else putNull("reasonCode")
         }
         mainHandler.post { onEvent?.invoke("BarnardState", payload) }
     }
@@ -542,12 +537,8 @@ internal class BarnardController(
             putString("type", "constraint")
             putString("timestamp", BarnardIso8601.now())
             putString("code", code)
-            if (message != null) {
-                putString("message", message)
-            }
-            if (requiredAction != null) {
-                putString("requiredAction", requiredAction)
-            }
+            if (message != null) putString("message", message) else putNull("message")
+            if (requiredAction != null) putString("requiredAction", requiredAction) else putNull("requiredAction")
         }
         mainHandler.post { onEvent?.invoke("BarnardConstraint", payload) }
     }
@@ -558,9 +549,7 @@ internal class BarnardController(
             putString("timestamp", BarnardIso8601.now())
             putString("code", code)
             putString("message", message)
-            if (recoverable != null) {
-                putBoolean("recoverable", recoverable)
-            }
+            if (recoverable != null) putBoolean("recoverable", recoverable) else putNull("recoverable")
         }
         mainHandler.post { onEvent?.invoke("BarnardError", payload) }
     }
@@ -569,7 +558,7 @@ internal class BarnardController(
         timestampMs: Long,
         rssi: Int,
         payloadBytes: ByteArray,
-        resolvedTek: ByteArray? = null,
+        detectedDisplayIdHex: String?,
         debugLocalName: String? = null
     ) {
         if (payloadBytes.size != 17) {
@@ -581,48 +570,41 @@ internal class BarnardController(
             emitDebug("warn", "payload_unsupported_version", mapOf("formatVersion" to version))
             return
         }
-        val rpid = payloadBytes.copyOfRange(1, 17)
-        val displayId = rpid.copyOfRange(0, 4).joinToString("") { b -> "%02x".format(b) }
 
-        var resolvedTekToEmit = resolvedTek
-        var resolvedDisplayId: String? = null
-
-        if (resolvedTekToEmit == null && isEventMode) {
-            val eventCodeHash = getEventCodeHash()
-            val knownTeks = tekStorage.getTeks(eventCodeHash)
-
-            resolvedTekToEmit = BarnardCrypto.resolveRpi(rpid, knownTeks)
-            if (resolvedTekToEmit != null) {
-                tekStorage.updateLastSeen(resolvedTekToEmit, eventCodeHash)
-            }
-        }
-
-        if (resolvedTekToEmit != null) {
-            resolvedDisplayId = BarnardCrypto.displayId(resolvedTekToEmit)
-        }
+        val reporterPayload = computePayload(timestampMs)
+        val enin = BarnardCrypto.calculateEnin(timestampMs).toLong()
 
         val payload = Arguments.createMap().apply {
             putString("type", "detection")
             putString("timestamp", BarnardIso8601.fromMs(timestampMs))
             putString("transport", "ble")
             putInt("formatVersion", version)
-            putString("rpid", Base64.encodeToString(rpid, Base64.NO_WRAP))
-            putString("displayId", displayId)
+            putString("rpid", payloadBytes.toHex())
+            putString("reporterRpid", reporterPayload.toHex())
+            if (detectedDisplayIdHex != null) putString("detectedDisplayId", detectedDisplayIdHex) else putNull("detectedDisplayId")
+            putDouble("enin", enin.toDouble())
             putInt("rssi", rssi)
             putNull("rssiSummary")
-            putString("payloadRaw", Base64.encodeToString(payloadBytes, Base64.NO_WRAP))
-            if (resolvedTekToEmit != null) {
-                putString("resolvedTek", Base64.encodeToString(resolvedTekToEmit, Base64.NO_WRAP))
-            }
-            if (resolvedDisplayId != null) {
-                putString("resolvedDisplayId", resolvedDisplayId)
-            }
-            if (isDebugBuild() && debugLocalName != null) {
-                putString("debugLocalName", debugLocalName)
+            putString("payloadRaw", payloadBytes.toHex())
+            if (isDebugBuild() && debugLocalName != null) putString("debugLocalName", debugLocalName)
+        }
+        mainHandler.post { onEvent?.invoke("BarnardDetection", payload) }
+    }
+
+    private fun emitRssiUpdate(address: String, rssi: Int, timestampMs: Long) {
+        val peer = knownPeers[address] ?: return
+        val payload = Arguments.createMap().apply {
+            putString("type", "rssi_update")
+            putString("timestamp", BarnardIso8601.fromMs(timestampMs))
+            putString("rpid", peer.rpid.toHex())
+            putInt("rssi", rssi)
+            if (peer.detectedDisplayId != null) {
+                putString("detectedDisplayId", peer.detectedDisplayId)
+            } else {
+                putNull("detectedDisplayId")
             }
         }
-
-        mainHandler.post { onEvent?.invoke("BarnardDetection", payload) }
+        mainHandler.post { onEvent?.invoke("BarnardRssiUpdate", payload) }
     }
 
     private fun emitDebug(level: String, name: String, data: Map<String, Any?>?) {
@@ -631,11 +613,44 @@ internal class BarnardController(
             putString("timestamp", BarnardIso8601.now())
             putString("level", level)
             putString("name", name)
-            if (data != null) {
-                putMap("data", toWritableMap(data))
-            }
+            if (data != null) putMap("data", toWritableMap(data)) else putNull("data")
         }
         mainHandler.post { onDebugEvent?.invoke("BarnardDebug", payload) }
+    }
+
+    private fun toWritableMap(src: Map<String, Any?>): WritableMap {
+        val map = Arguments.createMap()
+        for ((k, v) in src) {
+            when (v) {
+                null -> map.putNull(k)
+                is Boolean -> map.putBoolean(k, v)
+                is Int -> map.putInt(k, v)
+                is Long -> map.putDouble(k, v.toDouble())
+                is Double -> map.putDouble(k, v)
+                is String -> map.putString(k, v)
+                is List<*> -> {
+                    val arr = Arguments.createArray()
+                    for (item in v) {
+                        when (item) {
+                            null -> arr.pushNull()
+                            is Boolean -> arr.pushBoolean(item)
+                            is Int -> arr.pushInt(item)
+                            is Long -> arr.pushDouble(item.toDouble())
+                            is Double -> arr.pushDouble(item)
+                            is String -> arr.pushString(item)
+                            else -> arr.pushString(item.toString())
+                        }
+                    }
+                    map.putArray(k, arr)
+                }
+                is Map<*, *> -> {
+                    @Suppress("UNCHECKED_CAST")
+                    map.putMap(k, toWritableMap(v as Map<String, Any?>))
+                }
+                else -> map.putString(k, v.toString())
+            }
+        }
+        return map
     }
 
     // MARK: - Permissions
@@ -683,12 +698,10 @@ internal class BarnardController(
             }
 
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                Log.d(TAG, "onScanResult: ${result.device?.address} name=${result.scanRecord?.deviceName} rssi=${result.rssi}")
                 handleScanResult(result)
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
-                Log.d(TAG, "onBatchScanResults: ${results.size} results")
                 for (r in results) handleScanResult(r)
             }
         }
@@ -705,18 +718,16 @@ internal class BarnardController(
                     "address" to address,
                     "name" to result.scanRecord?.deviceName,
                     "hasService" to (result.scanRecord?.serviceUuids?.any { it.uuid == serviceUuid } == true),
-                    "isConnectable" to isConnectableResult(result)
+                    "isConnectable" to isConnectableResult(result),
                 )
             )
             return
         }
-
         val nowMs = System.currentTimeMillis()
         if (!allowDuplicates) {
             val last = discoveredAt[address]
             if (last != null && nowMs - last < 2_000) return
         }
-
         discoveredRssi[address] = result.rssi
         discoveredAt[address] = nowMs
         if (isDebugBuild()) {
@@ -725,17 +736,17 @@ internal class BarnardController(
             }
         }
 
-        emitDebug(
-            "trace",
-            "ble_discovery_result",
-            mapOf(
-                "id" to address,
-                "rssi" to result.rssi,
-                "name" to result.scanRecord?.deviceName
-            )
-        )
+        emitDebug("trace", "ble_discovery_result", mapOf(
+            "id" to address,
+            "rssi" to result.rssi,
+            "name" to result.scanRecord?.deviceName
+        ))
 
-        enqueueConnect(device)
+        if (knownPeers.containsKey(address)) {
+            emitRssiUpdate(address, result.rssi, nowMs)
+        } else {
+            enqueueConnect(device)
+        }
     }
 
     private fun isBarnardScanResult(result: ScanResult): Boolean {
@@ -744,10 +755,6 @@ internal class BarnardController(
         val hasService = uuids?.any { it.uuid == serviceUuid } == true
         val name = record.deviceName
         val isBnrd = name == "BNRD" || (isDebugBuild() && name?.startsWith("BND-") == true)
-        Log.d(
-            TAG,
-            "isBarnardScanResult: addr=${result.device?.address} name=$name hasService=$hasService isBnrd=$isBnrd uuids=$uuids"
-        )
         if (hasService) return true
         if (isBnrd) return true
         return false
@@ -788,11 +795,7 @@ internal class BarnardController(
             return
         }
         if (!hasConnectPermission()) {
-            emitConstraint(
-                "permission_denied",
-                "Missing BLUETOOTH_CONNECT permission",
-                requiredAction = "grant_permission"
-            )
+            emitConstraint("permission_denied", "Missing BLUETOOTH_CONNECT permission", requiredAction = "grant_permission")
             return
         }
         lastConnectAttemptAtMs[key] = nowMs
@@ -808,15 +811,7 @@ internal class BarnardController(
         emitDebug("trace", "connect_attempt", mapOf("address" to device.address))
     }
 
-    // MARK: - GATT Exchange Logic
-
-    private fun shouldExchangeTek(remoteEventCodeHash: ByteArray?): Boolean {
-        if (!isEventMode) return false
-        if (remoteEventCodeHash == null || remoteEventCodeHash.isEmpty()) return false
-
-        val myHash = getEventCodeHash()
-        return myHash.contentEquals(remoteEventCodeHash)
-    }
+    // MARK: - GATT Client (v2)
 
     @SuppressLint("MissingPermission")
     private fun finishConnection(gatt: BluetoothGatt) {
@@ -825,8 +820,6 @@ internal class BarnardController(
         lastDiscoveryNameById.remove(address)
         gatt.disconnect()
     }
-
-    // MARK: - GATT Client Callback
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
@@ -881,11 +874,7 @@ internal class BarnardController(
             }
         }
 
-        override fun onCharacteristicRead(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            status: Int
-        ) {
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             val value = characteristic.value ?: ByteArray(0)
             handleCharacteristicRead(gatt, characteristic.uuid, status, value)
         }
@@ -908,6 +897,15 @@ internal class BarnardController(
             }
 
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                if (uuid == displayIdCharUuid) {
+                    emitDebug("warn", "gatt_b003_read_failed", mapOf(
+                        "address" to address,
+                        "status" to status,
+                    ))
+                    peripheralReadValues[address]?.detectedDisplayId = null
+                    completeGattExchange(gatt)
+                    return
+                }
                 emitError("read_failed", "status=$status uuid=$uuid", recoverable = true)
                 finishConnection(gatt)
                 return
@@ -916,15 +914,11 @@ internal class BarnardController(
             when (uuid) {
                 eventCodeHashCharUuid -> {
                     peripheralReadValues[address]?.eventCodeHash = value
-                    emitDebug(
-                        "trace",
-                        "gatt_read_event_code_hash",
-                        mapOf(
-                            "address" to address,
-                            "bytes" to value.size,
-                            "isEmpty" to value.isEmpty()
-                        )
-                    )
+                    emitDebug("trace", "gatt_read_event_code_hash", mapOf(
+                        "address" to address,
+                        "bytes" to value.size,
+                        "isEmpty" to value.isEmpty()
+                    ))
                     val rpidCh = svc.getCharacteristic(rpidCharUuid)
                     if (rpidCh != null && hasConnectPermission()) {
                         gatt.readCharacteristic(rpidCh)
@@ -935,86 +929,36 @@ internal class BarnardController(
 
                 rpidCharUuid -> {
                     peripheralReadValues[address]?.rpid = value
-                    emitDebug(
-                        "trace",
-                        "gatt_read_rpid",
-                        mapOf(
-                            "address" to address,
-                            "bytes" to value.size
-                        )
-                    )
-                    val remoteHash = peripheralReadValues[address]?.eventCodeHash
-                    if (shouldExchangeTek(remoteHash)) {
-                        val tekCh = svc.getCharacteristic(tekCharUuid)
-                        if (tekCh != null && hasConnectPermission()) {
-                            gatt.readCharacteristic(tekCh)
-                        } else {
-                            completeGattExchange(gatt)
-                        }
+                    emitDebug("trace", "gatt_read_rpid", mapOf(
+                        "address" to address,
+                        "bytes" to value.size
+                    ))
+                    val displayIdCh = svc.getCharacteristic(displayIdCharUuid)
+                    if (displayIdCh != null && hasConnectPermission()) {
+                        gatt.readCharacteristic(displayIdCh)
                     } else {
+                        emitDebug("warn", "gatt_b003_missing", mapOf("address" to address))
                         completeGattExchange(gatt)
                     }
                 }
 
-                tekCharUuid -> {
-                    peripheralReadValues[address]?.tek = value
-                    emitDebug(
-                        "trace",
-                        "gatt_read_tek",
-                        mapOf(
+                displayIdCharUuid -> {
+                    if (value.size == 4) {
+                        peripheralReadValues[address]?.detectedDisplayId = value
+                        emitDebug("trace", "gatt_read_display_id", mapOf(
                             "address" to address,
-                            "bytes" to value.size
-                        )
-                    )
-                    val remoteHash = peripheralReadValues[address]?.eventCodeHash
-                    if (value.size == 16 && remoteHash != null && remoteHash.size == 8) {
-                        val entry = TekEntry(
-                            tek = value,
-                            eventCodeHash = remoteHash,
-                            exchangedAt = System.currentTimeMillis(),
-                            lastSeenAt = System.currentTimeMillis()
-                        )
-                        tekStorage.store(entry)
-                        emitDebug("info", "tek_received", mapOf("displayId" to BarnardCrypto.displayId(value)))
-                    }
-                    val tekCh = svc.getCharacteristic(tekCharUuid)
-                    if (tekCh != null && hasConnectPermission()) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            gatt.writeCharacteristic(
-                                tekCh,
-                                currentTek,
-                                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                            )
-                        } else {
-                            tekCh.value = currentTek
-                            gatt.writeCharacteristic(tekCh)
-                        }
+                            "displayId" to value.toHex(),
+                        ))
                     } else {
-                        completeGattExchange(gatt)
+                        emitDebug("warn", "gatt_b003_invalid_length", mapOf(
+                            "address" to address,
+                            "length" to value.size,
+                        ))
+                        peripheralReadValues[address]?.detectedDisplayId = null
                     }
+                    completeGattExchange(gatt)
                 }
             }
-        }
-
-        @SuppressLint("MissingPermission")
-        override fun onCharacteristicWrite(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            status: Int
-        ) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                emitError("write_failed", "status=$status", recoverable = true)
-            } else {
-                emitDebug(
-                    "trace",
-                    "gatt_write_tek",
-                    mapOf(
-                        "address" to (gatt.device?.address ?: ""),
-                        "displayId" to BarnardCrypto.displayId(currentTek)
-                    )
-                )
-            }
-            completeGattExchange(gatt)
         }
 
         private fun completeGattExchange(gatt: BluetoothGatt) {
@@ -1025,14 +969,19 @@ internal class BarnardController(
             if (rpidData != null) {
                 val rssi = discoveredRssi[address] ?: 0
                 val ts = discoveredAt[address] ?: System.currentTimeMillis()
-                emitDetection(ts, rssi, rpidData, values?.tek, lastDiscoveryNameById[address])
+                val detectedDisplayIdHex = values.detectedDisplayId?.toHex()
+                emitDetection(ts, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
+
+                if (rpidData.size == 17) {
+                    knownPeers[address] = KnownPeer(rpidData, detectedDisplayIdHex)
+                }
             }
 
             finishConnection(gatt)
         }
     }
 
-    // MARK: - GATT Server Callback
+    // MARK: - GATT Server Callback (v2)
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         @SuppressLint("MissingPermission")
@@ -1054,35 +1003,24 @@ internal class BarnardController(
                     server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
                     emitDebug(
                         "trace",
-                        "gatt_read_rpid",
+                        "gatt_respond_rpid",
                         mapOf(
                             "bytes" to payload.size,
                             "formatVersion" to (payload[0].toInt() and 0xFF),
-                            "displayId" to displayIdForPayload(payload)
                         )
                     )
                 }
 
-                tekCharUuid -> {
-                    if (isEventMode) {
-                        val slice =
-                            if (offset <= 0) currentTek
-                            else if (offset >= currentTek.size) ByteArray(0)
-                            else currentTek.copyOfRange(offset, currentTek.size)
-                        server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
-                        emitDebug(
-                            "trace",
-                            "gatt_respond_tek_read",
-                            mapOf("displayId" to BarnardCrypto.displayId(currentTek))
-                        )
-                    } else {
-                        server.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
-                        emitDebug(
-                            "trace",
-                            "gatt_reject_tek_read",
-                            mapOf("reason" to "anonymous_mode")
-                        )
-                    }
+                displayIdCharUuid -> {
+                    val displayId = BarnardCrypto.displayId4(currentTek)
+                    val slice =
+                        if (offset <= 0) displayId
+                        else if (offset >= displayId.size) ByteArray(0)
+                        else displayId.copyOfRange(offset, displayId.size)
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+                    emitDebug("trace", "gatt_respond_display_id", mapOf(
+                        "bytes" to displayId.size
+                    ))
                 }
 
                 eventCodeHashCharUuid -> {
@@ -1092,14 +1030,10 @@ internal class BarnardController(
                         else if (offset >= hash.size) ByteArray(0)
                         else hash.copyOfRange(offset, hash.size)
                     server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
-                    emitDebug(
-                        "trace",
-                        "gatt_respond_event_code_hash",
-                        mapOf(
-                            "bytes" to hash.size,
-                            "isEmpty" to hash.isEmpty()
-                        )
-                    )
+                    emitDebug("trace", "gatt_respond_event_code_hash", mapOf(
+                        "bytes" to hash.size,
+                        "isEmpty" to hash.isEmpty()
+                    ))
                 }
 
                 else -> {
@@ -1119,105 +1053,12 @@ internal class BarnardController(
             value: ByteArray?
         ) {
             val server = gattServer ?: return
-
-            if (characteristic.uuid != tekCharUuid) {
-                if (responseNeeded) {
-                    server.sendResponse(device, requestId, BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
-                }
-                return
-            }
-
-            if (value == null || value.size != 16) {
-                if (responseNeeded) {
-                    server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH, offset, null)
-                }
-                return
-            }
-
-            if (!isEventMode) {
-                if (responseNeeded) {
-                    server.sendResponse(device, requestId, BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
-                }
-                emitDebug("trace", "gatt_reject_tek_write", mapOf("reason" to "anonymous_mode"))
-                return
-            }
-
-            val eventCodeHash = getEventCodeHash()
-            val entry = TekEntry(
-                tek = value,
-                eventCodeHash = eventCodeHash,
-                exchangedAt = System.currentTimeMillis(),
-                lastSeenAt = System.currentTimeMillis()
-            )
-            tekStorage.store(entry)
-
             if (responseNeeded) {
-                server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+                server.sendResponse(device, requestId, BluetoothGatt.GATT_WRITE_NOT_PERMITTED, offset, null)
             }
-            emitDebug(
-                "info",
-                "tek_received_via_write",
-                mapOf("displayId" to BarnardCrypto.displayId(value))
-            )
-        }
-    }
-
-    private fun displayIdForPayload(payload: ByteArray): String {
-        if (payload.size < 5) return ""
-        return payload.copyOfRange(1, 5).joinToString("") { b -> "%02x".format(b) }
-    }
-
-    private fun toWritableMap(map: Map<*, *>): WritableMap {
-        val out = Arguments.createMap()
-        map.forEach { (k, v) ->
-            putDynamic(out, k?.toString() ?: return@forEach, v)
-        }
-        return out
-    }
-
-    private fun toWritableArray(list: List<*>): WritableArray {
-        val out = Arguments.createArray()
-        list.forEach { value ->
-            when (value) {
-                null -> out.pushNull()
-                is String -> out.pushString(value)
-                is Boolean -> out.pushBoolean(value)
-                is Int -> out.pushInt(value)
-                is Long -> {
-                    if (value in Int.MIN_VALUE..Int.MAX_VALUE) {
-                        out.pushInt(value.toInt())
-                    } else {
-                        out.pushDouble(value.toDouble())
-                    }
-                }
-                is Float -> out.pushDouble(value.toDouble())
-                is Double -> out.pushDouble(value)
-                is Map<*, *> -> out.pushMap(toWritableMap(value))
-                is List<*> -> out.pushArray(toWritableArray(value))
-                else -> out.pushString(value.toString())
-            }
-        }
-        return out
-    }
-
-    private fun putDynamic(map: WritableMap, key: String, value: Any?) {
-        when (value) {
-            null -> map.putNull(key)
-            is String -> map.putString(key, value)
-            is Boolean -> map.putBoolean(key, value)
-            is Int -> map.putInt(key, value)
-            is Long -> {
-                if (value in Int.MIN_VALUE..Int.MAX_VALUE) {
-                    map.putInt(key, value.toInt())
-                } else {
-                    map.putDouble(key, value.toDouble())
-                }
-            }
-            is Float -> map.putDouble(key, value.toDouble())
-            is Double -> map.putDouble(key, value)
-            is Map<*, *> -> map.putMap(key, toWritableMap(value))
-            is List<*> -> map.putArray(key, toWritableArray(value))
-            else -> map.putString(key, value.toString())
+            emitDebug("warn", "gatt_write_rejected", mapOf(
+                "uuid" to characteristic.uuid.toString(),
+            ))
         }
     }
 }
