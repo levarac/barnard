@@ -593,6 +593,10 @@ internal class BarnardController(
 
     private fun emitRssiUpdate(address: String, rssi: Int, timestampMs: Long) {
         val peer = knownPeers[address] ?: return
+        // Parity with RN iOS + Flutter iOS + Flutter Android: omit
+        // detectedDisplayId when it is null, rather than emitting an
+        // explicit null field. TS type accepts either, but wire parity
+        // across bridges is required for consumer fixtures.
         val payload = Arguments.createMap().apply {
             putString("type", "rssi_update")
             putString("timestamp", BarnardIso8601.fromMs(timestampMs))
@@ -600,8 +604,6 @@ internal class BarnardController(
             putInt("rssi", rssi)
             if (peer.detectedDisplayId != null) {
                 putString("detectedDisplayId", peer.detectedDisplayId)
-            } else {
-                putNull("detectedDisplayId")
             }
         }
         mainHandler.post { onEvent?.invoke("BarnardRssiUpdate", payload) }
