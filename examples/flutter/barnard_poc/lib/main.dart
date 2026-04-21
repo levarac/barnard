@@ -878,11 +878,14 @@ class _EventsTab extends StatelessWidget {
       children: <Widget>[
         _FilterBar(
           children: <Widget>[
-            Text(
-              "total $totalEvents · det $totalDetections · rssi $totalRssiUpdates · iss $totalIssues",
-              style: Theme.of(context).textTheme.bodySmall,
+            Flexible(
+              child: Text(
+                "total $totalEvents · det $totalDetections · rssi $totalRssiUpdates · iss $totalIssues",
+                style: Theme.of(context).textTheme.bodySmall,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-            const Spacer(),
+            const SizedBox(width: 8),
             FilterChip(
               label: const Text("Detections"),
               selected: onlyDetections,
