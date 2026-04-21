@@ -102,6 +102,11 @@ internal class BarnardController(
     private val maxConnectQueue: Int = 20
     private val cooldownPerPeerMs: Long = 10_000
 
+    // See Flutter Android variant: prevent `activeGatt` from pinning the
+    // queue forever when `connectGatt` never receives a callback.
+    private val connectTimeoutMs: Long = 8_000
+    private var connectWatchdog: Runnable? = null
+
     // MARK: - Central GATT State (v2)
 
     private data class GattReadValues(
@@ -331,6 +336,7 @@ internal class BarnardController(
         }
         scanCallback = null
         isScanning = false
+        cancelConnectWatchdog()
         connectQueue.clear()
         activeGatt?.close()
         activeGatt = null
@@ -824,6 +830,33 @@ internal class BarnardController(
                 device.connectGatt(appContext, false, gattCallback)
             }
         emitDebug("trace", "connect_attempt", mapOf("address" to device.address))
+        armConnectWatchdog(device.address ?: "")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun armConnectWatchdog(address: String) {
+        connectWatchdog?.let { mainHandler.removeCallbacks(it) }
+        val task = Runnable {
+            val current = activeGatt?.device?.address
+            if (current != address) return@Runnable
+            emitDebug(
+                "warn",
+                "connect_timeout",
+                mapOf("address" to address, "ms" to connectTimeoutMs)
+            )
+            activeGatt?.close()
+            activeGatt = null
+            peripheralReadValues.remove(address)
+            lastDiscoveryNameById.remove(address)
+            pumpConnectQueue()
+        }
+        connectWatchdog = task
+        mainHandler.postDelayed(task, connectTimeoutMs)
+    }
+
+    private fun cancelConnectWatchdog() {
+        connectWatchdog?.let { mainHandler.removeCallbacks(it) }
+        connectWatchdog = null
     }
 
     // MARK: - GATT Client (v2)
@@ -840,6 +873,7 @@ internal class BarnardController(
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                cancelConnectWatchdog()
                 emitError("connect_failed", "status=$status", recoverable = true)
                 gatt.close()
                 val address = gatt.device?.address ?: ""
@@ -850,9 +884,11 @@ internal class BarnardController(
                 return
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                cancelConnectWatchdog()
                 emitDebug("trace", "connected", mapOf("address" to gatt.device.address))
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                cancelConnectWatchdog()
                 val address = gatt.device?.address ?: ""
                 peripheralReadValues.remove(address)
                 lastDiscoveryNameById.remove(address)

@@ -68,6 +68,10 @@ final class BarnardBleController: NSObject {
   private let maxConcurrentConnections = 1
   private let cooldownPerPeerSeconds: TimeInterval = 10
   private let maxConnectQueue = 20
+  // See Flutter variant: CoreBluetooth's `connect()` has no deadline, so a
+  // hung connection pins `activePeripheral` forever and starves the queue.
+  private let connectTimeoutSeconds: TimeInterval = 8
+  private var connectWatchdog: DispatchWorkItem?
 
   private var peripheralCharacteristics: [UUID: [CBUUID: CBCharacteristic]] = [:]
   private var peripheralReadValues: [UUID: PeripheralGattValues] = [:]
@@ -382,6 +386,37 @@ final class BarnardBleController: NSObject {
     p.delegate = self
     centralManager.connect(p, options: nil)
     emitDebug(level: "trace", name: "connect_attempt", data: ["id": nextId.uuidString])
+    armConnectWatchdog(for: nextId)
+  }
+
+  private func armConnectWatchdog(for id: UUID) {
+    connectWatchdog?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self else { return }
+      guard let pinned = self.activePeripheral, pinned.identifier == id else {
+        return
+      }
+      self.emitDebug(level: "warn", name: "connect_timeout", data: [
+        "id": id.uuidString,
+        "seconds": self.connectTimeoutSeconds,
+      ])
+      self.centralManager.cancelPeripheralConnection(pinned)
+      self.peripheralCharacteristics.removeValue(forKey: id)
+      self.peripheralReadValues.removeValue(forKey: id)
+      self.lastDiscoveryNameById.removeValue(forKey: id)
+      self.activePeripheral = nil
+      self.pumpConnectQueue()
+    }
+    connectWatchdog = work
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + connectTimeoutSeconds,
+      execute: work
+    )
+  }
+
+  private func cancelConnectWatchdog() {
+    connectWatchdog?.cancel()
+    connectWatchdog = nil
   }
 
   // MARK: - GATT Exchange (Central, v2 flow: B004 -> B002 -> B003)
@@ -633,11 +668,13 @@ extension BarnardBleController: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    cancelConnectWatchdog()
     emitDebug(level: "trace", name: "connected", data: ["id": peripheral.identifier.uuidString])
     peripheral.discoverServices([discoveryServiceUUID])
   }
 
   func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    cancelConnectWatchdog()
     emitError(code: "connect_failed", message: error?.localizedDescription ?? "unknown", recoverable: true)
     let id = peripheral.identifier
     peripheralCharacteristics.removeValue(forKey: id)
@@ -647,6 +684,7 @@ extension BarnardBleController: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    cancelConnectWatchdog()
     let id = peripheral.identifier
     peripheralCharacteristics.removeValue(forKey: id)
     peripheralReadValues.removeValue(forKey: id)
