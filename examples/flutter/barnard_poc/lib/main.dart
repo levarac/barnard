@@ -113,6 +113,12 @@ class _MyAppState extends State<MyApp> {
     });
     _debugSub = client.debugEvents.listen((BarnardDebugEvent e) {
       if (!mounted) return;
+      // Surface every debug event to stdout so `flutter run` CLI sessions
+      // (e.g. three concurrent tmux panes across iPhone/iPad/Pixel) can be
+      // tailed for cross-device diagnostics. Format is `[BND-DBG] level
+      // name data` — grep-friendly.
+      debugPrint("[BND-DBG] ${e.level.name} ${e.name}"
+          "${e.data == null ? '' : ' ${e.data}'}");
       setState(() {
         _debugEvents.add(e);
         if (_debugEvents.length > 200) {
