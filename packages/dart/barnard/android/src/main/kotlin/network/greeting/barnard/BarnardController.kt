@@ -689,10 +689,19 @@ internal class BarnardController(
     private fun emitRssiUpdate(address: String, rssi: Int, timestampMs: Long) {
         val peer = knownPeers[address] ?: return
 
+        // Atomic reporter snapshot (same contract as DetectionEvent): derive
+        // reporterRpid + enin from the observation timestamp so downstream
+        // per-peer aggregation can mix Detection and RssiUpdate samples by
+        // `(rpid, enin)` without client-side timestamp math.
+        val reporterPayload = computePayload(timestampMs)
+        val enin = BarnardCrypto.calculateEnin(timestampMs).toLong()
+
         val payload = mutableMapOf<String, Any?>(
             "type" to "rssi_update",
             "timestamp" to BarnardIso8601.fromMs(timestampMs),
             "rpid" to peer.rpid.toHex(),
+            "reporterRpid" to reporterPayload.toHex(),
+            "enin" to enin,
             "rssi" to rssi,
         )
 

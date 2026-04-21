@@ -122,11 +122,20 @@ export interface RssiSummary {
 
 /**
  * High-frequency RSSI update for a peer that has completed GATT exchange.
+ *
+ * Carries the same atomic `(enin, reporterRpid)` snapshot semantics as
+ * `DetectionEvent` — both are derived natively from the observation
+ * timestamp, so consumers can bucket Detection and RssiUpdate samples
+ * together by `(rpid, enin)` without client-side timestamp math.
  */
 export interface RssiUpdateEvent extends BaseEvent {
   type: 'rssi_update';
-  /** 34-char lowercase hex RPID wire form. */
+  /** 34-char lowercase hex RPID wire form of the observed peer. */
   rpid: string;
+  /** 34-char lowercase hex RPID wire form of the reporter at observation time. */
+  reporterRpid: string;
+  /** ENIN at the observation timestamp (atomic with `reporterRpid`). */
+  enin: number;
   rssi: number;
   /** v2 displayId (8-char hex) if cached from prior GATT; else null. */
   detectedDisplayId?: string | null;

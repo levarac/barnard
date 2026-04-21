@@ -398,9 +398,14 @@ BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
     case "rssi_update":
       final Uint8List rpid =
           _decodeRpidHex((map["rpid"] as String?) ?? "", field: "rpid");
+      final Uint8List reporterRpid = _decodeRpidHex(
+          (map["reporterRpid"] as String?) ?? "",
+          field: "reporterRpid");
       return RssiUpdateEvent(
         timestamp: ts,
         rpid: rpid,
+        reporterRpid: reporterRpid,
+        enin: (map["enin"] as int?) ?? 0,
         rssi: (map["rssi"] as int?) ?? 0,
         detectedDisplayId:
             _validateDetectedDisplayId(map["detectedDisplayId"]),

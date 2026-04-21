@@ -72,6 +72,14 @@
         "type": { "const": "rssi_update" },
         "timestamp": { "$ref": "common.schema.json#/$defs/Timestamp" },
         "rpid": { "$ref": "common.schema.json#/$defs/RpidHex" },
+        "reporterRpid": {
+          "$ref": "common.schema.json#/$defs/RpidHex",
+          "description": "The reporter's 17-byte RPID wire form at the observation timestamp; atomic with enin."
+        },
+        "enin": {
+          "type": "integer",
+          "description": "ENIN (floor(unix_s / 600)) at the observation timestamp; atomic with reporterRpid."
+        },
         "rssi": { "type": "integer" },
         "detectedDisplayId": {
           "oneOf": [
@@ -81,7 +89,7 @@
           "description": "Cached from a prior GATT exchange; null or omitted when not yet known."
         }
       },
-      "required": ["type", "timestamp", "rpid", "rssi"]
+      "required": ["type", "timestamp", "rpid", "reporterRpid", "enin", "rssi"]
     },
     "RssiSummary": {
       "type": "object",

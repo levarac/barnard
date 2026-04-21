@@ -118,6 +118,24 @@ If B002 itself fails, no detection is emitted (no identifier available).
 
 **Byte-vs-hex.** At the Dart method-channel / RN bridge boundary, byte-valued fields are **lowercase hex strings**. Native layers use raw `Data`/`ByteArray` internally. Dart public-API return types re-decode to `Uint8List` for ergonomics.
 
+### 6.1 `RssiUpdateEvent` (v2)
+
+Emitted on every BLE scan hit for a peer that has already completed v2 GATT exchange and been cached as `knownPeer`. No GATT round-trip is performed; the cached `rpid` and `detectedDisplayId` are reused.
+
+```
+{
+  "type": "rssi_update",
+  "timestamp": "2026-04-20T10:00:02.341Z",
+  "rpid":          "01<32 hex>",           // 17 B wire form of the detected peer (cached)
+  "reporterRpid":  "01<32 hex>",           // 17 B wire form of this device at `timestamp`
+  "enin": 2948599,                          // floor(unix_s / 600) at `timestamp`
+  "rssi": -58,
+  "detectedDisplayId": "9abcdef0" | null   // 8 hex chars or null (cached from prior GATT)
+}
+```
+
+`reporterRpid` and `enin` carry the same atomic-snapshot contract as `DetectionEvent` (both derived natively from the observation `timestamp`), so consumers can bucket Detection and RssiUpdate samples together by `(rpid, enin)` without recomputing `enin` client-side.
+
 ## 7. SDK public API
 
 ### 7.1 Dart (`BarnardClient`)

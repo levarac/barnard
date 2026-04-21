@@ -118,11 +118,13 @@ void main() {
   });
 
   group("parseBarnardEvent — rssi_update v2", () {
-    test("decodes rpid hex and nullable detectedDisplayId", () {
+    test("decodes rpid + reporterRpid + enin + nullable detectedDisplayId", () {
       final Map<Object?, Object?> map = <Object?, Object?>{
         "type": "rssi_update",
         "timestamp": "2026-04-20T10:00:00.000Z",
         "rpid": "01${"c" * 32}",
+        "reporterRpid": "01${"a" * 32}",
+        "enin": 2948599,
         "rssi": -55,
         "detectedDisplayId": "deadbeef",
       };
@@ -130,6 +132,8 @@ void main() {
       expect(event, isA<RssiUpdateEvent>());
       final RssiUpdateEvent u = event as RssiUpdateEvent;
       expect(u.rpid.length, equals(17));
+      expect(u.reporterRpid.length, equals(17));
+      expect(u.enin, equals(2948599));
       expect(u.rssi, equals(-55));
       expect(u.detectedDisplayId, equals("deadbeef"));
     });
@@ -139,6 +143,8 @@ void main() {
         "type": "rssi_update",
         "timestamp": "2026-04-20T10:00:00.000Z",
         "rpid": "01${"c" * 32}",
+        "reporterRpid": "01${"a" * 32}",
+        "enin": 2948599,
         "rssi": -55,
       };
       final RssiUpdateEvent u = parseBarnardEvent(map) as RssiUpdateEvent;

@@ -18,7 +18,11 @@
   - `rpid` now documented as 17-byte `[formatVersion(1) + RPI(16)]` wire form.
 - **`RssiUpdateEvent` reshaped**: drops `displayId`/`resolvedDisplayId`; adds
   nullable `detectedDisplayId` (only populated when cached from a prior GATT
-  exchange).
+  exchange); adds required `reporterRpid` (17 B) and `enin` (int), derived
+  natively from the observation timestamp with the same atomic-snapshot
+  contract as `DetectionEvent`, so consumers can bucket Detection and
+  RssiUpdate samples together by `(rpid, enin)` without client-side
+  timestamp math.
 - **`BarnardClient` public API changes**:
   - Added: `myDisplayId` (String, 8 hex chars), `currentEnin` (int),
     `getCurrentRpi()` (`Future<Uint8List>`, 16 B), `exportCurrentTek()`

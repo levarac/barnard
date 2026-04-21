@@ -16,7 +16,9 @@
   - Removed: `displayId`, `resolvedTek`, `resolvedDisplayId`.
   - `rpid` is now the 17-byte wire form hex string.
 - **`RssiUpdateEvent`** — drops `displayId`/`resolvedDisplayId`; adds nullable
-  `detectedDisplayId`.
+  `detectedDisplayId`; adds required `reporterRpid` (34-char hex) and `enin`
+  (number), derived natively from the observation timestamp with the same
+  atomic-snapshot contract as `DetectionEvent`.
 - **`BarnardManager` public API**:
   - Added: `getCurrentEventCode()`, `getMyDisplayId()` (8-char hex),
     `getCurrentRpi()` (32-char hex), `getCurrentEnin()`, `exportCurrentTek()`

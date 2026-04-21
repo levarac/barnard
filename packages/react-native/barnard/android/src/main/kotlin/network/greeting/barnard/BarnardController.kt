@@ -602,6 +602,9 @@ internal class BarnardController(
 
     private fun emitRssiUpdate(address: String, rssi: Int, timestampMs: Long) {
         val peer = knownPeers[address] ?: return
+        // Atomic reporter snapshot (same contract as DetectionEvent).
+        val reporterPayload = computePayload(timestampMs)
+        val enin = BarnardCrypto.calculateEnin(timestampMs).toInt()
         // Parity with RN iOS + Flutter iOS + Flutter Android: omit
         // detectedDisplayId when it is null, rather than emitting an
         // explicit null field. TS type accepts either, but wire parity
@@ -610,6 +613,8 @@ internal class BarnardController(
             putString("type", "rssi_update")
             putString("timestamp", BarnardIso8601.fromMs(timestampMs))
             putString("rpid", peer.rpid.toHex())
+            putString("reporterRpid", reporterPayload.toHex())
+            putInt("enin", enin)
             putInt("rssi", rssi)
             if (peer.detectedDisplayId != null) {
                 putString("detectedDisplayId", peer.detectedDisplayId)

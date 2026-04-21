@@ -99,16 +99,30 @@ final class ErrorEvent extends BarnardEvent {
 /// Emitted on each BLE scan without requiring a GATT connection. The
 /// [detectedDisplayId] is only populated when it has been cached from a
 /// prior GATT exchange with the same peer; otherwise it is `null`.
+///
+/// Carries the same atomic `(enin, reporterRpid)` snapshot semantics as
+/// [DetectionEvent] — both are derived natively from the observation
+/// [timestamp], so downstream bucket-by-`(rpid, enin)` aggregation (e.g.
+/// per-event RSSI pooling) can mix Detection and RssiUpdate samples
+/// without deriving `enin` from timestamps client-side.
 final class RssiUpdateEvent extends BarnardEvent {
   const RssiUpdateEvent({
     required super.timestamp,
     required this.rpid,
+    required this.reporterRpid,
+    required this.enin,
     required this.rssi,
     this.detectedDisplayId,
   });
 
   /// The 17-byte RPID wire form `[formatVersion(1) + RPI(16)]`.
   final Uint8List rpid;
+
+  /// The reporter's own 17-byte RPID wire form at observation time.
+  final Uint8List reporterRpid;
+
+  /// ENIN in which the observation was made (atomic with [reporterRpid]).
+  final int enin;
 
   /// Signal strength in dBm.
   final int rssi;
