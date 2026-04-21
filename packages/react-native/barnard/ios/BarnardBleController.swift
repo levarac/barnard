@@ -3,6 +3,7 @@
 
 import CoreBluetooth
 import Foundation
+import UIKit
 
 /// Barnard v2 BLE controller (React Native bridge variant).
 ///
@@ -94,6 +95,23 @@ final class BarnardBleController: NSObject {
     super.init()
     centralManager = CBCentralManager(delegate: self, queue: nil)
     peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
+
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appDidBecomeActive),
+      name: UIApplication.didBecomeActiveNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appWillResignActive),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
   }
 
   func dispose() {
@@ -101,6 +119,30 @@ final class BarnardBleController: NSObject {
     stopAdvertise()
     onEvent = nil
     onDebugEvent = nil
+  }
+
+  // MARK: - Lifecycle
+
+  // On background, iOS demotes our advertised service UUID from the AdvData
+  // section to the overflow area, making us invisible to generic centrals.
+  // iOS does not repromote on foreground resume, so bounce advertising to
+  // repopulate AdvData. See issue #45.
+  @objc private func appDidBecomeActive() {
+    guard isAdvertising else {
+      emitDebug(level: "trace", name: "foreground_resume", data: ["isAdvertising": false])
+      return
+    }
+    let activeFormat = Int(formatVersion)
+    peripheralManager.stopAdvertising()
+    isAdvertising = false
+    startAdvertise(formatVersion: activeFormat)
+    emitDebug(level: "info", name: "advertise_restart_on_foreground", data: nil)
+  }
+
+  @objc private func appWillResignActive() {
+    emitDebug(level: "info", name: "advertise_backgrounded", data: [
+      "isAdvertising": isAdvertising,
+    ])
   }
 
   // MARK: - Public API

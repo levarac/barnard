@@ -130,6 +130,48 @@ final class BarnardBleController: NSObject {
 
     centralManager = CBCentralManager(delegate: self, queue: nil)
     peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
+
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appDidBecomeActive),
+      name: UIApplication.didBecomeActiveNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appWillResignActive),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+  }
+
+  // MARK: - Lifecycle
+
+  // On background, iOS demotes our advertised service UUID from the AdvData
+  // section to the overflow area (Apple-only scanners can still see it, but
+  // generic centrals cannot). When the app returns to foreground, iOS does
+  // not automatically repromote the UUID, so peers that started their scan
+  // while we were backgrounded will never discover us. Bounce advertising on
+  // foreground resume to repopulate the AdvData section. See issue #45.
+  @objc private func appDidBecomeActive() {
+    guard isAdvertising else {
+      emitDebug(level: "trace", name: "foreground_resume", data: ["isAdvertising": false])
+      return
+    }
+    peripheralManager.stopAdvertising()
+    isAdvertising = false
+    startAdvertise()
+    emitDebug(level: "info", name: "advertise_restart_on_foreground", data: nil)
+  }
+
+  @objc private func appWillResignActive() {
+    emitDebug(level: "info", name: "advertise_backgrounded", data: [
+      "isAdvertising": isAdvertising,
+    ])
   }
 
   // MARK: - Platform Channel Handler
