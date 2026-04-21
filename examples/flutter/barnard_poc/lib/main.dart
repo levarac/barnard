@@ -60,6 +60,14 @@ class _MyAppState extends State<MyApp> {
   // Barnard service UUID but the follow-up GATT read has not completed.
   final Map<String, _PeerTrack> _scanOnlyTracks = <String, _PeerTrack>{};
 
+  // Peripheral ids (iOS CBPeripheral.identifier / Android MAC) that have
+  // already completed v2 GATT. Further `ble_discovery_result` events for
+  // these peers should not add to _scanOnlyTracks — otherwise the UI double-
+  // counts each peer as both "GATT-resolved" and "scan only · awaiting
+  // GATT" which is misleading. Populated from `gatt_read_display_id` debug
+  // events (the last read in the v2 GATT exchange).
+  final Set<String> _gattResolvedPeerIds = <String>{};
+
   static const Duration _staleAfter = Duration(seconds: 15);
   static const String _serviceUuid = "0000B001-0000-1000-8000-00805F9B34FB";
   static const String _localName = "BNRD";
@@ -129,7 +137,13 @@ class _MyAppState extends State<MyApp> {
           _totalDebugIssues += 1;
         }
         _updateSelfInfo(e);
-        if (e.name == "ble_discovery_result") {
+        if (e.name == "gatt_read_display_id") {
+          final String? peerId = _peerIdFromDebug(e);
+          if (peerId != null) {
+            _gattResolvedPeerIds.add(peerId);
+            _scanOnlyTracks.remove(peerId);
+          }
+        } else if (e.name == "ble_discovery_result") {
           _pushScanOnlySample(e);
         }
       });
@@ -378,12 +392,23 @@ class _MyAppState extends State<MyApp> {
     );
   }
 
+  // iOS emits CBPeripheral identifier under `id`, Android emits the BLE
+  // MAC under `address`. Return whichever is present.
+  String? _peerIdFromDebug(BarnardDebugEvent e) {
+    final Map<String, Object?>? data = e.data;
+    if (data == null) return null;
+    return (data["id"] as String?) ?? (data["address"] as String?);
+  }
+
   void _pushScanOnlySample(BarnardDebugEvent e) {
     final Map<String, Object?>? data = e.data;
     if (data == null) return;
     final String? id = data["id"] as String?;
     final int? rssi = _asInt(data["rssi"]);
     if (id == null || rssi == null) return;
+    // Skip peers that have already finished v2 GATT — they render in the
+    // main `_tracks` map via detection/rssiUpdate samples.
+    if (_gattResolvedPeerIds.contains(id)) return;
     final _PeerTrack track = _scanOnlyTracks.putIfAbsent(id, () => _PeerTrack());
     final String? name = data["name"] as String?;
     if (name != null && name.isNotEmpty) {
