@@ -227,6 +227,12 @@ class _MyAppState extends State<MyApp> {
     );
   }
 
+  void _showMessage(String message) {
+    _messengerKey.currentState?.showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -324,6 +330,7 @@ class _MyAppState extends State<MyApp> {
                         ),
                         _DebugTab(
                           events: _debugEvents,
+                          deviceLabel: _selfInfo.localName ?? _localName,
                           onlyIssues: _debugOnlyIssues,
                           hideTrace: _debugHideTrace,
                           query: _debugQuery,
@@ -336,6 +343,7 @@ class _MyAppState extends State<MyApp> {
                           onClear: _debugEvents.isEmpty
                               ? null
                               : () => setState(_debugEvents.clear),
+                          showMessage: _showMessage,
                         ),
                         _DiagnosticsTab(
                           state: _state,
@@ -987,6 +995,7 @@ String _hms(DateTime t) {
 class _DebugTab extends StatelessWidget {
   const _DebugTab({
     required this.events,
+    required this.deviceLabel,
     required this.onlyIssues,
     required this.hideTrace,
     required this.query,
@@ -994,9 +1003,11 @@ class _DebugTab extends StatelessWidget {
     required this.onHideTraceChanged,
     required this.onQueryChanged,
     required this.onClear,
+    required this.showMessage,
   });
 
   final List<BarnardDebugEvent> events;
+  final String deviceLabel;
   final bool onlyIssues;
   final bool hideTrace;
   final String query;
@@ -1004,6 +1015,27 @@ class _DebugTab extends StatelessWidget {
   final ValueChanged<bool> onHideTraceChanged;
   final ValueChanged<String> onQueryChanged;
   final VoidCallback? onClear;
+  final ValueChanged<String> showMessage;
+
+  Future<void> _copyFiltered(List<BarnardDebugEvent> filtered) async {
+    final StringBuffer buf = StringBuffer();
+    buf.writeln(
+        "# barnard debug · $deviceLabel · ${filtered.length} events");
+    for (final BarnardDebugEvent e in filtered) {
+      buf.write(e.timestamp.toIso8601String());
+      buf.write("\t");
+      buf.write(e.level.name);
+      buf.write("\t");
+      buf.write(e.name);
+      if (e.data != null) {
+        buf.write("\t");
+        buf.write(e.data);
+      }
+      buf.writeln();
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    showMessage("Copied ${filtered.length} debug events");
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1041,6 +1073,13 @@ class _DebugTab extends StatelessWidget {
               onSelected: onHideTraceChanged,
             ),
             const SizedBox(width: 4),
+            IconButton(
+              onPressed: filtered.isEmpty
+                  ? null
+                  : () => _copyFiltered(filtered),
+              icon: const Icon(Icons.copy_all, size: 20),
+              tooltip: "Copy filtered events",
+            ),
             IconButton(
               onPressed: onClear,
               icon: const Icon(Icons.clear_all, size: 20),
