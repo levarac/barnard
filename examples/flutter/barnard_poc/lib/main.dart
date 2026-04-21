@@ -331,6 +331,9 @@ class _MyAppState extends State<MyApp> {
                         _DebugTab(
                           events: _debugEvents,
                           deviceLabel: _selfInfo.localName ?? _localName,
+                          myDisplayId: _client?.myDisplayId,
+                          currentEnin: _client?.currentEnin,
+                          currentEventCode: _client?.currentEventCode,
                           onlyIssues: _debugOnlyIssues,
                           hideTrace: _debugHideTrace,
                           query: _debugQuery,
@@ -996,6 +999,9 @@ class _DebugTab extends StatelessWidget {
   const _DebugTab({
     required this.events,
     required this.deviceLabel,
+    required this.myDisplayId,
+    required this.currentEnin,
+    required this.currentEventCode,
     required this.onlyIssues,
     required this.hideTrace,
     required this.query,
@@ -1008,6 +1014,9 @@ class _DebugTab extends StatelessWidget {
 
   final List<BarnardDebugEvent> events;
   final String deviceLabel;
+  final String? myDisplayId;
+  final int? currentEnin;
+  final String? currentEventCode;
   final bool onlyIssues;
   final bool hideTrace;
   final String query;
@@ -1021,6 +1030,11 @@ class _DebugTab extends StatelessWidget {
     final StringBuffer buf = StringBuffer();
     buf.writeln(
         "# barnard debug · $deviceLabel · ${filtered.length} events");
+    buf.write("# self: ");
+    buf.write("myDisplayId=${myDisplayId ?? '-'}");
+    buf.write(" enin=${currentEnin ?? '-'}");
+    buf.write(" eventCode=${currentEventCode ?? '-'}");
+    buf.writeln();
     for (final BarnardDebugEvent e in filtered) {
       buf.write(e.timestamp.toIso8601String());
       buf.write("\t");
