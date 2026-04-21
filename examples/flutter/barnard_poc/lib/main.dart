@@ -213,7 +213,24 @@ class _MyAppState extends State<MyApp> {
         length: 4,
         child: Scaffold(
           appBar: AppBar(
-            title: const Text("Barnard v2 PoC"),
+            title: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text("Barnard"),
+                Text(
+                  "v2 protocol · B003 = SHA256(TEK)[0:4]",
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w400,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurfaceVariant
+                        .withValues(alpha: 0.8),
+                  ),
+                ),
+              ],
+            ),
             bottom: const TabBar(
               isScrollable: true,
               tabs: <Widget>[
@@ -542,38 +559,12 @@ class _ControlPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: _ToggleButton(
-                  active: state.isScanning,
-                  onText: "Stop Scan",
-                  offText: "Start Scan",
-                  onPressed: busy ? null : onToggleScan,
-                  icon: Icons.radar,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _ToggleButton(
-                  active: state.isAdvertising,
-                  onText: "Stop Adv",
-                  offText: "Start Adv",
-                  onPressed: busy ? null : onToggleAdvertise,
-                  icon: Icons.cell_tower,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _ToggleButton(
-                  active: autoRunning,
-                  onText: "Stop Auto",
-                  offText: "Start Auto",
-                  onPressed: busy ? null : onToggleAuto,
-                  icon: Icons.sync,
-                ),
-              ),
-            ],
+          _PrimaryActionButton(
+            state: state,
+            busy: busy,
+            onToggleAuto: onToggleAuto,
+            onToggleScan: onToggleScan,
+            onToggleAdvertise: onToggleAdvertise,
           ),
         ],
       ),
@@ -581,38 +572,188 @@ class _ControlPanel extends StatelessWidget {
   }
 }
 
-class _ToggleButton extends StatelessWidget {
-  const _ToggleButton({
-    required this.active,
-    required this.onText,
-    required this.offText,
-    required this.onPressed,
-    required this.icon,
+/// Split button: the large primary half toggles Start/Stop Auto (scan +
+/// advertise), and the attached dropdown exposes the individual Scan-only
+/// and Advertise-only toggles for granular control.
+class _PrimaryActionButton extends StatelessWidget {
+  const _PrimaryActionButton({
+    required this.state,
+    required this.busy,
+    required this.onToggleAuto,
+    required this.onToggleScan,
+    required this.onToggleAdvertise,
   });
 
-  final bool active;
-  final String onText;
-  final String offText;
-  final VoidCallback? onPressed;
-  final IconData icon;
+  final BarnardState state;
+  final bool busy;
+  final VoidCallback onToggleAuto;
+  final VoidCallback onToggleScan;
+  final VoidCallback onToggleAdvertise;
 
   @override
   Widget build(BuildContext context) {
-    if (active) {
-      return FilledButton.icon(
-        onPressed: onPressed,
-        icon: Icon(icon, size: 18),
-        label: Text(onText),
-        style: FilledButton.styleFrom(
-          backgroundColor: Theme.of(context).colorScheme.error,
-          foregroundColor: Theme.of(context).colorScheme.onError,
-        ),
-      );
-    }
-    return OutlinedButton.icon(
-      onPressed: onPressed,
-      icon: Icon(icon, size: 18),
-      label: Text(offText),
+    final ColorScheme cs = Theme.of(context).colorScheme;
+    final bool autoRunning = state.isScanning || state.isAdvertising;
+    final Color bg = autoRunning ? cs.error : cs.primary;
+    final Color fg = autoRunning ? cs.onError : cs.onPrimary;
+    final VoidCallback? primaryOnTap = busy ? null : onToggleAuto;
+    return SizedBox(
+      height: 44,
+      child: Row(
+        mainAxisSize: MainAxisSize.max,
+        children: <Widget>[
+          Expanded(
+            child: Material(
+              color: bg,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(22),
+                bottomLeft: Radius.circular(22),
+              ),
+              child: InkWell(
+                onTap: primaryOnTap,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(22),
+                  bottomLeft: Radius.circular(22),
+                ),
+                child: Center(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: <Widget>[
+                      Icon(autoRunning ? Icons.stop_circle : Icons.sync,
+                          size: 18, color: fg),
+                      const SizedBox(width: 8),
+                      Text(
+                        autoRunning ? "Stop Auto" : "Start Auto",
+                        style: TextStyle(
+                            color: fg,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14),
+                      ),
+                      if (autoRunning) ...<Widget>[
+                        const SizedBox(width: 8),
+                        _StatusDot(
+                          active: state.isScanning,
+                          icon: Icons.radar,
+                          tooltip: "Scan",
+                          foreground: fg,
+                        ),
+                        const SizedBox(width: 4),
+                        _StatusDot(
+                          active: state.isAdvertising,
+                          icon: Icons.cell_tower,
+                          tooltip: "Advertise",
+                          foreground: fg,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Container(
+            width: 1,
+            height: 44,
+            color: fg.withValues(alpha: 0.25),
+          ),
+          Material(
+            color: bg,
+            borderRadius: const BorderRadius.only(
+              topRight: Radius.circular(22),
+              bottomRight: Radius.circular(22),
+            ),
+            child: PopupMenuButton<_ControlMenuAction>(
+              tooltip: "Scan / Advertise only",
+              enabled: !busy,
+              onSelected: (action) {
+                switch (action) {
+                  case _ControlMenuAction.toggleScan:
+                    onToggleScan();
+                    break;
+                  case _ControlMenuAction.toggleAdvertise:
+                    onToggleAdvertise();
+                    break;
+                }
+              },
+              itemBuilder: (context) => <PopupMenuEntry<_ControlMenuAction>>[
+                PopupMenuItem<_ControlMenuAction>(
+                  value: _ControlMenuAction.toggleScan,
+                  child: _MenuRow(
+                    icon: state.isScanning ? Icons.stop : Icons.radar,
+                    text: state.isScanning ? "Stop Scan" : "Start Scan only",
+                  ),
+                ),
+                PopupMenuItem<_ControlMenuAction>(
+                  value: _ControlMenuAction.toggleAdvertise,
+                  child: _MenuRow(
+                    icon: state.isAdvertising ? Icons.stop : Icons.cell_tower,
+                    text: state.isAdvertising
+                        ? "Stop Advertise"
+                        : "Start Advertise only",
+                  ),
+                ),
+              ],
+              child: Container(
+                width: 44,
+                height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  borderRadius: const BorderRadius.only(
+                    topRight: Radius.circular(22),
+                    bottomRight: Radius.circular(22),
+                  ),
+                ),
+                child: Icon(Icons.arrow_drop_down, color: fg),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _ControlMenuAction { toggleScan, toggleAdvertise }
+
+class _StatusDot extends StatelessWidget {
+  const _StatusDot({
+    required this.active,
+    required this.icon,
+    required this.tooltip,
+    required this.foreground,
+  });
+
+  final bool active;
+  final IconData icon;
+  final String tooltip;
+  final Color foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: "$tooltip ${active ? "ON" : "OFF"}",
+      child: Opacity(
+        opacity: active ? 1.0 : 0.4,
+        child: Icon(icon, size: 14, color: foreground),
+      ),
+    );
+  }
+}
+
+class _MenuRow extends StatelessWidget {
+  const _MenuRow({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: <Widget>[
+        Icon(icon, size: 18),
+        const SizedBox(width: 10),
+        Text(text),
+      ],
     );
   }
 }
