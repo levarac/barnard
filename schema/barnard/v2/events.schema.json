@@ -78,6 +78,7 @@
         },
         "enin": {
           "type": "integer",
+          "minimum": 0,
           "description": "ENIN (floor(unix_s / 600)) at the observation timestamp; atomic with reporterRpid."
         },
         "rssi": { "type": "integer" },

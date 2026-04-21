@@ -673,10 +673,7 @@ final class BarnardBleController: NSObject {
   private func emitRssiUpdate(peripheralId: UUID, rssi: Int, timestamp: Date) {
     guard let peer = knownPeers[peripheralId] else { return }
 
-    // Atomic reporter snapshot (same contract as DetectionEvent): derive
-    // reporterRpid + enin from the observation timestamp so downstream
-    // per-peer aggregation can mix Detection and RssiUpdate samples by
-    // `(rpid, enin)` without client-side timestamp math.
+    // Atomic reporter snapshot (same contract as DetectionEvent).
     let reporterPayload = rpid.currentPayload(formatVersion: formatVersion, now: timestamp)
     let enin = Int(BarnardCrypto.calculateEnin(for: timestamp))
 
