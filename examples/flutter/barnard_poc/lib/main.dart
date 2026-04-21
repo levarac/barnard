@@ -6,6 +6,7 @@ import "dart:typed_data";
 import "package:barnard/barnard.dart";
 import "package:barnard/barnard_ble.dart";
 import "package:flutter/material.dart";
+import "package:flutter/services.dart" show Clipboard, ClipboardData;
 import "package:permission_handler/permission_handler.dart";
 
 void main() => runApp(const MyApp());
@@ -18,6 +19,8 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
   BarnardBleClient? _client;
   StreamSubscription<BarnardEvent>? _eventsSub;
   StreamSubscription<BarnardDebugEvent>? _debugSub;
@@ -51,6 +54,11 @@ class _MyAppState extends State<MyApp> {
 
   // Timeline samples for the fourth tab. Keyed by rpid (17-byte wire form).
   final Map<String, _PeerTrack> _tracks = <String, _PeerTrack>{};
+  // Scan-only observations (BLE scan hits not yet resolved to rpid via GATT).
+  // Keyed by peripheral id/address (the `id` field of ble_discovery_result
+  // debug events). Populated when v2 central sees a peripheral advertise the
+  // Barnard service UUID but the follow-up GATT read has not completed.
+  final Map<String, _PeerTrack> _scanOnlyTracks = <String, _PeerTrack>{};
 
   static const Duration _staleAfter = Duration(seconds: 15);
   static const String _serviceUuid = "0000B001-0000-1000-8000-00805F9B34FB";
@@ -115,6 +123,9 @@ class _MyAppState extends State<MyApp> {
           _totalDebugIssues += 1;
         }
         _updateSelfInfo(e);
+        if (e.name == "ble_discovery_result") {
+          _pushScanOnlySample(e);
+        }
       });
     });
 
@@ -187,23 +198,39 @@ class _MyAppState extends State<MyApp> {
   Future<void> _exportTek() async {
     final BarnardBleClient? client = _client;
     if (client == null) return;
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final Uint8List tek = await client.exportCurrentTek();
       final String hex = bytesToHex(tek);
-      messenger.showSnackBar(SnackBar(
+      _messengerKey.currentState?.showSnackBar(SnackBar(
         content: Text("TEK (hex): $hex",
             maxLines: 2, overflow: TextOverflow.ellipsis),
-        duration: const Duration(seconds: 6),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: "Copy",
+          onPressed: () async {
+            await _copyToClipboard(hex);
+          },
+        ),
       ));
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text("exportCurrentTek failed: $e")));
+    } catch (e, stack) {
+      debugPrint("exportCurrentTek failed: $e\n$stack");
+      _messengerKey.currentState?.showSnackBar(
+        SnackBar(content: Text("exportCurrentTek failed: $e")),
+      );
     }
+  }
+
+  Future<void> _copyToClipboard(String value) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    _messengerKey.currentState?.showSnackBar(
+      const SnackBar(content: Text("TEK copied to clipboard")),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      scaffoldMessengerKey: _messengerKey,
       theme: ThemeData(
         useMaterial3: true,
         colorSchemeSeed: Colors.deepPurple,
@@ -215,9 +242,12 @@ class _MyAppState extends State<MyApp> {
           appBar: AppBar(
             title: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment:
+                  Platform.isIOS || Platform.isMacOS
+                      ? CrossAxisAlignment.center
+                      : CrossAxisAlignment.start,
               children: <Widget>[
-                const Text("Barnard"),
+                const Text("barnard"),
                 Text(
                   "v2 protocol · B003 = SHA256(TEK)[0:4]",
                   style: TextStyle(
@@ -265,11 +295,15 @@ class _MyAppState extends State<MyApp> {
                       child: TabBarView(children: <Widget>[
                         _TimelineTab(
                           tracks: _tracks,
+                          scanOnlyTracks: _scanOnlyTracks,
                           totalDetections: _totalDetections,
                           totalRssiUpdates: _totalRssiUpdates,
-                          onClear: _tracks.isEmpty
+                          onClear: (_tracks.isEmpty && _scanOnlyTracks.isEmpty)
                               ? null
-                              : () => setState(_tracks.clear),
+                              : () => setState(() {
+                                    _tracks.clear();
+                                    _scanOnlyTracks.clear();
+                                  }),
                         ),
                         _EventsTab(
                           events: _events,
@@ -325,6 +359,42 @@ class _MyAppState extends State<MyApp> {
         ),
       ),
     );
+  }
+
+  void _pushScanOnlySample(BarnardDebugEvent e) {
+    final Map<String, Object?>? data = e.data;
+    if (data == null) return;
+    final String? id = data["id"] as String?;
+    final int? rssi = _asInt(data["rssi"]);
+    if (id == null || rssi == null) return;
+    final _PeerTrack track = _scanOnlyTracks.putIfAbsent(id, () => _PeerTrack());
+    final String? name = data["name"] as String?;
+    if (name != null && name.isNotEmpty) {
+      track.localName = name;
+    }
+    track.samples.add(_TrackSample(
+      at: e.timestamp,
+      rssi: rssi,
+      kind: _TrackKind.scanOnly,
+    ));
+    final DateTime cutoff = e.timestamp.subtract(const Duration(minutes: 5));
+    while (track.samples.isNotEmpty && track.samples.first.at.isBefore(cutoff)) {
+      track.samples.removeAt(0);
+    }
+    if (_scanOnlyTracks.length > 16) {
+      final List<MapEntry<String, _PeerTrack>> entries =
+          _scanOnlyTracks.entries.toList(growable: false)
+            ..sort((a, b) {
+              final DateTime aT = a.value.samples.isEmpty
+                  ? DateTime.fromMillisecondsSinceEpoch(0)
+                  : a.value.samples.last.at;
+              final DateTime bT = b.value.samples.isEmpty
+                  ? DateTime.fromMillisecondsSinceEpoch(0)
+                  : b.value.samples.last.at;
+              return aT.compareTo(bT);
+            });
+      _scanOnlyTracks.remove(entries.first.key);
+    }
   }
 
   void _pushTrackSample(
@@ -1228,7 +1298,7 @@ class _FilterBar extends StatelessWidget {
   }
 }
 
-enum _TrackKind { detection, rssiUpdate }
+enum _TrackKind { detection, rssiUpdate, scanOnly }
 
 class _TrackSample {
   _TrackSample({required this.at, required this.rssi, required this.kind});
@@ -1239,44 +1309,77 @@ class _TrackSample {
 
 class _PeerTrack {
   String? detectedDisplayId;
+  String? localName;
   final List<_TrackSample> samples = <_TrackSample>[];
 }
 
 class _TimelineTab extends StatelessWidget {
   const _TimelineTab({
     required this.tracks,
+    required this.scanOnlyTracks,
     required this.totalDetections,
     required this.totalRssiUpdates,
     required this.onClear,
   });
 
   final Map<String, _PeerTrack> tracks;
+  final Map<String, _PeerTrack> scanOnlyTracks;
   final int totalDetections;
   final int totalRssiUpdates;
   final VoidCallback? onClear;
 
   static const Duration _window = Duration(seconds: 60);
+  // Window used for the per-peer moving-average RSSI that drives sort
+  // stability. Larger window = less flicker, slower adjustment.
+  static const Duration _avgWindow = Duration(seconds: 10);
 
   @override
   Widget build(BuildContext context) {
     final DateTime now = DateTime.now();
     final DateTime cutoff = now.subtract(_window);
-    // Only show peers that have activity within the window.
-    final List<MapEntry<String, _PeerTrack>> active = tracks.entries.where((e) {
-      return e.value.samples.any((s) => s.at.isAfter(cutoff));
-    }).toList()
-      ..sort((a, b) {
-        final DateTime aLast = a.value.samples.last.at;
-        final DateTime bLast = b.value.samples.last.at;
-        return bLast.compareTo(aLast);
-      });
+    final List<_TimelineRow> active = <_TimelineRow>[];
+    for (final MapEntry<String, _PeerTrack> e in tracks.entries) {
+      final List<_TrackSample> recent =
+          e.value.samples.where((s) => s.at.isAfter(cutoff)).toList();
+      if (recent.isEmpty) continue;
+      final double avg = _avgRssi(e.value.samples, now, _avgWindow);
+      active.add(_TimelineRow(
+        key: e.key,
+        track: e.value,
+        avgRssi: avg,
+        resolved: true,
+      ));
+    }
+    for (final MapEntry<String, _PeerTrack> e in scanOnlyTracks.entries) {
+      final List<_TrackSample> recent =
+          e.value.samples.where((s) => s.at.isAfter(cutoff)).toList();
+      if (recent.isEmpty) continue;
+      final double avg = _avgRssi(e.value.samples, now, _avgWindow);
+      active.add(_TimelineRow(
+        key: e.key,
+        track: e.value,
+        avgRssi: avg,
+        resolved: false,
+      ));
+    }
+    // Stable ordering: sort by avg RSSI descending (stronger/closer first).
+    // Within the same RSSI, sort by key so the order does not flip between
+    // frames on high-rate scan updates.
+    active.sort((a, b) {
+      final int cmp = b.avgRssi.compareTo(a.avgRssi);
+      if (cmp != 0) return cmp;
+      return a.key.compareTo(b.key);
+    });
+
+    final int resolvedCount = active.where((r) => r.resolved).length;
+    final int scanOnlyCount = active.length - resolvedCount;
 
     return Column(
       children: <Widget>[
         _FilterBar(
           children: <Widget>[
             Text(
-              "last ${_window.inSeconds}s · ${active.length} peers · det $totalDetections · rssi $totalRssiUpdates",
+              "${_window.inSeconds}s · $resolvedCount peer${resolvedCount == 1 ? "" : "s"} · $scanOnlyCount scan · det $totalDetections · rssi $totalRssiUpdates",
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const Spacer(),
@@ -1290,19 +1393,25 @@ class _TimelineTab extends StatelessWidget {
         Expanded(
           child: active.isEmpty
               ? Center(
-                  child: Text(
-                    "No BLE activity in the last ${_window.inSeconds}s.\nStart scan/advertise to populate.",
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium,
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      "No BLE activity in the last ${_window.inSeconds}s.\nStart scan/advertise to populate.",
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
                   ),
                 )
               : ListView.builder(
                   padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
                   itemCount: active.length,
                   itemBuilder: (BuildContext context, int index) {
-                    final MapEntry<String, _PeerTrack> entry = active[index];
+                    final _TimelineRow row = active[index];
                     return _PeerTrackRow(
-                      track: entry.value,
+                      track: row.track,
+                      avgRssi: row.avgRssi,
+                      resolved: row.resolved,
+                      peripheralId: row.key,
                       now: now,
                       window: _window,
                     );
@@ -1314,14 +1423,48 @@ class _TimelineTab extends StatelessWidget {
   }
 }
 
+double _avgRssi(List<_TrackSample> samples, DateTime now, Duration window) {
+  final DateTime cutoff = now.subtract(window);
+  int n = 0;
+  int sum = 0;
+  for (final _TrackSample s in samples) {
+    if (s.at.isAfter(cutoff)) {
+      sum += s.rssi;
+      n += 1;
+    }
+  }
+  if (n == 0) return -100.0;
+  return sum / n;
+}
+
+class _TimelineRow {
+  _TimelineRow({
+    required this.key,
+    required this.track,
+    required this.avgRssi,
+    required this.resolved,
+  });
+
+  final String key;
+  final _PeerTrack track;
+  final double avgRssi;
+  final bool resolved;
+}
+
 class _PeerTrackRow extends StatelessWidget {
   const _PeerTrackRow({
     required this.track,
+    required this.avgRssi,
+    required this.resolved,
+    required this.peripheralId,
     required this.now,
     required this.window,
   });
 
   final _PeerTrack track;
+  final double avgRssi;
+  final bool resolved;
+  final String peripheralId;
   final DateTime now;
   final Duration window;
 
@@ -1330,10 +1473,15 @@ class _PeerTrackRow extends StatelessWidget {
     final DateTime cutoff = now.subtract(window);
     final List<_TrackSample> recent =
         track.samples.where((s) => s.at.isAfter(cutoff)).toList();
-    final int lastRssi = recent.isEmpty ? 0 : recent.last.rssi;
-    final String displayLabel = track.detectedDisplayId ?? "(no B003)";
     final int detections =
         recent.where((s) => s.kind == _TrackKind.detection).length;
+    final String primaryLabel = resolved
+        ? (track.detectedDisplayId ?? "(no B003)")
+        : (track.localName ?? peripheralId);
+    final String secondaryLabel = resolved
+        ? (track.localName ?? peripheralId)
+        : "scan only · awaiting GATT";
+    final Color tag = resolved ? Colors.deepPurple : Colors.grey;
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
@@ -1343,26 +1491,56 @@ class _PeerTrackRow extends StatelessWidget {
           children: <Widget>[
             Row(
               children: <Widget>[
-                Text(
-                  displayLabel,
-                  style: const TextStyle(
-                    fontFamily: "Menlo",
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                      color: tag, shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        primaryLabel,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: "Menlo",
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        secondaryLabel,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  "${recent.length} samples · $detections det · ${lastRssi}dBm",
-                  style: Theme.of(context).textTheme.bodySmall,
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: <Widget>[
+                    Text(
+                      "${avgRssi.toStringAsFixed(0)}dBm",
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 13),
+                    ),
+                    Text(
+                      "${recent.length} / $detections det",
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                 ),
               ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 6),
             SizedBox(
-              height: 40,
+              height: 36,
               child: CustomPaint(
-                size: const Size.fromHeight(40),
+                size: const Size.fromHeight(36),
                 painter: _TrackPainter(
                   samples: recent,
                   now: now,
@@ -1423,15 +1601,23 @@ class _TrackPainter extends CustomPainter {
       if (dtSeconds < 0 || dtSeconds > window.inSeconds) continue;
       final double x = size.width - dtSeconds * secWidth;
       final double y = rssiY(s.rssi);
-      final Paint p = Paint()
-        ..color = s.kind == _TrackKind.detection
-            ? const Color(0xFF6750A4) // purple for detection
-            : const Color(0xFF4CAF50); // green for rssi_update
-      if (s.kind == _TrackKind.detection) {
-        canvas.drawCircle(Offset(x, y), 3.5, p);
-      } else {
-        canvas.drawCircle(Offset(x, y), 2, p);
+      final Color c;
+      final double r;
+      switch (s.kind) {
+        case _TrackKind.detection:
+          c = const Color(0xFF6750A4); // purple
+          r = 3.5;
+          break;
+        case _TrackKind.rssiUpdate:
+          c = const Color(0xFF4CAF50); // green
+          r = 2;
+          break;
+        case _TrackKind.scanOnly:
+          c = const Color(0xFF9E9E9E); // grey
+          r = 1.6;
+          break;
       }
+      canvas.drawCircle(Offset(x, y), r, Paint()..color = c);
     }
   }
 
