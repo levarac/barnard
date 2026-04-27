@@ -19,12 +19,18 @@ class MockBarnardOverrides {
     this.rotationSeconds,
     this.minPushIntervalMs,
     this.bufferMaxSamples,
+    this.b004MismatchRate,
     this.b003FailureRate,
   });
 
   final int? rotationSeconds;
   final int? minPushIntervalMs;
   final int? bufferMaxSamples;
+
+  /// Probability (0.0 .. 1.0) that a simulated B004 read returns a peer
+  /// EventCodeHash that does not match this client's current event. Mismatches
+  /// gate the exchange before B002/B003 and therefore emit no detection.
+  final double? b004MismatchRate;
 
   /// Probability (0.0 .. 1.0) that a simulated B003 read fails, causing
   /// [DetectionEvent.detectedDisplayId] to be `null`. Defaults to 0.1 (10%).
@@ -37,10 +43,10 @@ class MockBarnard implements BarnardClient {
     int tickMs = 200,
     MockBarnardOverrides? overrides,
     Uint8List? deviceSecret,
-  })  : _tickMs = tickMs.clamp(50, 2000),
-        _random = Random(),
-        _overrides = overrides,
-        _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
+  }) : _tickMs = tickMs.clamp(50, 2000),
+       _random = Random(),
+       _overrides = overrides,
+       _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
     _peers = List<MockPeer>.generate(simulatedPeerCount.clamp(1, 2000), (
       int i,
     ) {
@@ -89,14 +95,17 @@ class MockBarnard implements BarnardClient {
   double get _b003FailureRate =>
       (_overrides?.b003FailureRate ?? 0.1).clamp(0.0, 1.0);
 
+  double get _b004MismatchRate =>
+      (_overrides?.b004MismatchRate ?? 0.0).clamp(0.0, 1.0);
+
   @override
   BarnardCapabilities get capabilities => const BarnardCapabilities(
-        supportedTransports: {TransportKind.ble},
-        supportsConnectionlessRpid: true,
-        supportsGattFallback: false,
-        supportsBackground: false,
-        supportsHighRateRssi: true,
-      );
+    supportedTransports: {TransportKind.ble},
+    supportsConnectionlessRpid: true,
+    supportsGattFallback: false,
+    supportsBackground: false,
+    supportsHighRateRssi: true,
+  );
 
   @override
   BarnardState get state => _state;
@@ -233,8 +242,9 @@ class MockBarnard implements BarnardClient {
     List<int>? rpidBytes,
   }) {
     final List<RssiSample> all = _rssiBuffer.toList();
-    final Uint8List? filterRpid =
-        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid = rpidBytes == null
+        ? null
+        : Uint8List.fromList(rpidBytes);
 
     Iterable<RssiSample> filtered = all;
     if (since != null) {
@@ -320,6 +330,14 @@ class MockBarnard implements BarnardClient {
     required Uint8List rpidPayload,
     required int rssi,
   }) {
+    // Simulate B004 read: EventCodeHash must match before B002/B003 proceed.
+    if (_random.nextDouble() < _b004MismatchRate) {
+      _emitDebug(DebugLevel.info, "gatt_b004_mismatch", <String, Object?>{
+        "peerId": peer.id,
+      });
+      return;
+    }
+
     final String key = _rpidKey(rpidPayload);
     final _RssiAgg agg = _aggByRpidKey.putIfAbsent(key, () => _RssiAgg());
     agg.add(rssi, now: now);
@@ -412,8 +430,8 @@ class MockBarnard implements BarnardClient {
   void _evictAggIfNeeded(DateTime now) {
     if (_aggByRpidKey.length <= _maxAggEntries) return;
 
-    final List<MapEntry<String, _RssiAgg>> entries =
-        _aggByRpidKey.entries.toList(growable: false);
+    final List<MapEntry<String, _RssiAgg>> entries = _aggByRpidKey.entries
+        .toList(growable: false);
     entries.sort((a, b) {
       final DateTime aSeen =
           a.value.lastSeenAt ?? DateTime.fromMillisecondsSinceEpoch(0);

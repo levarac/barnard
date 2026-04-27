@@ -18,7 +18,7 @@ The rest of the v1 design (GAEN-compatible HKDF/AES chain, RPID rotation, fixed 
 1. **TEK never transmitted over BLE.** The SDK refuses every path that would send TEK over the wire.
 2. **B003 carries `displayId = SHA256(TEK)[0:4]`.** Read-only, 4 bytes. 32-bit space → birthday bound ~0.05% collision at 2,000 distinct TEKs (`p ≈ 1 − exp(−n(n−1)/2 / 2³²)` for `n = 2000` gives `p ≈ 4.7 × 10⁻⁴`).
 3. **Fixed service UUID.** Not dynamic per-event. iOS background scan requires the service UUID to be pinned into `scanForPeripherals(withServices:)`; dynamic UUIDs break background discovery. Event scoping is done at a higher layer via B004 (EventCodeHash) and out-of-band event membership.
-4. **B004 is still served for GAEN compatibility / future use.** The peripheral publishes `EventCodeHash` on B004, but v2 does not surface the peer's hash on `DetectionEvent` and the SDK does not filter detections by it. Consumers see every peer that answers B002. Event-scoped filtering remains a future extension (and would be a follow-up issue), not a v2 capability.
+4. **B004 gates the GATT exchange.** The central reads `EventCodeHash` before B002/B003. If B004 is missing, the read fails, or the value does not exactly match this device's `SHA256(EventCode)[0:8]`, the SDK disconnects without reading B002/B003 and emits no detection. B003 failure remains non-fatal only after B004 and B002 have succeeded.
 5. **Explicit TEK egress.** The host app can request the raw TEK via `exportCurrentTek()`. The SDK never transmits it; the host app decides if/when to send it to a backend.
 
 ## 3. Glossary
@@ -73,6 +73,8 @@ Central                                   Peripheral
    │                                       │
    │ ── read B004 (EventCodeHash) ──────▶ │
    │ ◀──── 0 or 8 bytes ─────────────── │
+   │ if missing/read failed/mismatch:      │
+   │   disconnect, emit no detection       │
    │                                       │
    │ ── read B002 (RPID wire form) ─────▶ │
    │ ◀──── 17 bytes ─────────────────── │
@@ -89,11 +91,11 @@ Central                                   Peripheral
 
 ### 5.2 B003 read-failure policy
 
-If B002 succeeds but the subsequent B003 read fails (timeout, error, missing characteristic, invalid length), the central side **still emits a `DetectionEvent`** with `detectedDisplayId = null`. Consumers always see the detection.
+If B004 matches and B002 succeeds but the subsequent B003 read fails (timeout, error, missing characteristic, invalid length), the central side **still emits a `DetectionEvent`** with `detectedDisplayId = null`. Consumers always see the detection.
 
 A debug event with name `gatt_b003_read_failed` (error path) or `gatt_b003_missing` / `gatt_b003_invalid_length` accompanies the detection for diagnostics.
 
-If B002 itself fails, no detection is emitted (no identifier available).
+If B004 fails or B002 itself fails, no detection is emitted.
 
 ## 6. `DetectionEvent` (v2)
 

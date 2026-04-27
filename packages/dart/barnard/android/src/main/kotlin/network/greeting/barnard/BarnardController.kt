@@ -339,6 +339,10 @@ internal class BarnardController(
         return BarnardCrypto.computeEventCodeHash(code)
     }
 
+    private fun eventCodeHashMatches(peerHash: ByteArray): Boolean {
+        return peerHash.contentEquals(getEventCodeHash())
+    }
+
     // MARK: - DeviceSecret Management
 
     private fun getOrCreateDeviceSecret(): ByteArray {
@@ -973,17 +977,15 @@ internal class BarnardController(
                 return
             }
 
-            // v2 flow: B004 -> B002 -> B003
+            // v2 flow: B004 gates B002 -> B003
             val eventCodeHashCh = svc.getCharacteristic(eventCodeHashCharUuid)
             if (eventCodeHashCh != null && hasConnectPermission()) {
                 gatt.readCharacteristic(eventCodeHashCh)
             } else {
-                val rpidCh = svc.getCharacteristic(rpidCharUuid)
-                if (rpidCh != null && hasConnectPermission()) {
-                    gatt.readCharacteristic(rpidCh)
-                } else {
-                    finishConnection(gatt)
-                }
+                emitDebug("warn", "gatt_b004_missing", mapOf(
+                    "address" to (gatt.device?.address ?: "")
+                ))
+                finishConnection(gatt)
             }
         }
 
@@ -1029,11 +1031,21 @@ internal class BarnardController(
             when (uuid) {
                 eventCodeHashCharUuid -> {
                     peripheralReadValues[address]?.eventCodeHash = value
+                    val matches = eventCodeHashMatches(value)
                     emitDebug("trace", "gatt_read_event_code_hash", mapOf(
                         "address" to address,
                         "bytes" to value.size,
-                        "isEmpty" to value.isEmpty()
+                        "isEmpty" to value.isEmpty(),
+                        "matches" to matches
                     ))
+                    if (!matches) {
+                        emitDebug("info", "gatt_b004_mismatch", mapOf(
+                            "address" to address,
+                            "bytes" to value.size
+                        ))
+                        finishConnection(gatt)
+                        return
+                    }
                     val rpidCh = svc.getCharacteristic(rpidCharUuid)
                     if (rpidCh != null && hasConnectPermission()) {
                         gatt.readCharacteristic(rpidCh)

@@ -31,8 +31,7 @@ void main() {
 
     test("currentEnin returns a positive int close to wall clock", () {
       final BarnardClient barnard = MockBarnard();
-      final int expected =
-          DateTime.now().millisecondsSinceEpoch ~/ 1000 ~/ 600;
+      final int expected = DateTime.now().millisecondsSinceEpoch ~/ 1000 ~/ 600;
       expect(barnard.currentEnin, isPositive);
       expect((barnard.currentEnin - expected).abs(), lessThanOrEqualTo(1));
     });
@@ -94,8 +93,11 @@ void main() {
 
       expect(detections, isNotEmpty);
       for (final DetectionEvent d in detections) {
-        expect(d.rpid.length, equals(17),
-            reason: "rpid wire form is [version(1) + RPI(16)]");
+        expect(
+          d.rpid.length,
+          equals(17),
+          reason: "rpid wire form is [version(1) + RPI(16)]",
+        );
         expect(d.reporterRpid.length, equals(17));
         expect(d.enin, isPositive);
         // With b003FailureRate = 0, detectedDisplayId is always present.
@@ -110,12 +112,43 @@ void main() {
       await sub.cancel();
     });
 
-    test("mock simulates B003 failure: detectedDisplayId can be null",
-        () async {
+    test(
+      "mock simulates B003 failure: detectedDisplayId can be null",
+      () async {
+        final BarnardClient barnard = MockBarnard(
+          simulatedPeerCount: 5,
+          tickMs: 50,
+          overrides: const MockBarnardOverrides(b003FailureRate: 1.0),
+        );
+
+        final List<DetectionEvent> detections = <DetectionEvent>[];
+        final StreamSubscription sub = barnard.events.listen((BarnardEvent e) {
+          if (e is DetectionEvent) detections.add(e);
+        });
+
+        await barnard.startScan();
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        await barnard.stopScan();
+
+        expect(detections, isNotEmpty);
+        for (final DetectionEvent d in detections) {
+          expect(d.detectedDisplayId, isNull);
+        }
+
+        await barnard.dispose();
+        await sub.cancel();
+      },
+    );
+
+    test("mock gates detections when B004 EventCodeHash mismatches", () async {
       final BarnardClient barnard = MockBarnard(
         simulatedPeerCount: 5,
         tickMs: 50,
-        overrides: const MockBarnardOverrides(b003FailureRate: 1.0),
+        overrides: const MockBarnardOverrides(
+          b004MismatchRate: 1.0,
+          b003FailureRate: 0.0,
+          minPushIntervalMs: 50,
+        ),
       );
 
       final List<DetectionEvent> detections = <DetectionEvent>[];
@@ -123,14 +156,18 @@ void main() {
         if (e is DetectionEvent) detections.add(e);
       });
 
+      await barnard.joinEvent("TEST-EVENT-001");
       await barnard.startScan();
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
       await barnard.stopScan();
 
-      expect(detections, isNotEmpty);
-      for (final DetectionEvent d in detections) {
-        expect(d.detectedDisplayId, isNull);
-      }
+      expect(detections, isEmpty);
+      expect(
+        barnard.getDebugBuffer().where(
+          (BarnardDebugEvent e) => e.name == "gatt_b004_mismatch",
+        ),
+        isNotEmpty,
+      );
 
       await barnard.dispose();
       await sub.cancel();

@@ -520,12 +520,19 @@ final class BarnardBleController: NSObject {
     }
     peripheralCharacteristics[id] = charMap
 
-    // Step 1: EventCodeHash (informational; we emit regardless of match)
-    if let eventCodeHashCh = charMap[eventCodeHashCharacteristicUUID] {
-      peripheral.readValue(for: eventCodeHashCh)
-    } else {
-      readRpidCharacteristic(for: peripheral)
+    // Step 1: EventCodeHash. B004 gates B002/B003 exchange.
+    guard let eventCodeHashCh = charMap[eventCodeHashCharacteristicUUID] else {
+      emitDebug(level: "warn", name: "gatt_b004_missing", data: [
+        "id": id.uuidString,
+      ])
+      finishConnection(peripheral)
+      return
     }
+    peripheral.readValue(for: eventCodeHashCh)
+  }
+
+  private func eventCodeHashMatches(_ peerHash: Data) -> Bool {
+    peerHash == rpid.getEventCodeHash()
   }
 
   private func readRpidCharacteristic(for peripheral: CBPeripheral) {
@@ -838,11 +845,21 @@ extension BarnardBleController: CBPeripheralDelegate {
     switch characteristic.uuid {
     case eventCodeHashCharacteristicUUID:
       peripheralReadValues[id]?.eventCodeHash = value
+      let matches = eventCodeHashMatches(value)
       emitDebug(level: "trace", name: "gatt_read_event_code_hash", data: [
         "id": id.uuidString,
         "bytes": value.count,
         "isEmpty": value.isEmpty,
+        "matches": matches,
       ])
+      guard matches else {
+        emitDebug(level: "info", name: "gatt_b004_mismatch", data: [
+          "id": id.uuidString,
+          "bytes": value.count,
+        ])
+        finishConnection(peripheral)
+        return
+      }
       readRpidCharacteristic(for: peripheral)
 
     case rpidCharacteristicUUID:
