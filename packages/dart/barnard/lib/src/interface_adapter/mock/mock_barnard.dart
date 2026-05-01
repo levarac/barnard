@@ -65,8 +65,10 @@ class MockBarnard implements BarnardClient {
         _overrides?.bufferMaxSamples ?? const RssiConfig().bufferMaxSamples;
     _rssiBuffer = RingBuffer<RssiSample>(bufferMaxSamples);
 
-    // Initialize with a deterministic TEK (pre-event "anonymous" derivation).
-    _currentTek = BarnardCrypto.deriveTekForAnonymous(_deviceSecret);
+    _currentEventCode = config.eventCode;
+    _currentTek = config.eventCode == null
+        ? BarnardCrypto.deriveTekForAnonymous(_deviceSecret)
+        : BarnardCrypto.deriveTekForEvent(_deviceSecret, config.eventCode!);
   }
 
   final int _tickMs;

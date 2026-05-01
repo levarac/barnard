@@ -325,7 +325,7 @@ Map<String, Object?> _encodeAutoConfig(AutoConfig? config) => <String, Object?>{
 Map<String, Object?> _encodeBarnardConfig(BarnardConfig config) =>
     <String, Object?>{
       "transport": config.transport.name,
-      "eventCode": config.eventCode,
+      if (config.eventCode != null) "eventCode": config.eventCode,
       "eninMode": config.eninMode.name,
       "eninSeconds": config.effectiveEninSeconds,
       "beaconChain": <String, Object?>{

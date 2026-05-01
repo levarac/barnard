@@ -6,6 +6,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.nio.ByteBuffer
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -36,6 +37,22 @@ internal class BarnardPluginTest {
         controller.onMethodCall(call, result)
 
         assertTrue(result.value is Map<*, *>)
+    }
+
+    @Test
+    fun onMethodCall_configure_appliesEventCode() {
+        val messenger = RecordingBinaryMessenger()
+        val configureResult = RecordingResult()
+        val eventCodeResult = RecordingResult()
+
+        val controller = BarnardController(context, messenger)
+        controller.onMethodCall(
+            MethodCall("configure", mapOf("eventCode" to "CONF-2026")),
+            configureResult
+        )
+        controller.onMethodCall(MethodCall("getCurrentEventCode", null), eventCodeResult)
+
+        assertEquals("CONF-2026", eventCodeResult.value)
     }
 
     private class RecordingBinaryMessenger : BinaryMessenger {

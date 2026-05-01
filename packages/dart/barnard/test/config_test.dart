@@ -1,3 +1,5 @@
+import "dart:typed_data";
+
 import "package:barnard/barnard.dart";
 import "package:barnard/mock_barnard.dart";
 import "package:test/test.dart";
@@ -42,6 +44,20 @@ void main() {
         barnard.state.beaconChain,
         equals(BeaconChainConfig.ethereumMainnet),
       );
+    });
+
+    test("MockBarnard applies configured event code at creation", () async {
+      final barnard = MockBarnard(
+        config: const BarnardConfig(eventCode: "CONF-2026"),
+        deviceSecret: Uint8List.fromList(List<int>.filled(32, 7)),
+      );
+      final expectedTek = deriveTek(
+        Uint8List.fromList(List<int>.filled(32, 7)),
+        "CONF-2026",
+      );
+
+      expect(barnard.currentEventCode, equals("CONF-2026"));
+      expect(barnard.myDisplayId, equals(displayIdFromTek(expectedTek)));
     });
   });
 }

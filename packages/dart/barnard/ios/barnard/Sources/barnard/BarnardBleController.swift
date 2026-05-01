@@ -143,6 +143,16 @@ final class BarnardBleController: NSObject {
       slotSeconds: (chain?["slotSeconds"] as? Int) ?? 12
     )
 
+    if let eventCode = args["eventCode"] as? String,
+      !eventCode.isEmpty,
+      eventCode != rpid.eventCode
+    {
+      resetPeerDiscoveryState(reason: "configure_event")
+      rpid.joinEvent(eventCode)
+      rebuildGattServiceIfNeeded()
+      emitState(reasonCode: "configure_event")
+    }
+
     knownPeers.removeAll()
     emitDebug(level: "info", name: "configure", data: [
       "eninMode": eninModeName(),
@@ -753,7 +763,7 @@ final class BarnardBleController: NSObject {
       )
 
       if rpidData.count == 17 {
-        let peerEnin = currentEnin(ts)
+        let peerEnin = currentEnin()
         knownPeers[id] = KnownPeer(
           rpid: rpidData,
           enin: peerEnin,

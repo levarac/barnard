@@ -371,6 +371,10 @@ internal class BarnardController(
             slotSeconds = (chain?.get("slotSeconds") as? Number)?.toLong() ?: 12L,
         )
 
+        (args["eventCode"] as? String)?.let { code ->
+            if (code.isNotEmpty() && code != eventCode) joinEvent(code)
+        }
+
         knownPeers.clear()
         emitDebug("info", "configure", mapOf(
             "eninMode" to eninModeName(),
@@ -1317,7 +1321,7 @@ internal class BarnardController(
                 resolutionBackoffUntilMs.remove(address)
 
                 if (rpidData.size == 17) {
-                    val peerEnin = currentEnin(ts).toLong()
+                    val peerEnin = currentEnin().toLong()
                     knownPeers[address] = KnownPeer(
                         rpidData,
                         peerEnin,
