@@ -6,6 +6,13 @@ import "package:barnard/src/interface_adapter/ble/barnard_ble_client.dart";
 import "package:flutter_test/flutter_test.dart";
 
 void main() {
+  group("RSSI helpers", () {
+    test("treats CoreBluetooth unavailable RSSI as unusable", () {
+      expect(isUsableBleRssi(unavailableBleRssi), isFalse);
+      expect(isUsableBleRssi(-55), isTrue);
+    });
+  });
+
   group("parseBarnardEvent — detection v2", () {
     final Map<Object?, Object?> baseMap = <Object?, Object?>{
       "type": "detection",
@@ -157,10 +164,7 @@ void main() {
       final BarnardEvent event = parseBarnardEvent(<Object?, Object?>{
         "type": "state",
         "timestamp": "2026-04-20T10:00:00.000Z",
-        "state": <Object?, Object?>{
-          "isScanning": true,
-          "isAdvertising": false,
-        },
+        "state": <Object?, Object?>{"isScanning": true, "isAdvertising": false},
         "reasonCode": "scan_start",
       });
       expect(event, isA<StateEvent>());

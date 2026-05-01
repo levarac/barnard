@@ -11,6 +11,41 @@ import "package:permission_handler/permission_handler.dart";
 
 void main() => runApp(const MyApp());
 
+bool shouldJoinEventForInput(String? currentEventCode, String input) {
+  final String code = input.trim();
+  return code.isNotEmpty && currentEventCode != code;
+}
+
+enum ScanResolutionState { awaitingGatt, retrying, resolved, failed, rejected }
+
+ScanResolutionState scanResolutionFromDebugName(String name) {
+  switch (name) {
+    case "gatt_read_display_id":
+      return ScanResolutionState.resolved;
+    case "gatt_b004_mismatch":
+      return ScanResolutionState.rejected;
+    case "gatt_resolution_failed":
+    case "connect_timeout":
+      return ScanResolutionState.failed;
+    default:
+      return ScanResolutionState.awaitingGatt;
+  }
+}
+
+ScanResolutionState scanResolutionForDebugEvent(
+  String name,
+  Map<String, Object?>? data,
+) {
+  final ScanResolutionState state = scanResolutionFromDebugName(name);
+  if (state == ScanResolutionState.failed && data?["recoverable"] == true) {
+    return ScanResolutionState.retrying;
+  }
+  return state;
+}
+
+bool isDebugPeerLocalName(String? name) =>
+    name != null && RegExp(r"^BND-[0-9A-F]{4}$").hasMatch(name);
+
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
@@ -25,8 +60,9 @@ class _MyAppState extends State<MyApp> {
   StreamSubscription<BarnardEvent>? _eventsSub;
   StreamSubscription<BarnardDebugEvent>? _debugSub;
 
-  final TextEditingController _eventCodeController =
-      TextEditingController(text: "BND");
+  final TextEditingController _eventCodeController = TextEditingController(
+    text: "BND",
+  );
 
   BarnardState _state = BarnardState.idle;
   final List<BarnardEvent> _events = <BarnardEvent>[];
@@ -59,6 +95,7 @@ class _MyAppState extends State<MyApp> {
   // debug events). Populated when v2 central sees a peripheral advertise the
   // Barnard service UUID but the follow-up GATT read has not completed.
   final Map<String, _PeerTrack> _scanOnlyTracks = <String, _PeerTrack>{};
+  final _SmokeLog _smokeLog = _SmokeLog();
 
   // Peripheral ids (iOS CBPeripheral.identifier / Android MAC) that have
   // already completed v2 GATT. Further `ble_discovery_result` events for
@@ -94,9 +131,11 @@ class _MyAppState extends State<MyApp> {
 
   Future<void> _init() async {
     await _ensurePermissions();
+    await _smokeLog.reset();
     final BarnardBleClient client = await BarnardBleClient.create();
 
     _eventsSub = client.events.listen((BarnardEvent e) {
+      unawaited(_smokeLog.write(_formatEventForSmokeLog(e)));
       if (!mounted) return;
       setState(() {
         _events.add(e);
@@ -106,13 +145,25 @@ class _MyAppState extends State<MyApp> {
         if (e is DetectionEvent) {
           _totalDetections += 1;
           _updateSeen(e);
-          _pushTrackSample(e.rpid, e.timestamp, e.rssi, _TrackKind.detection,
-              detectedDisplayId: e.detectedDisplayId);
+          _pushTrackSample(
+            e.rpid,
+            e.timestamp,
+            e.rssi,
+            _TrackKind.detection,
+            detectedDisplayId: e.detectedDisplayId,
+            debugLocalName: e.debugLocalName,
+          );
         }
         if (e is RssiUpdateEvent) {
           _totalRssiUpdates += 1;
-          _pushTrackSample(e.rpid, e.timestamp, e.rssi, _TrackKind.rssiUpdate,
-              detectedDisplayId: e.detectedDisplayId);
+          _pushTrackSample(
+            e.rpid,
+            e.timestamp,
+            e.rssi,
+            _TrackKind.rssiUpdate,
+            detectedDisplayId: e.detectedDisplayId,
+            debugLocalName: e.debugLocalName,
+          );
         }
         if (e is ConstraintEvent || e is ErrorEvent) {
           _totalIssues += 1;
@@ -120,13 +171,16 @@ class _MyAppState extends State<MyApp> {
       });
     });
     _debugSub = client.debugEvents.listen((BarnardDebugEvent e) {
+      unawaited(_smokeLog.write(_formatDebugForSmokeLog(e)));
       if (!mounted) return;
       // Surface every debug event to stdout so `flutter run` CLI sessions
       // (e.g. three concurrent tmux panes across iPhone/iPad/Pixel) can be
       // tailed for cross-device diagnostics. Format is `[BND-DBG] level
       // name data` — grep-friendly.
-      debugPrint("[BND-DBG] ${e.level.name} ${e.name}"
-          "${e.data == null ? '' : ' ${e.data}'}");
+      debugPrint(
+        "[BND-DBG] ${e.level.name} ${e.name}"
+        "${e.data == null ? '' : ' ${e.data}'}",
+      );
       setState(() {
         _debugEvents.add(e);
         if (_debugEvents.length > 200) {
@@ -137,12 +191,24 @@ class _MyAppState extends State<MyApp> {
           _totalDebugIssues += 1;
         }
         _updateSelfInfo(e);
-        if (e.name == "gatt_read_display_id") {
+        if (e.name == "peer_cache_reset") {
+          _gattResolvedPeerIds.clear();
+          _scanOnlyTracks.clear();
+        }
+        final ScanResolutionState resolution = scanResolutionForDebugEvent(
+          e.name,
+          e.data,
+        );
+        if (resolution == ScanResolutionState.resolved) {
           final String? peerId = _peerIdFromDebug(e);
           if (peerId != null) {
             _gattResolvedPeerIds.add(peerId);
             _scanOnlyTracks.remove(peerId);
           }
+        } else if (resolution == ScanResolutionState.retrying ||
+            resolution == ScanResolutionState.failed ||
+            resolution == ScanResolutionState.rejected) {
+          _markScanResolution(e, resolution);
         } else if (e.name == "ble_discovery_result") {
           _pushScanOnlySample(e);
         }
@@ -168,8 +234,81 @@ class _MyAppState extends State<MyApp> {
     ].request();
   }
 
+  String _formatEventForSmokeLog(BarnardEvent e) {
+    if (e is DetectionEvent) {
+      return jsonEncode(<String, Object?>{
+        "kind": "event",
+        "type": "detection",
+        "timestamp": e.timestamp.toIso8601String(),
+        "rpid": bytesToHex(e.rpid),
+        "reporterRpid": bytesToHex(e.reporterRpid),
+        "detectedDisplayId": e.detectedDisplayId,
+        "enin": e.enin,
+        "rssi": e.rssi,
+        "debugLocalName": e.debugLocalName,
+      });
+    }
+    if (e is RssiUpdateEvent) {
+      return jsonEncode(<String, Object?>{
+        "kind": "event",
+        "type": "rssi_update",
+        "timestamp": e.timestamp.toIso8601String(),
+        "rpid": bytesToHex(e.rpid),
+        "reporterRpid": bytesToHex(e.reporterRpid),
+        "detectedDisplayId": e.detectedDisplayId,
+        "enin": e.enin,
+        "rssi": e.rssi,
+      });
+    }
+    if (e is StateEvent) {
+      return jsonEncode(<String, Object?>{
+        "kind": "event",
+        "type": "state",
+        "timestamp": e.timestamp.toIso8601String(),
+        "state": e.state.toString(),
+        "reasonCode": e.reasonCode,
+      });
+    }
+    if (e is ConstraintEvent) {
+      return jsonEncode(<String, Object?>{
+        "kind": "event",
+        "type": "constraint",
+        "timestamp": e.timestamp.toIso8601String(),
+        "code": e.code,
+        "message": e.message,
+        "requiredAction": e.requiredAction,
+      });
+    }
+    if (e is ErrorEvent) {
+      return jsonEncode(<String, Object?>{
+        "kind": "event",
+        "type": "error",
+        "timestamp": e.timestamp.toIso8601String(),
+        "code": e.code,
+        "message": e.message,
+        "recoverable": e.recoverable,
+      });
+    }
+    return jsonEncode(<String, Object?>{
+      "kind": "event",
+      "type": e.runtimeType.toString(),
+      "timestamp": e.timestamp.toIso8601String(),
+    });
+  }
+
+  String _formatDebugForSmokeLog(BarnardDebugEvent e) {
+    return jsonEncode(<String, Object?>{
+      "kind": "debug",
+      "timestamp": e.timestamp.toIso8601String(),
+      "level": e.level.name,
+      "name": e.name,
+      "data": e.data,
+    });
+  }
+
   Future<void> _run(
-      Future<void> Function(BarnardBleClient client) action) async {
+    Future<void> Function(BarnardBleClient client) action,
+  ) async {
     final BarnardBleClient? client = _client;
     if (client == null) return;
     if (_busy) return;
@@ -182,38 +321,37 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _ensureEventJoined(BarnardBleClient client) async {
-    if (client.currentEventCode != null) return;
     final String code = _eventCodeController.text.trim();
-    if (code.isEmpty) return;
+    if (!shouldJoinEventForInput(client.currentEventCode, code)) return;
     await client.joinEvent(code);
   }
 
   Future<void> _toggleScan() => _run((c) async {
-        if (_state.isScanning) {
-          await c.stopScan();
-        } else {
-          await _ensureEventJoined(c);
-          await c.startScan(const ScanConfig(allowDuplicates: true));
-        }
-      });
+    if (_state.isScanning) {
+      await c.stopScan();
+    } else {
+      await _ensureEventJoined(c);
+      await c.startScan(const ScanConfig(allowDuplicates: true));
+    }
+  });
 
   Future<void> _toggleAdvertise() => _run((c) async {
-        if (_state.isAdvertising) {
-          await c.stopAdvertise();
-        } else {
-          await _ensureEventJoined(c);
-          await c.startAdvertise(const AdvertiseConfig());
-        }
-      });
+    if (_state.isAdvertising) {
+      await c.stopAdvertise();
+    } else {
+      await _ensureEventJoined(c);
+      await c.startAdvertise(const AdvertiseConfig());
+    }
+  });
 
   Future<void> _toggleAuto() => _run((c) async {
-        if (_state.isScanning || _state.isAdvertising) {
-          await c.stopAuto();
-        } else {
-          await _ensureEventJoined(c);
-          await c.startAuto(const AutoConfig());
-        }
-      });
+    if (_state.isScanning || _state.isAdvertising) {
+      await c.stopAuto();
+    } else {
+      await _ensureEventJoined(c);
+      await c.startAuto(const AutoConfig());
+    }
+  });
 
   Future<void> _exportTek() async {
     final BarnardBleClient? client = _client;
@@ -221,17 +359,22 @@ class _MyAppState extends State<MyApp> {
     try {
       final Uint8List tek = await client.exportCurrentTek();
       final String hex = bytesToHex(tek);
-      _messengerKey.currentState?.showSnackBar(SnackBar(
-        content: Text("TEK (hex): $hex",
-            maxLines: 2, overflow: TextOverflow.ellipsis),
-        duration: const Duration(seconds: 8),
-        action: SnackBarAction(
-          label: "Copy",
-          onPressed: () async {
-            await _copyToClipboard(hex);
-          },
+      _messengerKey.currentState?.showSnackBar(
+        SnackBar(
+          content: Text(
+            "TEK (hex): $hex",
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          duration: const Duration(seconds: 8),
+          action: SnackBarAction(
+            label: "Copy",
+            onPressed: () async {
+              await _copyToClipboard(hex);
+            },
+          ),
         ),
-      ));
+      );
     } catch (e, stack) {
       debugPrint("exportCurrentTek failed: $e\n$stack");
       _messengerKey.currentState?.showSnackBar(
@@ -268,10 +411,9 @@ class _MyAppState extends State<MyApp> {
           appBar: AppBar(
             title: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment:
-                  Platform.isIOS || Platform.isMacOS
-                      ? CrossAxisAlignment.center
-                      : CrossAxisAlignment.start,
+              crossAxisAlignment: Platform.isIOS || Platform.isMacOS
+                  ? CrossAxisAlignment.center
+                  : CrossAxisAlignment.start,
               children: <Widget>[
                 const Text("barnard"),
                 Text(
@@ -279,10 +421,9 @@ class _MyAppState extends State<MyApp> {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w400,
-                    color: Theme.of(context)
-                        .colorScheme
-                        .onSurfaceVariant
-                        .withValues(alpha: 0.8),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurfaceVariant.withValues(alpha: 0.8),
                   ),
                 ),
               ],
@@ -318,72 +459,76 @@ class _MyAppState extends State<MyApp> {
                     ),
                     const Divider(height: 1),
                     Expanded(
-                      child: TabBarView(children: <Widget>[
-                        _TimelineTab(
-                          tracks: _tracks,
-                          scanOnlyTracks: _scanOnlyTracks,
-                          totalDetections: _totalDetections,
-                          totalRssiUpdates: _totalRssiUpdates,
-                          onClear: (_tracks.isEmpty && _scanOnlyTracks.isEmpty)
-                              ? null
-                              : () => setState(() {
+                      child: TabBarView(
+                        children: <Widget>[
+                          _TimelineTab(
+                            tracks: _tracks,
+                            scanOnlyTracks: _scanOnlyTracks,
+                            totalDetections: _totalDetections,
+                            totalRssiUpdates: _totalRssiUpdates,
+                            onClear:
+                                (_tracks.isEmpty && _scanOnlyTracks.isEmpty)
+                                ? null
+                                : () => setState(() {
                                     _tracks.clear();
                                     _scanOnlyTracks.clear();
                                   }),
-                        ),
-                        _EventsTab(
-                          events: _events,
-                          totalEvents: _totalEvents,
-                          totalDetections: _totalDetections,
-                          totalRssiUpdates: _totalRssiUpdates,
-                          totalIssues: _totalIssues,
-                          onlyDetections: _eventsOnlyDetections,
-                          onlyIssues: _eventsOnlyIssues,
-                          seenById: _seenById,
-                          onOnlyDetectionsChanged: (v) =>
-                              setState(() => _eventsOnlyDetections = v),
-                          onOnlyIssuesChanged: (v) =>
-                              setState(() => _eventsOnlyIssues = v),
-                          onClear: _events.isEmpty
-                              ? null
-                              : () => setState(_events.clear),
-                        ),
-                        _DebugTab(
-                          events: _debugEvents,
-                          deviceLabel: _selfInfo.localName ?? _localName,
-                          myDisplayId: _client?.myDisplayId,
-                          currentEnin: _client?.currentEnin,
-                          currentEventCode: _client?.currentEventCode,
-                          onlyIssues: _debugOnlyIssues,
-                          hideTrace: _debugHideTrace,
-                          query: _debugQuery,
-                          onOnlyIssuesChanged: (v) =>
-                              setState(() => _debugOnlyIssues = v),
-                          onHideTraceChanged: (v) =>
-                              setState(() => _debugHideTrace = v),
-                          onQueryChanged: (v) =>
-                              setState(() => _debugQuery = v.trim()),
-                          onClear: _debugEvents.isEmpty
-                              ? null
-                              : () => setState(_debugEvents.clear),
-                          showMessage: _showMessage,
-                        ),
-                        _DiagnosticsTab(
-                          state: _state,
-                          selfInfo: _selfInfo,
-                          seen: _seenById.values.toList()
-                            ..sort((a, b) =>
-                                b.lastSeen.compareTo(a.lastSeen)),
-                          staleAfter: _staleAfter,
-                          serviceUuid: _serviceUuid,
-                          defaultLocalName: _localName,
-                          totalEvents: _totalEvents,
-                          totalDetections: _totalDetections,
-                          totalRssiUpdates: _totalRssiUpdates,
-                          totalDebug: _totalDebug,
-                          debugIssues: _totalDebugIssues,
-                        ),
-                      ]),
+                          ),
+                          _EventsTab(
+                            events: _events,
+                            totalEvents: _totalEvents,
+                            totalDetections: _totalDetections,
+                            totalRssiUpdates: _totalRssiUpdates,
+                            totalIssues: _totalIssues,
+                            onlyDetections: _eventsOnlyDetections,
+                            onlyIssues: _eventsOnlyIssues,
+                            seenById: _seenById,
+                            onOnlyDetectionsChanged: (v) =>
+                                setState(() => _eventsOnlyDetections = v),
+                            onOnlyIssuesChanged: (v) =>
+                                setState(() => _eventsOnlyIssues = v),
+                            onClear: _events.isEmpty
+                                ? null
+                                : () => setState(_events.clear),
+                          ),
+                          _DebugTab(
+                            events: _debugEvents,
+                            deviceLabel: _selfInfo.localName ?? _localName,
+                            myDisplayId: _client?.myDisplayId,
+                            currentEnin: _client?.currentEnin,
+                            currentEventCode: _client?.currentEventCode,
+                            onlyIssues: _debugOnlyIssues,
+                            hideTrace: _debugHideTrace,
+                            query: _debugQuery,
+                            onOnlyIssuesChanged: (v) =>
+                                setState(() => _debugOnlyIssues = v),
+                            onHideTraceChanged: (v) =>
+                                setState(() => _debugHideTrace = v),
+                            onQueryChanged: (v) =>
+                                setState(() => _debugQuery = v.trim()),
+                            onClear: _debugEvents.isEmpty
+                                ? null
+                                : () => setState(_debugEvents.clear),
+                            showMessage: _showMessage,
+                          ),
+                          _DiagnosticsTab(
+                            state: _state,
+                            selfInfo: _selfInfo,
+                            seen: _seenById.values.toList()
+                              ..sort(
+                                (a, b) => b.lastSeen.compareTo(a.lastSeen),
+                              ),
+                            staleAfter: _staleAfter,
+                            serviceUuid: _serviceUuid,
+                            defaultLocalName: _localName,
+                            totalEvents: _totalEvents,
+                            totalDetections: _totalDetections,
+                            totalRssiUpdates: _totalRssiUpdates,
+                            totalDebug: _totalDebug,
+                            debugIssues: _totalDebugIssues,
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -400,41 +545,69 @@ class _MyAppState extends State<MyApp> {
     return (data["id"] as String?) ?? (data["address"] as String?);
   }
 
+  void _markScanResolution(
+    BarnardDebugEvent e,
+    ScanResolutionState resolution,
+  ) {
+    final String? id = _peerIdFromDebug(e);
+    if (id == null || _gattResolvedPeerIds.contains(id)) return;
+    final _PeerTrack track = _scanOnlyTracks.putIfAbsent(
+      id,
+      () => _PeerTrack(),
+    );
+    track.resolutionState = resolution;
+    final Map<String, Object?>? data = e.data;
+    final String? reason = data?["reason"] as String?;
+    track.resolutionReason = reason ?? e.name;
+    final int? backoffMs = _asInt(data?["backoffMs"]);
+    if (backoffMs != null && backoffMs > 0) {
+      track.resolutionUntil = e.timestamp.add(
+        Duration(milliseconds: backoffMs),
+      );
+    }
+  }
+
   void _pushScanOnlySample(BarnardDebugEvent e) {
     final Map<String, Object?>? data = e.data;
     if (data == null) return;
-    final String? id = data["id"] as String?;
+    final String? id = _peerIdFromDebug(e);
     final int? rssi = _asInt(data["rssi"]);
     if (id == null || rssi == null) return;
+    if (!isUsableBleRssi(rssi)) return;
     // Skip peers that have already finished v2 GATT — they render in the
     // main `_tracks` map via detection/rssiUpdate samples.
     if (_gattResolvedPeerIds.contains(id)) return;
-    final _PeerTrack track = _scanOnlyTracks.putIfAbsent(id, () => _PeerTrack());
     final String? name = data["name"] as String?;
+    if (isDebugPeerLocalName(name) && _hasResolvedTrackWithLocalName(name!)) {
+      _removeScanOnlyTracksWithLocalName(name);
+      return;
+    }
+    final _PeerTrack track = _scanOnlyTracks.putIfAbsent(
+      id,
+      () => _PeerTrack(),
+    );
     if (name != null && name.isNotEmpty) {
       track.localName = name;
     }
-    track.samples.add(_TrackSample(
-      at: e.timestamp,
-      rssi: rssi,
-      kind: _TrackKind.scanOnly,
-    ));
+    track.samples.add(
+      _TrackSample(at: e.timestamp, rssi: rssi, kind: _TrackKind.scanOnly),
+    );
     final DateTime cutoff = e.timestamp.subtract(const Duration(minutes: 5));
-    while (track.samples.isNotEmpty && track.samples.first.at.isBefore(cutoff)) {
+    while (track.samples.isNotEmpty &&
+        track.samples.first.at.isBefore(cutoff)) {
       track.samples.removeAt(0);
     }
     if (_scanOnlyTracks.length > 16) {
       final List<MapEntry<String, _PeerTrack>> entries =
-          _scanOnlyTracks.entries.toList(growable: false)
-            ..sort((a, b) {
-              final DateTime aT = a.value.samples.isEmpty
-                  ? DateTime.fromMillisecondsSinceEpoch(0)
-                  : a.value.samples.last.at;
-              final DateTime bT = b.value.samples.isEmpty
-                  ? DateTime.fromMillisecondsSinceEpoch(0)
-                  : b.value.samples.last.at;
-              return aT.compareTo(bT);
-            });
+          _scanOnlyTracks.entries.toList(growable: false)..sort((a, b) {
+            final DateTime aT = a.value.samples.isEmpty
+                ? DateTime.fromMillisecondsSinceEpoch(0)
+                : a.value.samples.last.at;
+            final DateTime bT = b.value.samples.isEmpty
+                ? DateTime.fromMillisecondsSinceEpoch(0)
+                : b.value.samples.last.at;
+            return aT.compareTo(bT);
+          });
       _scanOnlyTracks.remove(entries.first.key);
     }
   }
@@ -445,33 +618,51 @@ class _MyAppState extends State<MyApp> {
     int rssi,
     _TrackKind kind, {
     String? detectedDisplayId,
+    String? debugLocalName,
   }) {
+    if (!isUsableBleRssi(rssi)) return;
     final String key = base64UrlEncode(rpid);
     final _PeerTrack track = _tracks.putIfAbsent(key, () => _PeerTrack());
     if (detectedDisplayId != null && detectedDisplayId.isNotEmpty) {
       track.detectedDisplayId = detectedDisplayId;
     }
+    if (isDebugPeerLocalName(debugLocalName)) {
+      track.localName = debugLocalName;
+      _removeScanOnlyTracksWithLocalName(debugLocalName!);
+    }
     track.samples.add(_TrackSample(at: at, rssi: rssi, kind: kind));
     // Keep only last 5 minutes of samples per peer.
     final DateTime cutoff = at.subtract(const Duration(minutes: 5));
-    while (track.samples.isNotEmpty && track.samples.first.at.isBefore(cutoff)) {
+    while (track.samples.isNotEmpty &&
+        track.samples.first.at.isBefore(cutoff)) {
       track.samples.removeAt(0);
     }
     if (_tracks.length > 16) {
       // Evict the track with the oldest last sample.
       final List<MapEntry<String, _PeerTrack>> entries =
-          _tracks.entries.toList(growable: false)
-            ..sort((a, b) {
-              final DateTime aT = a.value.samples.isEmpty
-                  ? DateTime.fromMillisecondsSinceEpoch(0)
-                  : a.value.samples.last.at;
-              final DateTime bT = b.value.samples.isEmpty
-                  ? DateTime.fromMillisecondsSinceEpoch(0)
-                  : b.value.samples.last.at;
-              return aT.compareTo(bT);
-            });
+          _tracks.entries.toList(growable: false)..sort((a, b) {
+            final DateTime aT = a.value.samples.isEmpty
+                ? DateTime.fromMillisecondsSinceEpoch(0)
+                : a.value.samples.last.at;
+            final DateTime bT = b.value.samples.isEmpty
+                ? DateTime.fromMillisecondsSinceEpoch(0)
+                : b.value.samples.last.at;
+            return aT.compareTo(bT);
+          });
       _tracks.remove(entries.first.key);
     }
+  }
+
+  void _removeScanOnlyTracksWithLocalName(String localName) {
+    _scanOnlyTracks.removeWhere(
+      (_, _PeerTrack track) => track.localName == localName,
+    );
+  }
+
+  bool _hasResolvedTrackWithLocalName(String localName) {
+    return _tracks.values.any(
+      (_PeerTrack track) => track.localName == localName,
+    );
   }
 
   void _updateSeen(DetectionEvent e) {
@@ -507,8 +698,7 @@ class _MyAppState extends State<MyApp> {
           _asInt(data["formatVersion"]) ?? _selfInfo.formatVersion;
       _selfInfo.serviceUuid =
           data["serviceUuid"] as String? ?? _selfInfo.serviceUuid;
-      _selfInfo.localName =
-          data["localName"] as String? ?? _selfInfo.localName;
+      _selfInfo.localName = data["localName"] as String? ?? _selfInfo.localName;
     } else if (e.name == "gatt_respond_rpid") {
       _selfInfo.formatVersion =
           _asInt(data["formatVersion"]) ?? _selfInfo.formatVersion;
@@ -546,9 +736,7 @@ class _IdentityCard extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
       decoration: BoxDecoration(
         color: cs.surfaceContainerLowest,
-        border: Border(
-          bottom: BorderSide(color: cs.outlineVariant),
-        ),
+        border: Border(bottom: BorderSide(color: cs.outlineVariant)),
       ),
       child: Row(
         children: <Widget>[
@@ -593,7 +781,11 @@ class _IdentityCard extends StatelessWidget {
 }
 
 class _StateIcon extends StatelessWidget {
-  const _StateIcon({required this.icon, required this.active, required this.tooltip});
+  const _StateIcon({
+    required this.icon,
+    required this.active,
+    required this.tooltip,
+  });
 
   final IconData icon;
   final bool active;
@@ -731,15 +923,19 @@ class _PrimaryActionButton extends StatelessWidget {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: <Widget>[
-                      Icon(autoRunning ? Icons.stop_circle : Icons.sync,
-                          size: 18, color: fg),
+                      Icon(
+                        autoRunning ? Icons.stop_circle : Icons.sync,
+                        size: 18,
+                        color: fg,
+                      ),
                       const SizedBox(width: 8),
                       Text(
                         autoRunning ? "Stop Auto" : "Start Auto",
                         style: TextStyle(
-                            color: fg,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 14),
+                          color: fg,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
                       ),
                       if (autoRunning) ...<Widget>[
                         const SizedBox(width: 8),
@@ -763,11 +959,7 @@ class _PrimaryActionButton extends StatelessWidget {
               ),
             ),
           ),
-          Container(
-            width: 1,
-            height: 44,
-            color: fg.withValues(alpha: 0.25),
-          ),
+          Container(width: 1, height: 44, color: fg.withValues(alpha: 0.25)),
           Material(
             color: bg,
             borderRadius: const BorderRadius.only(
@@ -900,11 +1092,15 @@ class _EventsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final DateTime now = DateTime.now();
-    final List<BarnardEvent> filtered = events.where((e) {
-      if (onlyDetections && e is! DetectionEvent) return false;
-      if (onlyIssues && e is! ConstraintEvent && e is! ErrorEvent) return false;
-      return true;
-    }).toList(growable: false);
+    final List<BarnardEvent> filtered = events
+        .where((e) {
+          if (onlyDetections && e is! DetectionEvent) return false;
+          if (onlyIssues && e is! ConstraintEvent && e is! ErrorEvent) {
+            return false;
+          }
+          return true;
+        })
+        .toList(growable: false);
     return Column(
       children: <Widget>[
         _FilterBar(
@@ -970,24 +1166,36 @@ class _EventTile extends StatelessWidget {
     if (e is DetectionEvent) {
       final String rpidKey = base64UrlEncode(e.rpid);
       final _SeenEntry? latest = seenById[rpidKey];
-      final bool isActive = latest != null &&
+      final bool isActive =
+          latest != null &&
           now.difference(latest.lastSeen) <= _MyAppState._staleAfter;
       final String displayLabel = e.detectedDisplayId ?? "(no B003)";
       return ListTile(
         dense: true,
-        leading: Icon(Icons.wifi_tethering,
-            size: 18, color: isActive ? Colors.green : null),
-        title: Text("$ts  detection  $displayLabel · rssi ${e.rssi} · enin ${e.enin}"),
+        leading: Icon(
+          Icons.wifi_tethering,
+          size: 18,
+          color: isActive ? Colors.green : null,
+        ),
+        title: Text(
+          "$ts  detection  $displayLabel · rssi ${e.rssi} · enin ${e.enin}",
+        ),
         subtitle: Text(
-            "${e.transport.name} · rpid ${_shortHex(e.rpid)} · reporter ${_shortHex(e.reporterRpid)}$ageText"),
+          "${e.transport.name} · rpid ${_shortHex(e.rpid)} · reporter ${_shortHex(e.reporterRpid)}$ageText",
+        ),
       );
     }
     if (e is RssiUpdateEvent) {
       return ListTile(
         dense: true,
-        leading: const Icon(Icons.signal_cellular_alt, size: 18, color: Colors.blueGrey),
+        leading: const Icon(
+          Icons.signal_cellular_alt,
+          size: 18,
+          color: Colors.blueGrey,
+        ),
         title: Text(
-            "$ts  rssi_update  ${e.detectedDisplayId ?? "(no B003)"} · ${e.rssi} dBm"),
+          "$ts  rssi_update  ${e.detectedDisplayId ?? "(no B003)"} · ${e.rssi} dBm",
+        ),
         subtitle: Text("rpid ${_shortHex(e.rpid)}$ageText"),
       );
     }
@@ -996,14 +1204,19 @@ class _EventTile extends StatelessWidget {
         dense: true,
         leading: const Icon(Icons.tune, size: 18),
         title: Text(
-            "$ts  state  scan=${e.state.isScanning} adv=${e.state.isAdvertising}"),
+          "$ts  state  scan=${e.state.isScanning} adv=${e.state.isAdvertising}",
+        ),
         subtitle: Text("reason=${e.reasonCode ?? "-"}$ageText"),
       );
     }
     if (e is ConstraintEvent) {
       return ListTile(
         dense: true,
-        leading: const Icon(Icons.warning_amber, size: 18, color: Colors.orange),
+        leading: const Icon(
+          Icons.warning_amber,
+          size: 18,
+          color: Colors.orange,
+        ),
         title: Text("$ts  constraint  ${e.code}"),
         subtitle: Text("${e.message ?? "-"}$ageText"),
       );
@@ -1016,10 +1229,7 @@ class _EventTile extends StatelessWidget {
         subtitle: Text("${e.message}$ageText"),
       );
     }
-    return ListTile(
-      dense: true,
-      title: Text("$ts  ${e.runtimeType}"),
-    );
+    return ListTile(dense: true, title: Text("$ts  ${e.runtimeType}"));
   }
 }
 
@@ -1062,8 +1272,7 @@ class _DebugTab extends StatelessWidget {
 
   Future<void> _copyFiltered(List<BarnardDebugEvent> filtered) async {
     final StringBuffer buf = StringBuffer();
-    buf.writeln(
-        "# barnard debug · $deviceLabel · ${filtered.length} events");
+    buf.writeln("# barnard debug · $deviceLabel · ${filtered.length} events");
     buf.write("# self: ");
     buf.write("myDisplayId=${myDisplayId ?? '-'}");
     buf.write(" enin=${currentEnin ?? '-'}");
@@ -1089,25 +1298,28 @@ class _DebugTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final String needle = query.toLowerCase();
     final int issueCount = events
-        .where((e) =>
-            e.level == DebugLevel.warn || e.level == DebugLevel.error)
+        .where((e) => e.level == DebugLevel.warn || e.level == DebugLevel.error)
         .length;
-    final List<BarnardDebugEvent> filtered = events.where((e) {
-      if (hideTrace && e.level == DebugLevel.trace) return false;
-      if (onlyIssues &&
-          e.level != DebugLevel.warn &&
-          e.level != DebugLevel.error) {
-        return false;
-      }
-      if (needle.isEmpty) return true;
-      return e.name.toLowerCase().contains(needle);
-    }).toList(growable: false);
+    final List<BarnardDebugEvent> filtered = events
+        .where((e) {
+          if (hideTrace && e.level == DebugLevel.trace) return false;
+          if (onlyIssues &&
+              e.level != DebugLevel.warn &&
+              e.level != DebugLevel.error) {
+            return false;
+          }
+          if (needle.isEmpty) return true;
+          return e.name.toLowerCase().contains(needle);
+        })
+        .toList(growable: false);
     return Column(
       children: <Widget>[
         _FilterBar(
           children: <Widget>[
-            Text("${events.length} total • $issueCount issues",
-                style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              "${events.length} total • $issueCount issues",
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const Spacer(),
             FilterChip(
               label: const Text("Issues"),
@@ -1164,13 +1376,15 @@ class _DebugTab extends StatelessWidget {
                   e.level == DebugLevel.error
                       ? Icons.error
                       : e.level == DebugLevel.warn
-                          ? Icons.warning_amber
-                          : Icons.bug_report,
+                      ? Icons.warning_amber
+                      : Icons.bug_report,
                   size: 18,
                   color: color,
                 ),
-                title: Text("${e.level.name} ${e.name}",
-                    style: TextStyle(color: color)),
+                title: Text(
+                  "${e.level.name} ${e.name}",
+                  style: TextStyle(color: color),
+                ),
                 subtitle: Text("${e.timestamp.toIso8601String()}$data"),
               );
             },
@@ -1212,8 +1426,9 @@ class _DiagnosticsTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final DateTime now = DateTime.now();
     final bool hasPayload = selfInfo.lastPayloadAt != null;
-    final Duration? age =
-        hasPayload ? now.difference(selfInfo.lastPayloadAt!) : null;
+    final Duration? age = hasPayload
+        ? now.difference(selfInfo.lastPayloadAt!)
+        : null;
     final bool isStale = age != null && age > staleAfter;
     return ListView(
       padding: const EdgeInsets.all(12),
@@ -1228,15 +1443,19 @@ class _DiagnosticsTab extends StatelessWidget {
                 const SizedBox(height: 8),
                 _kv("Advertising", state.isAdvertising ? "ON" : "OFF"),
                 _kv("Local Name", selfInfo.localName ?? defaultLocalName),
-                _kv("Service UUID", selfInfo.serviceUuid ?? serviceUuid,
-                    monospace: true, softWrap: true),
+                _kv(
+                  "Service UUID",
+                  selfInfo.serviceUuid ?? serviceUuid,
+                  monospace: true,
+                  softWrap: true,
+                ),
                 _kv("Format Version", "${selfInfo.formatVersion ?? 1}"),
                 _kv(
                   "Last B002 read",
                   state.isAdvertising
                       ? (hasPayload
-                          ? "${age!.inSeconds}s ago${isStale ? " (STALE)" : ""}"
-                          : "never")
+                            ? "${age!.inSeconds}s ago${isStale ? " (STALE)" : ""}"
+                            : "never")
                       : "—",
                 ),
               ],
@@ -1250,13 +1469,18 @@ class _DiagnosticsTab extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                _sectionHeader(context,
-                    "Recently seen (stale > ${staleAfter.inSeconds}s)"),
+                _sectionHeader(
+                  context,
+                  "Recently seen (stale > ${staleAfter.inSeconds}s)",
+                ),
                 const SizedBox(height: 8),
                 if (seen.isEmpty)
-                  Text("No detections yet",
-                      style: TextStyle(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                  Text(
+                    "No detections yet",
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
                 for (final _SeenEntry e in seen.take(10))
                   _SeenRow(entry: e, now: now, staleAfter: staleAfter),
               ],
@@ -1286,15 +1510,20 @@ class _DiagnosticsTab extends StatelessWidget {
   }
 
   static Widget _sectionHeader(BuildContext context, String text) {
-    return Text(text,
-        style: Theme.of(context)
-            .textTheme
-            .titleSmall
-            ?.copyWith(fontWeight: FontWeight.w600));
+    return Text(
+      text,
+      style: Theme.of(
+        context,
+      ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+    );
   }
 
-  static Widget _kv(String k, String v,
-      {bool monospace = false, bool softWrap = false}) {
+  static Widget _kv(
+    String k,
+    String v, {
+    bool monospace = false,
+    bool softWrap = false,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
@@ -1302,8 +1531,10 @@ class _DiagnosticsTab extends StatelessWidget {
         children: <Widget>[
           SizedBox(
             width: 110,
-            child: Text(k,
-                style: const TextStyle(color: Colors.black54, fontSize: 12)),
+            child: Text(
+              k,
+              style: const TextStyle(color: Colors.black54, fontSize: 12),
+            ),
           ),
           Expanded(
             child: Text(
@@ -1323,7 +1554,11 @@ class _DiagnosticsTab extends StatelessWidget {
 }
 
 class _SeenRow extends StatelessWidget {
-  const _SeenRow({required this.entry, required this.now, required this.staleAfter});
+  const _SeenRow({
+    required this.entry,
+    required this.now,
+    required this.staleAfter,
+  });
 
   final _SeenEntry entry;
   final DateTime now;
@@ -1335,8 +1570,9 @@ class _SeenRow extends StatelessWidget {
     final bool isStale = age > staleAfter;
     final Color color = isStale ? Colors.orange : Colors.green;
     final String displayLabel = entry.detectedDisplayId ?? "(no B003)";
-    final String nameLabel =
-        entry.debugLocalName == null ? "" : " · ${entry.debugLocalName}";
+    final String nameLabel = entry.debugLocalName == null
+        ? ""
+        : " · ${entry.debugLocalName}";
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -1344,10 +1580,7 @@ class _SeenRow extends StatelessWidget {
           Container(
             width: 8,
             height: 8,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -1357,7 +1590,10 @@ class _SeenRow extends StatelessWidget {
                 Text(
                   "$displayLabel$nameLabel",
                   style: const TextStyle(
-                      fontFamily: "Menlo", fontSize: 13, fontWeight: FontWeight.w600),
+                    fontFamily: "Menlo",
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 Text(
                   "enin ${entry.lastEnin} · rssi ${entry.lastRssi} · ${age.inSeconds}s ago · ${entry.count} obs",
@@ -1397,6 +1633,9 @@ class _TrackSample {
 class _PeerTrack {
   String? detectedDisplayId;
   String? localName;
+  ScanResolutionState resolutionState = ScanResolutionState.awaitingGatt;
+  String? resolutionReason;
+  DateTime? resolutionUntil;
   final List<_TrackSample> samples = <_TrackSample>[];
 }
 
@@ -1426,28 +1665,24 @@ class _TimelineTab extends StatelessWidget {
     final DateTime cutoff = now.subtract(_window);
     final List<_TimelineRow> active = <_TimelineRow>[];
     for (final MapEntry<String, _PeerTrack> e in tracks.entries) {
-      final List<_TrackSample> recent =
-          e.value.samples.where((s) => s.at.isAfter(cutoff)).toList();
+      final List<_TrackSample> recent = e.value.samples
+          .where((s) => s.at.isAfter(cutoff))
+          .toList();
       if (recent.isEmpty) continue;
       final double avg = _avgRssi(e.value.samples, now, _avgWindow);
-      active.add(_TimelineRow(
-        key: e.key,
-        track: e.value,
-        avgRssi: avg,
-        resolved: true,
-      ));
+      active.add(
+        _TimelineRow(key: e.key, track: e.value, avgRssi: avg, resolved: true),
+      );
     }
     for (final MapEntry<String, _PeerTrack> e in scanOnlyTracks.entries) {
-      final List<_TrackSample> recent =
-          e.value.samples.where((s) => s.at.isAfter(cutoff)).toList();
+      final List<_TrackSample> recent = e.value.samples
+          .where((s) => s.at.isAfter(cutoff))
+          .toList();
       if (recent.isEmpty) continue;
       final double avg = _avgRssi(e.value.samples, now, _avgWindow);
-      active.add(_TimelineRow(
-        key: e.key,
-        track: e.value,
-        avgRssi: avg,
-        resolved: false,
-      ));
+      active.add(
+        _TimelineRow(key: e.key, track: e.value, avgRssi: avg, resolved: false),
+      );
     }
     // Stable ordering: sort by avg RSSI descending (stronger/closer first).
     // Within the same RSSI, sort by key so the order does not flip between
@@ -1459,17 +1694,46 @@ class _TimelineTab extends StatelessWidget {
     });
 
     final int resolvedCount = active.where((r) => r.resolved).length;
-    final int scanOnlyCount = active.length - resolvedCount;
+    final int rejectedCount = active
+        .where(
+          (r) =>
+              !r.resolved &&
+              r.track.resolutionState == ScanResolutionState.rejected,
+        )
+        .length;
+    final int failedCount = active
+        .where(
+          (r) =>
+              !r.resolved &&
+              r.track.resolutionState == ScanResolutionState.failed,
+        )
+        .length;
+    final int retryingCount = active
+        .where(
+          (r) =>
+              !r.resolved &&
+              r.track.resolutionState == ScanResolutionState.retrying,
+        )
+        .length;
+    final int pendingCount =
+        active.length -
+        resolvedCount -
+        retryingCount -
+        rejectedCount -
+        failedCount;
 
     return Column(
       children: <Widget>[
         _FilterBar(
           children: <Widget>[
-            Text(
-              "${_window.inSeconds}s · $resolvedCount peer${resolvedCount == 1 ? "" : "s"} · $scanOnlyCount scan · det $totalDetections · rssi $totalRssiUpdates",
-              style: Theme.of(context).textTheme.bodySmall,
+            Expanded(
+              child: Text(
+                "${_window.inSeconds}s · $resolvedCount peer${resolvedCount == 1 ? "" : "s"} · $pendingCount pending · $retryingCount retry · $failedCount failed · $rejectedCount rejected · det $totalDetections · rssi $totalRssiUpdates",
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
-            const Spacer(),
             IconButton(
               onPressed: onClear,
               icon: const Icon(Icons.clear_all, size: 20),
@@ -1558,17 +1822,27 @@ class _PeerTrackRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final DateTime cutoff = now.subtract(window);
-    final List<_TrackSample> recent =
-        track.samples.where((s) => s.at.isAfter(cutoff)).toList();
-    final int detections =
-        recent.where((s) => s.kind == _TrackKind.detection).length;
+    final List<_TrackSample> recent = track.samples
+        .where((s) => s.at.isAfter(cutoff))
+        .toList();
+    final int detections = recent
+        .where((s) => s.kind == _TrackKind.detection)
+        .length;
     final String primaryLabel = resolved
         ? (track.detectedDisplayId ?? "(no B003)")
         : (track.localName ?? peripheralId);
     final String secondaryLabel = resolved
         ? (track.localName ?? peripheralId)
-        : "scan only · awaiting GATT";
-    final Color tag = resolved ? Colors.deepPurple : Colors.grey;
+        : _scanResolutionLabel(track, now);
+    final Color tag = resolved
+        ? Colors.deepPurple
+        : switch (track.resolutionState) {
+            ScanResolutionState.rejected => Colors.orange,
+            ScanResolutionState.retrying => Colors.blueGrey,
+            ScanResolutionState.failed => Colors.redAccent,
+            ScanResolutionState.awaitingGatt => Colors.grey,
+            ScanResolutionState.resolved => Colors.deepPurple,
+          };
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
@@ -1581,8 +1855,7 @@ class _PeerTrackRow extends StatelessWidget {
                 Container(
                   width: 10,
                   height: 10,
-                  decoration: BoxDecoration(
-                      color: tag, shape: BoxShape.circle),
+                  decoration: BoxDecoration(color: tag, shape: BoxShape.circle),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -1613,7 +1886,9 @@ class _PeerTrackRow extends StatelessWidget {
                     Text(
                       "${avgRssi.toStringAsFixed(0)}dBm",
                       style: const TextStyle(
-                          fontWeight: FontWeight.w600, fontSize: 13),
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                      ),
                     ),
                     Text(
                       "${recent.length} / $detections det",
@@ -1640,6 +1915,29 @@ class _PeerTrackRow extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+String _scanResolutionLabel(_PeerTrack track, DateTime now) {
+  switch (track.resolutionState) {
+    case ScanResolutionState.awaitingGatt:
+      return "scan only · awaiting GATT";
+    case ScanResolutionState.retrying:
+      final DateTime? until = track.resolutionUntil;
+      final String suffix = until != null && until.isAfter(now)
+          ? " · retry in ${until.difference(now).inSeconds}s"
+          : "";
+      return "GATT retrying · ${track.resolutionReason ?? "unknown"}$suffix";
+    case ScanResolutionState.failed:
+      final DateTime? until = track.resolutionUntil;
+      final String suffix = until != null && until.isAfter(now)
+          ? " · retry in ${until.difference(now).inSeconds}s"
+          : "";
+      return "GATT failed · ${track.resolutionReason ?? "unknown"}$suffix";
+    case ScanResolutionState.rejected:
+      return "ignored · ${track.resolutionReason ?? "B004 mismatch"}";
+    case ScanResolutionState.resolved:
+      return track.localName ?? "resolved";
   }
 }
 
@@ -1715,7 +2013,7 @@ class _TrackPainter extends CustomPainter {
 
 class _SeenEntry {
   _SeenEntry({DateTime? lastSeen})
-      : lastSeen = lastSeen ?? DateTime.fromMillisecondsSinceEpoch(0);
+    : lastSeen = lastSeen ?? DateTime.fromMillisecondsSinceEpoch(0);
 
   String? detectedDisplayId;
   String? debugLocalName;
@@ -1730,6 +2028,38 @@ class _SelfAdvertiseInfo {
   String? serviceUuid;
   String? localName;
   DateTime? lastPayloadAt;
+}
+
+class _SmokeLog {
+  File? _file;
+  Future<void> _lastWrite = Future<void>.value();
+
+  Future<void> reset() async {
+    final String home =
+        Platform.environment["HOME"] ?? Directory.systemTemp.path;
+    final Directory dir = Directory("$home/Documents");
+    if (!dir.existsSync()) {
+      dir.createSync(recursive: true);
+    }
+    _file = File("${dir.path}/barnard-smoke.ndjson");
+    await _file!.writeAsString("");
+    await write(
+      jsonEncode(<String, Object?>{
+        "kind": "smoke_log",
+        "timestamp": DateTime.now().toIso8601String(),
+        "path": _file!.path,
+      }),
+    );
+  }
+
+  Future<void> write(String line) {
+    final File? file = _file;
+    if (file == null) return Future<void>.value();
+    _lastWrite = _lastWrite.then((_) async {
+      await file.writeAsString("$line\n", mode: FileMode.append, flush: true);
+    });
+    return _lastWrite;
+  }
 }
 
 String _shortHex(Uint8List bytes) {

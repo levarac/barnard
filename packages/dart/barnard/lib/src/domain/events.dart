@@ -113,6 +113,7 @@ final class RssiUpdateEvent extends BarnardEvent {
     required this.enin,
     required this.rssi,
     this.detectedDisplayId,
+    this.debugLocalName,
   });
 
   /// The 17-byte RPID wire form `[formatVersion(1) + RPI(16)]`.
@@ -130,6 +131,9 @@ final class RssiUpdateEvent extends BarnardEvent {
   /// v2 displayId (8-char lowercase hex) if cached from a prior GATT read,
   /// else null.
   final String? detectedDisplayId;
+
+  /// Debug-only local name of the peer, if cached from a prior GATT exchange.
+  final String? debugLocalName;
 }
 
 @immutable

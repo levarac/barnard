@@ -81,6 +81,7 @@ internal class BarnardController(
     private var allowDuplicates: Boolean = true
     private var formatVersion: Int = 1
     private var debugOriginalName: String? = null
+    private val unavailableRssi: Int = 127
 
     // MARK: - Event Mode
 
@@ -97,10 +98,13 @@ internal class BarnardController(
 
     private val connectQueue: ArrayDeque<BluetoothDevice> = ArrayDeque()
     private val lastConnectAttemptAtMs: MutableMap<String, Long> = mutableMapOf()
+    private val resolutionBackoffUntilMs: MutableMap<String, Long> = mutableMapOf()
     private var activeGatt: BluetoothGatt? = null
 
     private val maxConnectQueue: Int = 20
     private val cooldownPerPeerMs: Long = 10_000
+    private val resolutionFailureBackoffMs: Long = 30_000
+    private val resolutionRejectedBackoffMs: Long = 5 * 60_000
 
     // See Flutter Android variant: prevent `activeGatt` from pinning the
     // queue forever when `connectGatt` never receives a callback.
@@ -223,6 +227,7 @@ internal class BarnardController(
     }
 
     fun joinEvent(code: String) {
+        resetPeerDiscoveryState("join_event")
         eventCode = code
         prefs.edit().putString("eventCode", code).apply()
 
@@ -243,6 +248,7 @@ internal class BarnardController(
     }
 
     fun leaveEvent() {
+        resetPeerDiscoveryState("leave_event")
         eventCode = null
         prefs.edit().remove("eventCode").apply()
 
@@ -261,6 +267,10 @@ internal class BarnardController(
     private fun getEventCodeHash(): ByteArray {
         val code = eventCode ?: return ByteArray(0)
         return BarnardCrypto.computeEventCodeHash(code)
+    }
+
+    private fun eventCodeHashMatches(peerHash: ByteArray): Boolean {
+        return peerHash.contentEquals(getEventCodeHash())
     }
 
     private fun getOrCreateDeviceSecret(): ByteArray {
@@ -337,6 +347,13 @@ internal class BarnardController(
         scanCallback = null
         isScanning = false
         cancelConnectWatchdog()
+        resetPeerDiscoveryState("scan_stop")
+
+        emitState("scan_stop")
+        emitDebug("info", "scan_stop", null)
+    }
+
+    private fun resetPeerDiscoveryState(reason: String) {
         connectQueue.clear()
         activeGatt?.close()
         activeGatt = null
@@ -345,11 +362,11 @@ internal class BarnardController(
         discoveredAt.clear()
         lastDiscoveryNameById.clear()
         lastConnectAttemptAtMs.clear()
+        resolutionBackoffUntilMs.clear()
         peripheralReadValues.clear()
         knownPeers.clear()
 
-        emitState("scan_stop")
-        emitDebug("info", "scan_stop", null)
+        emitDebug("info", "peer_cache_reset", mapOf("reason" to reason))
     }
 
     // MARK: - Advertise Control
@@ -601,6 +618,7 @@ internal class BarnardController(
     }
 
     private fun emitRssiUpdate(address: String, rssi: Int, timestampMs: Long) {
+        if (!isUsableRssi(rssi)) return
         val peer = knownPeers[address] ?: return
         // Atomic reporter snapshot (same contract as DetectionEvent).
         val reporterPayload = computePayload(timestampMs)
@@ -621,6 +639,10 @@ internal class BarnardController(
             }
         }
         mainHandler.post { onEvent?.invoke("BarnardRssiUpdate", payload) }
+    }
+
+    private fun isUsableRssi(rssi: Int): Boolean {
+        return rssi != unavailableRssi
     }
 
     private fun emitDebug(level: String, name: String, data: Map<String, Any?>?) {
@@ -750,6 +772,14 @@ internal class BarnardController(
             return
         }
         val nowMs = System.currentTimeMillis()
+        if (!isUsableRssi(result.rssi)) {
+            emitDebug("trace", "ble_discovery_rssi_unavailable", mapOf(
+                "id" to address,
+                "rssi" to result.rssi,
+                "name" to result.scanRecord?.deviceName
+            ))
+            return
+        }
         if (!allowDuplicates) {
             val last = discoveredAt[address]
             if (last != null && nowMs - last < 2_000) return
@@ -770,6 +800,8 @@ internal class BarnardController(
 
         if (knownPeers.containsKey(address)) {
             emitRssiUpdate(address, result.rssi, nowMs)
+        } else if (isResolutionBackedOff(address, nowMs)) {
+            emitResolutionBackoff(address, nowMs)
         } else {
             enqueueConnect(device)
         }
@@ -798,6 +830,11 @@ internal class BarnardController(
 
     private fun enqueueConnect(device: BluetoothDevice) {
         val address = device.address ?: return
+        val nowMs = System.currentTimeMillis()
+        if (isResolutionBackedOff(address, nowMs)) {
+            emitResolutionBackoff(address, nowMs)
+            return
+        }
         if (connectQueue.any { it.address == address }) return
         if (activeGatt?.device?.address == address) return
 
@@ -818,6 +855,8 @@ internal class BarnardController(
         val last = lastConnectAttemptAtMs[key]
         if (last != null && nowMs - last < cooldownPerPeerMs) {
             connectQueue.add(device)
+            val remainingMs = cooldownPerPeerMs - (nowMs - last)
+            mainHandler.postDelayed({ pumpConnectQueue() }, remainingMs + 50)
             return
         }
         if (!hasConnectPermission()) {
@@ -849,6 +888,12 @@ internal class BarnardController(
                 "connect_timeout",
                 mapOf("address" to address, "ms" to connectTimeoutMs)
             )
+            markGattResolutionFailed(
+                address = address,
+                reason = "connect_timeout",
+                recoverable = true,
+                extra = mapOf("ms" to connectTimeoutMs)
+            )
             activeGatt?.close()
             activeGatt = null
             peripheralReadValues.remove(address)
@@ -864,6 +909,46 @@ internal class BarnardController(
         connectWatchdog = null
     }
 
+    private fun isResolutionBackedOff(address: String, nowMs: Long): Boolean {
+        val until = resolutionBackoffUntilMs[address] ?: return false
+        if (nowMs < until) return true
+        resolutionBackoffUntilMs.remove(address)
+        return false
+    }
+
+    private fun emitResolutionBackoff(address: String, nowMs: Long) {
+        val until = resolutionBackoffUntilMs[address] ?: return
+        emitDebug(
+            "trace",
+            "gatt_resolution_backoff",
+            mapOf(
+                "address" to address,
+                "remainingMs" to (until - nowMs).coerceAtLeast(0),
+            )
+        )
+    }
+
+    private fun markGattResolutionFailed(
+        address: String,
+        reason: String,
+        recoverable: Boolean,
+        extra: Map<String, Any?> = emptyMap()
+    ) {
+        if (address.isEmpty()) return
+        val backoffMs = if (recoverable) resolutionFailureBackoffMs else resolutionRejectedBackoffMs
+        resolutionBackoffUntilMs[address] = System.currentTimeMillis() + backoffMs
+        emitDebug(
+            if (recoverable) "warn" else "info",
+            "gatt_resolution_failed",
+            mapOf(
+                "address" to address,
+                "reason" to reason,
+                "recoverable" to recoverable,
+                "backoffMs" to backoffMs,
+            ) + extra
+        )
+    }
+
     // MARK: - GATT Client (v2)
 
     @SuppressLint("MissingPermission")
@@ -877,11 +962,25 @@ internal class BarnardController(
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (activeGatt !== gatt) {
+                emitDebug("trace", "stale_connection_callback_ignored", mapOf(
+                    "address" to (gatt.device?.address ?: ""),
+                    "status" to status,
+                    "newState" to newState,
+                ))
+                return
+            }
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 cancelConnectWatchdog()
                 emitError("connect_failed", "status=$status", recoverable = true)
-                gatt.close()
                 val address = gatt.device?.address ?: ""
+                markGattResolutionFailed(
+                    address = address,
+                    reason = "connect_failed",
+                    recoverable = true,
+                    extra = mapOf("status" to status)
+                )
+                gatt.close()
                 peripheralReadValues.remove(address)
                 lastDiscoveryNameById.remove(address)
                 activeGatt = null
@@ -906,12 +1005,23 @@ internal class BarnardController(
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                markGattResolutionFailed(
+                    address = gatt.device?.address ?: "",
+                    reason = "service_discovery_failed",
+                    recoverable = true,
+                    extra = mapOf("status" to status)
+                )
                 emitError("service_discovery_failed", "status=$status", recoverable = true)
                 finishConnection(gatt)
                 return
             }
             val svc = gatt.getService(serviceUuid)
             if (svc == null) {
+                markGattResolutionFailed(
+                    address = gatt.device?.address ?: "",
+                    reason = "service_not_found",
+                    recoverable = true
+                )
                 emitError("service_not_found", "Barnard service not found", recoverable = true)
                 finishConnection(gatt)
                 return
@@ -921,12 +1031,14 @@ internal class BarnardController(
             if (eventCodeHashCh != null && hasConnectPermission()) {
                 gatt.readCharacteristic(eventCodeHashCh)
             } else {
-                val rpidCh = svc.getCharacteristic(rpidCharUuid)
-                if (rpidCh != null && hasConnectPermission()) {
-                    gatt.readCharacteristic(rpidCh)
-                } else {
-                    finishConnection(gatt)
-                }
+                val address = gatt.device?.address ?: ""
+                markGattResolutionFailed(
+                    address = address,
+                    reason = "b004_missing",
+                    recoverable = true
+                )
+                emitDebug("warn", "gatt_b004_missing", mapOf("address" to address))
+                finishConnection(gatt)
             }
         }
 
@@ -962,6 +1074,15 @@ internal class BarnardController(
                     completeGattExchange(gatt)
                     return
                 }
+                markGattResolutionFailed(
+                    address = address,
+                    reason = "read_failed",
+                    recoverable = true,
+                    extra = mapOf(
+                        "status" to status,
+                        "characteristic" to uuid.toString(),
+                    )
+                )
                 emitError("read_failed", "status=$status uuid=$uuid", recoverable = true)
                 finishConnection(gatt)
                 return
@@ -970,15 +1091,36 @@ internal class BarnardController(
             when (uuid) {
                 eventCodeHashCharUuid -> {
                     peripheralReadValues[address]?.eventCodeHash = value
+                    val matches = eventCodeHashMatches(value)
                     emitDebug("trace", "gatt_read_event_code_hash", mapOf(
                         "address" to address,
                         "bytes" to value.size,
-                        "isEmpty" to value.isEmpty()
+                        "isEmpty" to value.isEmpty(),
+                        "matches" to matches,
                     ))
+                    if (!matches) {
+                        markGattResolutionFailed(
+                            address = address,
+                            reason = "b004_mismatch",
+                            recoverable = false,
+                            extra = mapOf("bytes" to value.size)
+                        )
+                        emitDebug("info", "gatt_b004_mismatch", mapOf(
+                            "address" to address,
+                            "bytes" to value.size,
+                        ))
+                        finishConnection(gatt)
+                        return
+                    }
                     val rpidCh = svc.getCharacteristic(rpidCharUuid)
                     if (rpidCh != null && hasConnectPermission()) {
                         gatt.readCharacteristic(rpidCh)
                     } else {
+                        markGattResolutionFailed(
+                            address = address,
+                            reason = "b002_missing",
+                            recoverable = true
+                        )
                         finishConnection(gatt)
                     }
                 }
@@ -1027,6 +1169,7 @@ internal class BarnardController(
                 val ts = discoveredAt[address] ?: System.currentTimeMillis()
                 val detectedDisplayIdHex = values.detectedDisplayId?.toHex()
                 emitDetection(ts, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
+                resolutionBackoffUntilMs.remove(address)
 
                 if (rpidData.size == 17) {
                     knownPeers[address] = KnownPeer(rpidData, detectedDisplayIdHex)

@@ -16,10 +16,10 @@ class BarnardBleClient implements BarnardClient {
     required BarnardState initialState,
     String? initialEventCode,
     required String initialMyDisplayId,
-  })  : _capabilities = capabilities,
-        _state = initialState,
-        _currentEventCode = initialEventCode,
-        _myDisplayId = initialMyDisplayId;
+  }) : _capabilities = capabilities,
+       _state = initialState,
+       _currentEventCode = initialEventCode,
+       _myDisplayId = initialMyDisplayId;
 
   static const MethodChannel _methods = MethodChannel("barnard/methods");
   static const EventChannel _eventsChannel = EventChannel("barnard/events");
@@ -50,12 +50,12 @@ class BarnardBleClient implements BarnardClient {
   static Future<BarnardBleClient> create() async {
     final Map<Object?, Object?> capsMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>(
-              "getCapabilities",
-            )) ??
-            <Object?, Object?>{};
+          "getCapabilities",
+        )) ??
+        <Object?, Object?>{};
     final Map<Object?, Object?> stateMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>("getState")) ??
-            <Object?, Object?>{};
+        <Object?, Object?>{};
 
     String? eventCode;
     try {
@@ -87,6 +87,7 @@ class BarnardBleClient implements BarnardClient {
       final BarnardEvent event = parseBarnardEvent(_expectMap(data));
       if (event is StateEvent) _state = event.state;
       if (event is DetectionEvent) {
+        if (!isUsableBleRssi(event.rssi)) return;
         _rssiBuffer.add(
           RssiSample(
             timestamp: event.timestamp,
@@ -95,6 +96,8 @@ class BarnardBleClient implements BarnardClient {
             transport: event.transport,
           ),
         );
+      } else if (event is RssiUpdateEvent && !isUsableBleRssi(event.rssi)) {
+        return;
       }
       _eventsController.add(event);
     });
@@ -166,11 +169,11 @@ class BarnardBleClient implements BarnardClient {
   @override
   Future<BarnardStartResult> startAuto([AutoConfig? config]) async {
     _ensureNotDisposed();
-    final Map<Object?, Object?>? out =
-        await _methods.invokeMethod<Map<Object?, Object?>>(
-      "startAuto",
-      _encodeAutoConfig(config),
-    );
+    final Map<Object?, Object?>? out = await _methods
+        .invokeMethod<Map<Object?, Object?>>(
+          "startAuto",
+          _encodeAutoConfig(config),
+        );
     if (out == null) {
       return const BarnardStartResult(
         scanningStarted: false,
@@ -253,8 +256,9 @@ class BarnardBleClient implements BarnardClient {
     int? limit,
     List<int>? rpidBytes,
   }) {
-    final Uint8List? filterRpid =
-        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid = rpidBytes == null
+        ? null
+        : Uint8List.fromList(rpidBytes);
     Iterable<RssiSample> samples = _rssiBuffer.toList();
     if (since != null) {
       samples = samples.where((RssiSample s) => !s.timestamp.isBefore(since));
@@ -288,10 +292,10 @@ class BarnardBleClient implements BarnardClient {
 }
 
 Map<String, Object?> _encodeScanConfig(ScanConfig? config) => <String, Object?>{
-      "transport": (config?.transport ?? TransportKind.ble).name,
-      "allowDuplicates":
-          config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
-    };
+  "transport": (config?.transport ?? TransportKind.ble).name,
+  "allowDuplicates":
+      config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
+};
 
 Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     <String, Object?>{
@@ -301,9 +305,9 @@ Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     };
 
 Map<String, Object?> _encodeAutoConfig(AutoConfig? config) => <String, Object?>{
-      "scan": _encodeScanConfig(config?.scan),
-      "advertise": _encodeAdvertiseConfig(config?.advertise),
-    };
+  "scan": _encodeScanConfig(config?.scan),
+  "advertise": _encodeAdvertiseConfig(config?.advertise),
+};
 
 BarnardStartResult _parseStartResult(Map<Object?, Object?> map) {
   final bool scanningStarted = map["scanningStarted"] == true;
@@ -396,19 +400,22 @@ BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
         recoverable: map["recoverable"] as bool?,
       );
     case "rssi_update":
-      final Uint8List rpid =
-          _decodeRpidHex((map["rpid"] as String?) ?? "", field: "rpid");
+      final Uint8List rpid = _decodeRpidHex(
+        (map["rpid"] as String?) ?? "",
+        field: "rpid",
+      );
       final Uint8List reporterRpid = _decodeRpidHex(
-          (map["reporterRpid"] as String?) ?? "",
-          field: "reporterRpid");
+        (map["reporterRpid"] as String?) ?? "",
+        field: "reporterRpid",
+      );
       return RssiUpdateEvent(
         timestamp: ts,
         rpid: rpid,
         reporterRpid: reporterRpid,
         enin: (map["enin"] as int?) ?? 0,
         rssi: (map["rssi"] as int?) ?? 0,
-        detectedDisplayId:
-            _validateDetectedDisplayId(map["detectedDisplayId"]),
+        detectedDisplayId: _validateDetectedDisplayId(map["detectedDisplayId"]),
+        debugLocalName: map["debugLocalName"] as String?,
       );
     case "detection":
     default:
@@ -416,20 +423,24 @@ BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
         (e) => e.name == (map["transport"] as String?),
         orElse: () => TransportKind.unknown,
       );
-      final Uint8List rpid =
-          _decodeRpidHex((map["rpid"] as String?) ?? "", field: "rpid");
+      final Uint8List rpid = _decodeRpidHex(
+        (map["rpid"] as String?) ?? "",
+        field: "rpid",
+      );
       final Uint8List reporterRpid = _decodeRpidHex(
         (map["reporterRpid"] as String?) ?? "",
         field: "reporterRpid",
       );
-      final String? detectedDisplayId =
-          _validateDetectedDisplayId(map["detectedDisplayId"]);
+      final String? detectedDisplayId = _validateDetectedDisplayId(
+        map["detectedDisplayId"],
+      );
       final int rssi = (map["rssi"] as int?) ?? 0;
       final int formatVersion = (map["formatVersion"] as int?) ?? 0;
       final int enin = (map["enin"] as int?) ?? 0;
       final String? payloadRawHex = map["payloadRaw"] as String?;
-      final Uint8List? payloadRaw =
-          payloadRawHex == null ? null : hexToBytes(payloadRawHex);
+      final Uint8List? payloadRaw = payloadRawHex == null
+          ? null
+          : hexToBytes(payloadRawHex);
 
       final Map<Object?, Object?>? summaryMap = map["rssiSummary"] is Map
           ? map["rssiSummary"] as Map<Object?, Object?>
@@ -473,8 +484,9 @@ BarnardDebugEvent _parseDebugEvent(Map<Object?, Object?> map) {
     _ => DebugLevel.info,
   };
   final String name = (map["name"] as String?) ?? "debug";
-  final Map<Object?, Object?>? rawData =
-      map["data"] is Map ? map["data"] as Map<Object?, Object?> : null;
+  final Map<Object?, Object?>? rawData = map["data"] is Map
+      ? map["data"] as Map<Object?, Object?>
+      : null;
   final Map<String, Object?>? data = rawData?.map(
     (k, v) => MapEntry(k.toString(), v),
   );
@@ -522,7 +534,9 @@ String _requireDisplayId(String? value) {
 String? _validateDetectedDisplayId(Object? value) {
   if (value == null) return null;
   if (value is! String) {
-    throw FormatException("detectedDisplayId must be String, got ${value.runtimeType}");
+    throw FormatException(
+      "detectedDisplayId must be String, got ${value.runtimeType}",
+    );
   }
   if (!RegExp(r"^[0-9a-f]{8}$").hasMatch(value)) {
     throw FormatException(
