@@ -46,7 +46,7 @@ private const val TAG = "BarnardBLE"
  * callbacks (onEvent / onDebugEvent) instead of a method channel.
  *
  * - B002 RPID (Read, 17 bytes)
- * - B003 displayId (Read, 4 bytes) — SHA256(TEK)[0:4]
+ * - B003 displayId (Read, 4 bytes when joined to an event) — SHA256(TEK)[0:4]
  * - B004 EventCodeHash (Read, 0 or 8 bytes)
  *
  * TEK is never transmitted over BLE in v2.
@@ -125,6 +125,7 @@ internal class BarnardController(
 
     private data class KnownPeer(
         val rpid: ByteArray,
+        val enin: Long,
         val detectedDisplayId: String?
     )
 
@@ -798,8 +799,23 @@ internal class BarnardController(
             "name" to result.scanRecord?.deviceName
         ))
 
-        if (knownPeers.containsKey(address)) {
-            emitRssiUpdate(address, result.rssi, nowMs)
+        val knownPeer = knownPeers[address]
+        if (knownPeer != null) {
+            val currentEnin = BarnardCrypto.calculateEnin(nowMs).toLong()
+            if (BarnardV2Policy.KnownPeerWindow(knownPeer.enin).matches(currentEnin)) {
+                emitRssiUpdate(address, result.rssi, nowMs)
+            } else {
+                knownPeers.remove(address)
+                emitDebug("trace", "known_peer_rpid_expired", mapOf(
+                    "address" to address,
+                    "cachedEnin" to knownPeer.enin,
+                    "currentEnin" to currentEnin,
+                ))
+                // Force a fresh resolution. enqueueConnect dedups against in-flight /
+                // queued connects, so following advertisements on the same address
+                // remain safe.
+                enqueueConnect(device)
+            }
         } else if (isResolutionBackedOff(address, nowMs)) {
             emitResolutionBackoff(address, nowMs)
         } else {
@@ -1172,7 +1188,8 @@ internal class BarnardController(
                 resolutionBackoffUntilMs.remove(address)
 
                 if (rpidData.size == 17) {
-                    knownPeers[address] = KnownPeer(rpidData, detectedDisplayIdHex)
+                    val peerEnin = BarnardCrypto.calculateEnin(ts).toLong()
+                    knownPeers[address] = KnownPeer(rpidData, peerEnin, detectedDisplayIdHex)
                 }
             }
 
@@ -1211,6 +1228,14 @@ internal class BarnardController(
                 }
 
                 displayIdCharUuid -> {
+                    if (!BarnardV2Policy.shouldServeGattDisplayId(eventCode)) {
+                        server.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
+                        emitDebug("trace", "gatt_reject_display_id_read", mapOf(
+                            "reason" to "not_joined_to_event"
+                        ))
+                        return
+                    }
+
                     val displayId = BarnardCrypto.displayId4(currentTek)
                     val slice =
                         if (offset <= 0) displayId

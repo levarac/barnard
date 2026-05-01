@@ -59,7 +59,7 @@ Service UUID: `0000B001-0000-1000-8000-00805F9B34FB`.
 | UUID | Role | Properties | Value | Length |
 |------|------|------------|-------|--------|
 | `0000B002-…` | RPID | Read | `[formatVersion + RPI(enin_now)]` | 17 B |
-| `0000B003-…` | displayId | Read | `SHA256(TEK)[0:4]` | 4 B |
+| `0000B003-…` | displayId | Read | `SHA256(TEK)[0:4]` only when joined to an event; read fails otherwise | 4 B or error |
 | `0000B004-…` | EventCodeHash | Read | `SHA256(EventCode)[0:8]` when joined, empty otherwise | 0 or 8 B |
 
 **v2 has no Write characteristics.** Any inbound write request is rejected with `.writeNotPermitted` (iOS) / `GATT_WRITE_NOT_PERMITTED` (Android).
@@ -80,7 +80,7 @@ Central                                   Peripheral
    │ ◀──── 17 bytes ─────────────────── │
    │                                       │
    │ ── read B003 (displayId) ──────────▶ │
-   │ ◀──── 4 bytes ──────────────────── │   (or error → see §5.2)
+   │ ◀──── 4 bytes ──────────────────── │   (or error/null → see §5.2)
    │                                       │
    │ ── disconnect ─────────────────────▶ │
    │                                       │
@@ -92,6 +92,8 @@ Central                                   Peripheral
 ### 5.2 B003 read-failure policy
 
 If B004 matches and B002 succeeds but the subsequent B003 read fails (timeout, error, missing characteristic, invalid length), the central side **still emits a `DetectionEvent`** with `detectedDisplayId = null`. Consumers always see the detection.
+
+When a peripheral has not joined an event, B003 read requests fail (`.readNotPermitted` on iOS / `GATT_READ_NOT_PERMITTED` on Android). This prevents the anonymous TEK, which is derived from the device secret, from becoming a stable on-wire displayId. A central observing such a peer still emits the detection with `detectedDisplayId = null` after B002 succeeds.
 
 A debug event with name `gatt_b003_read_failed` (error path) or `gatt_b003_missing` / `gatt_b003_invalid_length` accompanies the detection for diagnostics.
 
@@ -258,11 +260,12 @@ This is **not** part of the Barnard schema. Consumers customise the projection a
 - "eventMode" key on state events.
 
 ### Added
-- B003 serves 4-byte `SHA256(TEK)[0:4]`, Read-only.
+- B003 serves event-scoped 4-byte `SHA256(TEK)[0:4]`, Read-only; anonymous B003 reads fail.
 - `DetectionEvent.enin`, `reporterRpid`, `detectedDisplayId` (nullable).
 - `BarnardClient.myDisplayId`, `currentEnin`, `getCurrentRpi()`, `exportCurrentTek()`.
 - Lowercase-hex at the bridge boundary (was base64 in v1).
 - Atomic reporter RPID + ENIN snapshot.
+- Known-peer RSSI caches are ENIN-scoped; when the ENIN changes, the SDK re-reads B002/B003 before emitting more `rssi_update` events for that peer.
 
 ### Compatibility
 - **v1 ⇄ v2 BLE interoperability is not supported.** A v1 peer attempts a TEK Write on B003, which a v2 peripheral rejects; a v2 peer expects 4 bytes on B003, which a v1 peripheral cannot provide.

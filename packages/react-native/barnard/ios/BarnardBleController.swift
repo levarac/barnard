@@ -8,7 +8,7 @@ import UIKit
 /// Barnard v2 BLE controller (React Native bridge variant).
 ///
 /// - B002 RPID (Read, 17 bytes)
-/// - B003 displayId (Read, 4 bytes) — SHA256(TEK)[0:4]
+/// - B003 displayId (Read, 4 bytes when joined to an event) — SHA256(TEK)[0:4]
 /// - B004 EventCodeHash (Read, 0 or 8 bytes)
 ///
 /// TEK is never transmitted over BLE in v2.
@@ -92,10 +92,15 @@ final class BarnardBleController: NSObject {
 
   private struct KnownPeer {
     let rpid: Data
+    let enin: UInt32
     var detectedDisplayId: String?
   }
 
   private var knownPeers: [UUID: KnownPeer] = [:]
+
+  private func shouldServeGattDisplayId() -> Bool {
+    BarnardV2Policy.shouldServeGattDisplayId(eventCode: rpid.eventCode)
+  }
 
   /// Event callback. `eventName` is one of: BarnardDetection, BarnardState,
   /// BarnardConstraint, BarnardError, BarnardRssiUpdate.
@@ -589,7 +594,12 @@ final class BarnardBleController: NSObject {
       )
 
       if rpidData.count == 17 {
-        knownPeers[id] = KnownPeer(rpid: rpidData, detectedDisplayId: detectedDisplayId)
+        let peerEnin = BarnardCrypto.calculateEnin(for: ts)
+        knownPeers[id] = KnownPeer(
+          rpid: rpidData,
+          enin: peerEnin,
+          detectedDisplayId: detectedDisplayId
+        )
         resolutionBackoffUntil.removeValue(forKey: id)
       }
     }
@@ -820,8 +830,22 @@ extension BarnardBleController: CBCentralManagerDelegate {
     }
     #endif
 
-    if knownPeers[peripheral.identifier] != nil {
-      emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
+    if let knownPeer = knownPeers[peripheral.identifier] {
+      let currentEnin = BarnardCrypto.calculateEnin(for: now)
+      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEnin) {
+        emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
+      } else {
+        knownPeers.removeValue(forKey: peripheral.identifier)
+        emitDebug(level: "trace", name: "known_peer_rpid_expired", data: [
+          "id": peripheral.identifier.uuidString,
+          "cachedEnin": Int(knownPeer.enin),
+          "currentEnin": Int(currentEnin),
+        ])
+        // Force a fresh resolution. enqueueConnect dedups against in-flight /
+        // queued connects, so following advertisements on the same identifier
+        // remain safe.
+        enqueueConnect(peripheral)
+      }
     } else if isResolutionBackedOff(peripheral.identifier, now: now) {
       emitResolutionBackoff(peripheral.identifier, now: now)
     } else {
@@ -1072,6 +1096,14 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
       )
 
     case displayIdCharacteristicUUID:
+      guard shouldServeGattDisplayId() else {
+        peripheral.respond(to: request, withResult: .readNotPermitted)
+        emitDebug(level: "trace", name: "gatt_reject_display_id_read", data: [
+          "reason": "not_joined_to_event",
+        ])
+        return
+      }
+
       let displayId = BarnardCrypto.displayId4(from: rpid.getCurrentTek())
       respondRead(
         peripheral,
