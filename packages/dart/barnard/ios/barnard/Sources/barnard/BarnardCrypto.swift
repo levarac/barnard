@@ -161,46 +161,17 @@ enum BarnardCrypto {
     return Data(hash).prefix(8)
   }
 
-  // MARK: - RPI Resolution
+  // MARK: - Display ID (v2)
 
-  /// Attempt to resolve an RPI to a known TEK.
-  ///
-  /// Searches within a time window around the current ENIN (±6 past + 1 future).
-  ///
-  /// - Parameters:
-  ///   - rpi: The 16-byte RPI to resolve
-  ///   - knownTeks: List of known TEKs to search
-  ///   - currentEnin: Current ENIN (defaults to now)
-  /// - Returns: The matching TEK if found, nil otherwise
-  static func resolveRpi(_ rpi: Data, knownTeks: [Data], currentEnin: UInt32? = nil) -> Data? {
-    guard rpi.count == 16 else { return nil }
-
-    let enin = currentEnin ?? calculateEnin()
-
-    for tek in knownTeks {
-      guard tek.count == 16 else { continue }
-
-      let rpik = deriveRpik(from: tek)
-
-      // Search window: 6 intervals past + current + 1 future
-      for offset in -6 ... 1 {
-        let testEnin = UInt32(Int(enin) + offset)
-        let candidate = generateRpi(rpik: rpik, enin: testEnin)
-
-        if candidate == rpi {
-          return tek
-        }
-      }
-    }
-
-    return nil
+  /// v2 displayId: `SHA256(TEK)[0:4]` = 4 bytes.
+  static func displayId4(from tek: Data) -> Data {
+    let hash = SHA256.hash(data: tek)
+    return Data(hash).prefix(4)
   }
 
-  // MARK: - Display ID
-
-  /// Get displayId from TEK (first 3 bytes as lowercase hex).
-  static func displayId(from tek: Data) -> String {
-    tek.prefix(3).map { String(format: "%02x", $0) }.joined()
+  /// v2 displayId hex: 8 lowercase hex chars, `SHA256(TEK)[0:4]`.
+  static func displayIdString(from tek: Data) -> String {
+    displayId4(from: tek).hexString
   }
 
   // MARK: - Random Bytes
@@ -210,5 +181,12 @@ enum BarnardCrypto {
     var bytes = [UInt8](repeating: 0, count: count)
     _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
     return Data(bytes)
+  }
+}
+
+/// Lowercase-hex helpers for the method-channel boundary.
+extension Data {
+  var hexString: String {
+    map { String(format: "%02x", $0) }.joined()
   }
 }

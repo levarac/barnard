@@ -18,15 +18,15 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
 
     private fun setupController(context: ReactApplicationContext) {
         val ctrl = BarnardController(context.applicationContext)
-        
+
         ctrl.onEvent = { eventName, payload ->
             sendEvent(context, eventName, payload)
         }
-        
+
         ctrl.onDebugEvent = { eventName, payload ->
             sendEvent(context, eventName, payload)
         }
-        
+
         controller = ctrl
     }
 
@@ -40,10 +40,6 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
         return "Barnard"
     }
 
-    // Required by RN's NativeEventEmitter contract. No-ops here — actual
-    // subscription lifecycle is handled by React Native core; we only need
-    // these to silence "new NativeEventEmitter() with no addListener method"
-    // warnings on the JS side.
     @ReactMethod
     fun addListener(eventName: String) {
     }
@@ -78,16 +74,72 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
         }
     }
 
+    // MARK: - v2 API
+
     @ReactMethod
-    fun getEventMode(promise: Promise) {
+    fun getCurrentEventCode(promise: Promise) {
         try {
             val ctrl = controller ?: run {
                 promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
                 return
             }
-            promise.resolve(ctrl.getEventMode())
+            promise.resolve(ctrl.getCurrentEventCode())
         } catch (e: Exception) {
-            promise.reject("E_GET_EVENT_MODE", e.message, e)
+            promise.reject("E_GET_CURRENT_EVENT_CODE", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getMyDisplayId(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            promise.resolve(ctrl.getMyDisplayId())
+        } catch (e: Exception) {
+            promise.reject("E_GET_MY_DISPLAY_ID", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getCurrentRpi(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            promise.resolve(ctrl.getCurrentRpi())
+        } catch (e: Exception) {
+            promise.reject("E_GET_CURRENT_RPI", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getCurrentEnin(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            // ENIN fits in Int32 for the next ~40 000 years; promote to
+            // Double only at the bridge to match JS number semantics.
+            promise.resolve(ctrl.getCurrentEnin().toDouble())
+        } catch (e: Exception) {
+            promise.reject("E_GET_CURRENT_ENIN", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun exportCurrentTek(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            promise.resolve(ctrl.exportCurrentTek())
+        } catch (e: Exception) {
+            promise.reject("E_EXPORT_CURRENT_TEK", e.message, e)
         }
     }
 
@@ -164,38 +216,38 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
                 promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
                 return
             }
-            
+
             var allowDuplicates = true
             var formatVersion = 1
-            
+
             if (config?.hasKey("scan") == true) {
                 val scan = config.getMap("scan")
                 if (scan?.hasKey("allowDuplicates") == true) {
                     allowDuplicates = scan.getBoolean("allowDuplicates")
                 }
             }
-            
+
             if (config?.hasKey("advertise") == true) {
                 val advertise = config.getMap("advertise")
                 if (advertise?.hasKey("formatVersion") == true) {
                     formatVersion = advertise.getInt("formatVersion")
                 }
             }
-            
+
             val wasScanning = ctrl.getState().getBoolean("isScanning")
             val wasAdvertising = ctrl.getState().getBoolean("isAdvertising")
-            
+
             ctrl.startScan(allowDuplicates)
             ctrl.startAdvertise(formatVersion)
-            
+
             val nowScanning = ctrl.getState().getBoolean("isScanning")
             val nowAdvertising = ctrl.getState().getBoolean("isAdvertising")
-            
+
             val result = Arguments.createMap()
             result.putBoolean("scanningStarted", !wasScanning && nowScanning)
             result.putBoolean("advertisingStarted", !wasAdvertising && nowAdvertising)
             result.putArray("issues", Arguments.createArray())
-            
+
             promise.resolve(result)
         } catch (e: Exception) {
             promise.reject("E_START_AUTO", e.message, e)
@@ -246,53 +298,6 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
             promise.resolve(null)
         } catch (e: Exception) {
             promise.reject("E_LEAVE_EVENT", e.message, e)
-        }
-    }
-
-    @ReactMethod
-    fun getExchangedTeks(eventCode: String?, promise: Promise) {
-        try {
-            val ctrl = controller ?: run {
-                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
-                return
-            }
-            if (eventCode.isNullOrBlank()) {
-                promise.reject("E_INVALID_ARGUMENT", "eventCode required")
-                return
-            }
-            promise.resolve(ctrl.getExchangedTeks(eventCode))
-        } catch (e: Exception) {
-            promise.reject("E_GET_EXCHANGED_TEKS", e.message, e)
-        }
-    }
-
-    @ReactMethod
-    fun clearTeksForEvent(eventCode: String?, promise: Promise) {
-        try {
-            val ctrl = controller ?: run {
-                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
-                return
-            }
-            if (eventCode.isNullOrBlank()) {
-                promise.reject("E_INVALID_ARGUMENT", "eventCode required")
-                return
-            }
-            promise.resolve(ctrl.clearTeksForEvent(eventCode))
-        } catch (e: Exception) {
-            promise.reject("E_CLEAR_TEKS_FOR_EVENT", e.message, e)
-        }
-    }
-
-    @ReactMethod
-    fun clearAllTeks(promise: Promise) {
-        try {
-            val ctrl = controller ?: run {
-                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
-                return
-            }
-            promise.resolve(ctrl.clearAllTeks())
-        } catch (e: Exception) {
-            promise.reject("E_CLEAR_ALL_TEKS", e.message, e)
         }
     }
 

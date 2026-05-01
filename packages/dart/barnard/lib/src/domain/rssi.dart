@@ -2,6 +2,11 @@ import "dart:typed_data";
 
 import "transport.dart";
 
+/// CoreBluetooth reports RSSI as 127 when the signal strength is unavailable.
+const int unavailableBleRssi = 127;
+
+bool isUsableBleRssi(int rssi) => rssi != unavailableBleRssi;
+
 class RssiSample {
   const RssiSample({
     required this.timestamp,

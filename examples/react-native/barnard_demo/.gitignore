@@ -44,9 +44,12 @@ ios/fastlane/test_output
 
 # Bundle artifact
 *.jsbundle
+android/app/src/main/assets/index.android.bundle
 
 # Ruby / CocoaPods
 /ios/Pods/
+/ios/Podfile.lock
+/ios/build/
 /vendor/bundle/
 
 # Temporary files created by Metro to check the health of the file watcher

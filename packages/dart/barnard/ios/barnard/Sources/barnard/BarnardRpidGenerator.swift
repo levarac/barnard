@@ -136,8 +136,8 @@ final class BarnardRpidGenerator {
 
   // MARK: - Display IDs
 
-  /// Get the display ID for the current TEK.
+  /// v2 displayId for the current TEK: `SHA256(TEK)[0:4]` as 8 hex chars.
   func getCurrentDisplayId() -> String {
-    BarnardCrypto.displayId(from: currentTek)
+    BarnardCrypto.displayIdString(from: currentTek)
   }
 }

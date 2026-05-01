@@ -1,12 +1,11 @@
 import "dart:async";
-import "dart:convert";
 
 import "../../domain/capabilities.dart";
 import "../../domain/config.dart";
 import "../../domain/events.dart";
+import "../../domain/hex.dart";
 import "../../domain/rssi.dart";
 import "../../domain/state.dart";
-import "../../domain/tek_storage.dart";
 import "../../domain/transport.dart";
 import "../../usecase/barnard_client.dart";
 import "package:flutter/services.dart";
@@ -15,14 +14,12 @@ class BarnardBleClient implements BarnardClient {
   BarnardBleClient._({
     required BarnardCapabilities capabilities,
     required BarnardState initialState,
-    required EventMode initialMode,
     String? initialEventCode,
-    String? initialMyResolvedDisplayId,
-  })  : _capabilities = capabilities,
-        _state = initialState,
-        _currentMode = initialMode,
-        _currentEventCode = initialEventCode,
-        _myResolvedDisplayId = initialMyResolvedDisplayId;
+    required String initialMyDisplayId,
+  }) : _capabilities = capabilities,
+       _state = initialState,
+       _currentEventCode = initialEventCode,
+       _myDisplayId = initialMyDisplayId;
 
   static const MethodChannel _methods = MethodChannel("barnard/methods");
   static const EventChannel _eventsChannel = EventChannel("barnard/events");
@@ -46,54 +43,40 @@ class BarnardBleClient implements BarnardClient {
 
   final BarnardCapabilities _capabilities;
   BarnardState _state;
-  EventMode _currentMode;
   String? _currentEventCode;
-  String? _myResolvedDisplayId;
+  String _myDisplayId;
   bool _disposed = false;
 
   static Future<BarnardBleClient> create() async {
     final Map<Object?, Object?> capsMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>(
-              "getCapabilities",
-            )) ??
-            <Object?, Object?>{};
+          "getCapabilities",
+        )) ??
+        <Object?, Object?>{};
     final Map<Object?, Object?> stateMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>("getState")) ??
-            <Object?, Object?>{};
-    Map<Object?, Object?> modeMap;
+        <Object?, Object?>{};
+
+    String? eventCode;
     try {
-      modeMap = (await _methods
-              .invokeMethod<Map<Object?, Object?>>("getEventMode")) ??
-          <Object?, Object?>{};
+      eventCode = await _methods.invokeMethod<String?>("getCurrentEventCode");
     } on MissingPluginException {
-      modeMap = <Object?, Object?>{};
+      eventCode = null;
     } on PlatformException {
-      modeMap = <Object?, Object?>{};
+      eventCode = null;
     }
 
-    final String? modeStr = modeMap["mode"] as String?;
-    final EventMode initialMode =
-        modeStr == "event" ? EventMode.event : EventMode.anonymous;
-    final String? eventCode = modeMap["eventCode"] as String?;
-
-    // Fetch own resolved display ID
-    String? myResolvedDisplayId;
-    try {
-      myResolvedDisplayId = await _methods.invokeMethod<String?>(
-        "getMyResolvedDisplayId",
-      );
-    } on MissingPluginException {
-      myResolvedDisplayId = null;
-    } on PlatformException {
-      myResolvedDisplayId = null;
-    }
+    // myDisplayId is a non-nullable 8-char hex string. A missing/malformed
+    // value indicates a native-side protocol error; fail fast.
+    final String myDisplayId = _requireDisplayId(
+      await _methods.invokeMethod<String>("getMyDisplayId"),
+    );
 
     final BarnardBleClient client = BarnardBleClient._(
       capabilities: _parseCapabilities(capsMap),
       initialState: _parseState(stateMap),
-      initialMode: initialMode,
       initialEventCode: eventCode,
-      initialMyResolvedDisplayId: myResolvedDisplayId,
+      initialMyDisplayId: myDisplayId,
     );
     await client._attachStreams();
     return client;
@@ -101,9 +84,10 @@ class BarnardBleClient implements BarnardClient {
 
   Future<void> _attachStreams() async {
     _eventsSub = _eventsChannel.receiveBroadcastStream().listen((dynamic data) {
-      final BarnardEvent event = _parseBarnardEvent(_expectMap(data));
+      final BarnardEvent event = parseBarnardEvent(_expectMap(data));
       if (event is StateEvent) _state = event.state;
       if (event is DetectionEvent) {
+        if (!isUsableBleRssi(event.rssi)) return;
         _rssiBuffer.add(
           RssiSample(
             timestamp: event.timestamp,
@@ -112,6 +96,8 @@ class BarnardBleClient implements BarnardClient {
             transport: event.transport,
           ),
         );
+      } else if (event is RssiUpdateEvent && !isUsableBleRssi(event.rssi)) {
+        return;
       }
       _eventsController.add(event);
     });
@@ -132,13 +118,20 @@ class BarnardBleClient implements BarnardClient {
   BarnardState get state => _state;
 
   @override
-  EventMode get currentMode => _currentMode;
-
-  @override
   String? get currentEventCode => _currentEventCode;
 
   @override
-  String? get myResolvedDisplayId => _myResolvedDisplayId;
+  String get myDisplayId => _myDisplayId;
+
+  @override
+  int get currentEnin {
+    // Computed on demand by the native side. The native ENIN uses the
+    // device's current time; this getter is synchronous by contract, so we
+    // cannot await. The plugin emits ENIN on every detection event — host
+    // apps that need fresh ENIN should read it from the latest event. This
+    // getter therefore returns an approximation computed in Dart.
+    return DateTime.now().millisecondsSinceEpoch ~/ 1000 ~/ 600;
+  }
 
   @override
   Stream<BarnardEvent> get events => _eventsController.stream;
@@ -176,11 +169,11 @@ class BarnardBleClient implements BarnardClient {
   @override
   Future<BarnardStartResult> startAuto([AutoConfig? config]) async {
     _ensureNotDisposed();
-    final Map<Object?, Object?>? out =
-        await _methods.invokeMethod<Map<Object?, Object?>>(
-      "startAuto",
-      _encodeAutoConfig(config),
-    );
+    final Map<Object?, Object?>? out = await _methods
+        .invokeMethod<Map<Object?, Object?>>(
+          "startAuto",
+          _encodeAutoConfig(config),
+        );
     if (out == null) {
       return const BarnardStartResult(
         scanningStarted: false,
@@ -197,76 +190,61 @@ class BarnardBleClient implements BarnardClient {
     await _methods.invokeMethod<void>("stopAuto");
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Event Mode APIs
-  // ─────────────────────────────────────────────────────────────────────────
-
   @override
   Future<void> joinEvent(String eventCode) async {
     _ensureNotDisposed();
-    if (_currentMode == EventMode.event) {
-      throw StateError("Already in Event Mode. Call leaveEvent() first.");
-    }
     await _methods.invokeMethod<void>("joinEvent", <String, Object?>{
       "eventCode": eventCode,
     });
-    _currentMode = EventMode.event;
     _currentEventCode = eventCode;
-    // Refresh display ID after TEK change
-    _myResolvedDisplayId = await _methods.invokeMethod<String?>(
-      "getMyResolvedDisplayId",
+    // Refresh displayId after TEK change; fail fast on invalid native reply.
+    _myDisplayId = _requireDisplayId(
+      await _methods.invokeMethod<String>("getMyDisplayId"),
     );
   }
 
   @override
   Future<void> leaveEvent() async {
     _ensureNotDisposed();
-    if (_currentMode == EventMode.anonymous) {
-      throw StateError("Not in Event Mode. Call joinEvent() first.");
-    }
     await _methods.invokeMethod<void>("leaveEvent");
-    _currentMode = EventMode.anonymous;
     _currentEventCode = null;
-    // Refresh display ID after TEK change
-    _myResolvedDisplayId = await _methods.invokeMethod<String?>(
-      "getMyResolvedDisplayId",
+    _myDisplayId = _requireDisplayId(
+      await _methods.invokeMethod<String>("getMyDisplayId"),
     );
   }
 
   @override
-  Future<List<TekEntry>> getExchangedTeks(String eventCode) async {
+  Future<Uint8List> getCurrentRpi() async {
     _ensureNotDisposed();
-    final List<Object?>? rawList = await _methods.invokeMethod<List<Object?>>(
-      "getExchangedTeks",
-      <String, Object?>{"eventCode": eventCode},
-    );
-    if (rawList == null) return const <TekEntry>[];
-    return rawList
-        .whereType<Map<Object?, Object?>>()
-        .map((Map<Object?, Object?> m) => _parseTekEntry(m))
-        .toList(growable: false);
+    final String hex =
+        (await _methods.invokeMethod<String>("getCurrentRpi")) ?? "";
+    final Uint8List bytes = hexToBytes(hex);
+    if (bytes.length != 16) {
+      throw StateError(
+        "getCurrentRpi: expected 16 bytes from native, got ${bytes.length}",
+      );
+    }
+    return bytes;
   }
 
   @override
-  Future<int> clearTeksForEvent(String eventCode) async {
+  Future<Uint8List> exportCurrentTek() async {
     _ensureNotDisposed();
-    final int? count = await _methods.invokeMethod<int>(
-      "clearTeksForEvent",
-      <String, Object?>{"eventCode": eventCode},
-    );
-    return count ?? 0;
+    final String hex =
+        (await _methods.invokeMethod<String>("exportCurrentTek")) ?? "";
+    if (hex.isEmpty) {
+      throw StateError(
+        "exportCurrentTek: native returned empty TEK — not yet initialized.",
+      );
+    }
+    final Uint8List bytes = hexToBytes(hex);
+    if (bytes.length != 16) {
+      throw StateError(
+        "exportCurrentTek: expected 16 bytes from native, got ${bytes.length}",
+      );
+    }
+    return bytes;
   }
-
-  @override
-  Future<int> clearAllTeks() async {
-    _ensureNotDisposed();
-    final int? count = await _methods.invokeMethod<int>("clearAllTeks");
-    return count ?? 0;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Pull APIs
-  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   List<BarnardDebugEvent> getDebugBuffer({int? limit}) =>
@@ -278,8 +256,9 @@ class BarnardBleClient implements BarnardClient {
     int? limit,
     List<int>? rpidBytes,
   }) {
-    final Uint8List? filterRpid =
-        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid = rpidBytes == null
+        ? null
+        : Uint8List.fromList(rpidBytes);
     Iterable<RssiSample> samples = _rssiBuffer.toList();
     if (since != null) {
       samples = samples.where((RssiSample s) => !s.timestamp.isBefore(since));
@@ -313,10 +292,10 @@ class BarnardBleClient implements BarnardClient {
 }
 
 Map<String, Object?> _encodeScanConfig(ScanConfig? config) => <String, Object?>{
-      "transport": (config?.transport ?? TransportKind.ble).name,
-      "allowDuplicates":
-          config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
-    };
+  "transport": (config?.transport ?? TransportKind.ble).name,
+  "allowDuplicates":
+      config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
+};
 
 Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     <String, Object?>{
@@ -326,9 +305,9 @@ Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     };
 
 Map<String, Object?> _encodeAutoConfig(AutoConfig? config) => <String, Object?>{
-      "scan": _encodeScanConfig(config?.scan),
-      "advertise": _encodeAdvertiseConfig(config?.advertise),
-    };
+  "scan": _encodeScanConfig(config?.scan),
+  "advertise": _encodeAdvertiseConfig(config?.advertise),
+};
 
 BarnardStartResult _parseStartResult(Map<Object?, Object?> map) {
   final bool scanningStarted = map["scanningStarted"] == true;
@@ -386,7 +365,11 @@ BarnardState _parseState(Map<Object?, Object?> map) {
   return BarnardState(isScanning: isScanning, isAdvertising: isAdvertising);
 }
 
-BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
+/// Parse a v2 event payload. Byte-valued fields are hex-encoded lowercase.
+///
+/// Exposed for integration testing and host-app consumers that need to
+/// decode method-channel payloads outside of the default stream handler.
+BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
   final String? type = map["type"] as String?;
   final DateTime ts = DateTime.parse(
     (map["timestamp"] as String?) ?? DateTime.now().toIso8601String(),
@@ -417,15 +400,22 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         recoverable: map["recoverable"] as bool?,
       );
     case "rssi_update":
-      final Uint8List rpid = Uint8List.fromList(
-        base64Decode((map["rpid"] as String?) ?? ""),
+      final Uint8List rpid = _decodeRpidHex(
+        (map["rpid"] as String?) ?? "",
+        field: "rpid",
+      );
+      final Uint8List reporterRpid = _decodeRpidHex(
+        (map["reporterRpid"] as String?) ?? "",
+        field: "reporterRpid",
       );
       return RssiUpdateEvent(
         timestamp: ts,
-        displayId: (map["displayId"] as String?) ?? "",
-        rssi: (map["rssi"] as int?) ?? 0,
         rpid: rpid,
-        resolvedDisplayId: map["resolvedDisplayId"] as String?,
+        reporterRpid: reporterRpid,
+        enin: (map["enin"] as int?) ?? 0,
+        rssi: (map["rssi"] as int?) ?? 0,
+        detectedDisplayId: _validateDetectedDisplayId(map["detectedDisplayId"]),
+        debugLocalName: map["debugLocalName"] as String?,
       );
     case "detection":
     default:
@@ -433,16 +423,24 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         (e) => e.name == (map["transport"] as String?),
         orElse: () => TransportKind.unknown,
       );
-      final Uint8List rpid = Uint8List.fromList(
-        base64Decode((map["rpid"] as String?) ?? ""),
+      final Uint8List rpid = _decodeRpidHex(
+        (map["rpid"] as String?) ?? "",
+        field: "rpid",
       );
-      final String displayId = (map["displayId"] as String?) ?? "";
+      final Uint8List reporterRpid = _decodeRpidHex(
+        (map["reporterRpid"] as String?) ?? "",
+        field: "reporterRpid",
+      );
+      final String? detectedDisplayId = _validateDetectedDisplayId(
+        map["detectedDisplayId"],
+      );
       final int rssi = (map["rssi"] as int?) ?? 0;
       final int formatVersion = (map["formatVersion"] as int?) ?? 0;
-      final String? payloadRawB64 = map["payloadRaw"] as String?;
-      final Uint8List? payloadRaw = payloadRawB64 == null
+      final int enin = (map["enin"] as int?) ?? 0;
+      final String? payloadRawHex = map["payloadRaw"] as String?;
+      final Uint8List? payloadRaw = payloadRawHex == null
           ? null
-          : Uint8List.fromList(base64Decode(payloadRawB64));
+          : hexToBytes(payloadRawHex);
 
       final Map<Object?, Object?>? summaryMap = map["rssiSummary"] is Map
           ? map["rssiSummary"] as Map<Object?, Object?>
@@ -456,25 +454,19 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
               mean: (summaryMap["mean"] as num?)?.toDouble() ?? 0.0,
             );
 
-      // Parse resolved TEK fields (Event Mode)
-      final String? resolvedTekB64 = map["resolvedTek"] as String?;
-      final Uint8List? resolvedTek = resolvedTekB64 == null
-          ? null
-          : Uint8List.fromList(base64Decode(resolvedTekB64));
-      final String? resolvedDisplayId = map["resolvedDisplayId"] as String?;
       final String? debugLocalName = map["debugLocalName"] as String?;
 
       return DetectionEvent(
         timestamp: ts,
-        rpid: rpid,
-        rssi: rssi,
         transport: transport,
         formatVersion: formatVersion,
-        displayId: displayId,
+        rpid: rpid,
+        reporterRpid: reporterRpid,
+        detectedDisplayId: detectedDisplayId,
+        rssi: rssi,
+        enin: enin,
         rssiSummary: summary,
         payloadRaw: payloadRaw,
-        resolvedTek: resolvedTek,
-        resolvedDisplayId: resolvedDisplayId,
         debugLocalName: debugLocalName,
       );
   }
@@ -492,26 +484,66 @@ BarnardDebugEvent _parseDebugEvent(Map<Object?, Object?> map) {
     _ => DebugLevel.info,
   };
   final String name = (map["name"] as String?) ?? "debug";
-  final Map<Object?, Object?>? rawData =
-      map["data"] is Map ? map["data"] as Map<Object?, Object?> : null;
+  final Map<Object?, Object?>? rawData = map["data"] is Map
+      ? map["data"] as Map<Object?, Object?>
+      : null;
   final Map<String, Object?>? data = rawData?.map(
     (k, v) => MapEntry(k.toString(), v),
   );
   return DebugEvent(timestamp: ts, level: level, name: name, data: data);
 }
 
-TekEntry _parseTekEntry(Map<Object?, Object?> map) {
-  // Convert Object? map to String keys for TekEntry.fromMap
-  final Map<String, dynamic> typed = map.map(
-    (k, v) => MapEntry(k.toString(), v),
-  );
-  return TekEntry.fromMap(typed);
-}
-
 Map<Object?, Object?> _expectMap(Object? value) {
   if (value is Map<Object?, Object?>) return value;
   if (value is Map) return Map<Object?, Object?>.from(value);
   throw FormatException("Expected map, got ${value.runtimeType}");
+}
+
+/// Decode an RPID wire-form hex string and enforce the 17-byte length
+/// `[formatVersion(1) + RPI(16)]`. Fails fast on wrong length.
+Uint8List _decodeRpidHex(String hex, {required String field}) {
+  if (hex.isEmpty) {
+    throw FormatException("missing $field in v2 event payload");
+  }
+  final Uint8List bytes = hexToBytes(hex);
+  if (bytes.length != 17) {
+    throw FormatException(
+      "invalid $field length: expected 17 bytes, got ${bytes.length}",
+    );
+  }
+  return bytes;
+}
+
+/// Require a non-null 8-char-lowercase-hex displayId. For myDisplayId we
+/// have no null case: it must always be set on the native side.
+String _requireDisplayId(String? value) {
+  if (value == null) {
+    throw StateError(
+      "getMyDisplayId returned null — native plugin is not initialized for v2",
+    );
+  }
+  if (!RegExp(r"^[0-9a-f]{8}$").hasMatch(value)) {
+    throw StateError(
+      "getMyDisplayId returned invalid value '$value' — expected 8 lowercase hex chars",
+    );
+  }
+  return value;
+}
+
+/// Validate v2 displayId: 8 lowercase hex chars, or null.
+String? _validateDetectedDisplayId(Object? value) {
+  if (value == null) return null;
+  if (value is! String) {
+    throw FormatException(
+      "detectedDisplayId must be String, got ${value.runtimeType}",
+    );
+  }
+  if (!RegExp(r"^[0-9a-f]{8}$").hasMatch(value)) {
+    throw FormatException(
+      "invalid detectedDisplayId: expected 8 lowercase hex chars, got '$value'",
+    );
+  }
+  return value;
 }
 
 bool _bytesEqual(Uint8List a, Uint8List b) {

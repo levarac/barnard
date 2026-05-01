@@ -13,28 +13,39 @@ sealed class BarnardEvent {
   final DateTime timestamp;
 }
 
+/// v2 Detection event.
+///
+/// Emitted after a successful GATT exchange with a nearby peer.
+///
+/// - [rpid]: 17-byte wire form `[formatVersion(1) + RPI(16)]`.
+/// - [reporterRpid]: 17-byte wire form of this device's own RPID at the
+///   moment of the observation.
+/// - [detectedDisplayId]: 8-char lowercase hex, `SHA256(peerTEK)[0:4]`, or
+///   `null` when the B003 read failed (per v2 policy: detection is still
+///   emitted on B003 failure).
+/// - [enin]: ENIN (Exposure Notification Interval Number) at observation time.
 final class DetectionEvent extends BarnardEvent {
   const DetectionEvent({
     required super.timestamp,
-    required this.rpid,
-    required this.rssi,
     required this.transport,
     required this.formatVersion,
-    required this.displayId,
+    required this.rpid,
+    required this.reporterRpid,
+    required this.detectedDisplayId,
+    required this.rssi,
+    required this.enin,
     this.rssiSummary,
     this.payloadRaw,
-    this.resolvedTek,
-    this.resolvedDisplayId,
     this.debugLocalName,
   });
 
   final Uint8List rpid;
+  final Uint8List reporterRpid;
+  final String? detectedDisplayId;
   final int rssi;
+  final int enin;
   final TransportKind transport;
   final int formatVersion;
-
-  /// Short debug-only identifier derived from RPID (must not be persistent).
-  final String displayId;
 
   /// Optional aggregation summary for push streams.
   final RssiSummary? rssiSummary;
@@ -42,20 +53,8 @@ final class DetectionEvent extends BarnardEvent {
   /// Optional raw payload bytes as observed (if available).
   final Uint8List? payloadRaw;
 
-  /// The TEK that was used to derive this RPI, if resolution succeeded.
-  /// Only populated when both devices are in Event Mode with matching
-  /// EventCodeHash and have exchanged TEKs via GATT.
-  final Uint8List? resolvedTek;
-
-  /// Human-readable identifier derived from resolvedTek (first 3 bytes as hex).
-  /// Example: "a1b2c3". Only populated when resolvedTek is available.
-  final String? resolvedDisplayId;
-
   /// Debug-only local name of the peer, if present in advertisements.
   final String? debugLocalName;
-
-  /// Whether this detection was resolved to a known TEK.
-  bool get isResolved => resolvedTek != null;
 }
 
 final class StateEvent extends BarnardEvent {
@@ -96,27 +95,45 @@ final class ErrorEvent extends BarnardEvent {
 }
 
 /// High-frequency RSSI update event for known peers.
-/// Emitted on each BLE scan without requiring GATT connection.
+///
+/// Emitted on each BLE scan without requiring a GATT connection. The
+/// [detectedDisplayId] is only populated when it has been cached from a
+/// prior GATT exchange with the same peer; otherwise it is `null`.
+///
+/// Carries the same atomic `(enin, reporterRpid)` snapshot semantics as
+/// [DetectionEvent] — both are derived natively from the observation
+/// [timestamp], so downstream bucket-by-`(rpid, enin)` aggregation (e.g.
+/// per-event RSSI pooling) can mix Detection and RssiUpdate samples
+/// without deriving `enin` from timestamps client-side.
 final class RssiUpdateEvent extends BarnardEvent {
   const RssiUpdateEvent({
     required super.timestamp,
-    required this.displayId,
-    required this.rssi,
     required this.rpid,
-    this.resolvedDisplayId,
+    required this.reporterRpid,
+    required this.enin,
+    required this.rssi,
+    this.detectedDisplayId,
+    this.debugLocalName,
   });
 
-  /// Short debug-only identifier derived from RPID.
-  final String displayId;
+  /// The 17-byte RPID wire form `[formatVersion(1) + RPI(16)]`.
+  final Uint8List rpid;
+
+  /// The reporter's own 17-byte RPID wire form at observation time.
+  final Uint8List reporterRpid;
+
+  /// ENIN in which the observation was made (atomic with [reporterRpid]).
+  final int enin;
 
   /// Signal strength in dBm.
   final int rssi;
 
-  /// The RPID bytes.
-  final Uint8List rpid;
+  /// v2 displayId (8-char lowercase hex) if cached from a prior GATT read,
+  /// else null.
+  final String? detectedDisplayId;
 
-  /// Resolved display ID if this peer was resolved (Event Mode).
-  final String? resolvedDisplayId;
+  /// Debug-only local name of the peer, if cached from a prior GATT exchange.
+  final String? debugLocalName;
 }
 
 @immutable

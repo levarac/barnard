@@ -1,15 +1,14 @@
 /**
- * React Native Barnard SDK
+ * React Native Barnard SDK (v2)
  *
- * BLE Scan/Advertise + GATT-based RPID detection for React Native.
+ * BLE Scan/Advertise + v2 GATT (B002 RPID + B003 displayId + B004 EventCodeHash).
+ * TEK is never transmitted over BLE.
  */
 
 export { BarnardManager } from './BarnardManager';
 
 export type {
   TransportKind,
-  EventMode,
-  EventModeState,
   BarnardCapabilities,
   BarnardState,
   ScanConfig,
@@ -18,9 +17,10 @@ export type {
   AutoStartResult,
   BarnardIssueSeverity,
   BarnardIssue,
-  TekEntry,
   BaseEvent,
   DetectionEvent,
+  RssiUpdateEvent,
+  RssiSummary,
   StateEvent,
   ConstraintEvent,
   ErrorEvent,

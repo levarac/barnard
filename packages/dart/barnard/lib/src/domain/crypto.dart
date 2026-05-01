@@ -182,56 +182,20 @@ Uint8List calculateEventCodeHash(String eventCode) {
   return hash.sublist(0, 8);
 }
 
-/// Attempt to resolve an RPI to a known TEK.
+/// Get v2 displayId from TEK: first 4 bytes of `SHA256(TEK)`, lowercase hex.
 ///
-/// Searches within a time window around [currentEnin] (default ±1 hour).
-///
-/// Returns the matching TEK if found, null otherwise.
-Uint8List? resolveRpi({
-  required Uint8List rpi,
-  required List<Uint8List> knownTeks,
-  required int currentEnin,
-  int windowSize = 8, // ±6 past + 1 current + 1 future
-}) {
-  if (rpi.length != 16) return null;
-
-  for (final tek in knownTeks) {
-    if (tek.length != 16) continue;
-
-    final rpik = deriveRpik(tek);
-
-    // Search window: 6 intervals past + current + 1 future
-    for (var offset = -6; offset <= 1; offset++) {
-      final enin = currentEnin + offset;
-      final candidate = generateRpi(rpik, enin);
-
-      if (_bytesEqual(candidate, rpi)) {
-        return tek;
-      }
-    }
+/// Length: 8 hex chars (4 bytes). Collision rate ~0.05% at 2,000 users
+/// (birthday bound in a 4-byte space). See issue #42 for rationale.
+String displayIdFromTek(Uint8List tek) {
+  if (tek.length != 16) {
+    throw ArgumentError("TEK must be 16 bytes, got ${tek.length}");
   }
-
-  return null;
-}
-
-/// Get displayId from TEK (first 3 bytes as lowercase hex).
-String tekToDisplayId(Uint8List tek) {
-  if (tek.length < 3) {
-    throw ArgumentError('TEK must be at least 3 bytes');
+  final hash = sha256(tek);
+  final sb = StringBuffer();
+  for (var i = 0; i < 4; i++) {
+    sb.write(hash[i].toRadixString(16).padLeft(2, "0"));
   }
-  return tek
-      .sublist(0, 3)
-      .map((b) => b.toRadixString(16).padLeft(2, '0'))
-      .join();
-}
-
-/// Compare two byte lists for equality.
-bool _bytesEqual(Uint8List a, Uint8List b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
+  return sb.toString();
 }
 
 /// Generate cryptographically secure random bytes.
@@ -282,21 +246,10 @@ abstract class BarnardCrypto {
     return calculateEnin(DateTime.now());
   }
 
-  /// Attempt to resolve an RPI to a known TEK.
-  static Uint8List? tryResolveRpi({
-    required Uint8List rpi,
-    required List<Uint8List> knownTeks,
-    int? enin,
-  }) {
-    return resolveRpi(
-      rpi: rpi,
-      knownTeks: knownTeks,
-      currentEnin: enin ?? currentEnin(),
-    );
-  }
-
-  /// Get displayId from TEK (first 3 bytes as lowercase hex).
-  static String displayIdFromTek(Uint8List tek) {
-    return tekToDisplayId(tek);
+  /// Get v2 displayId from TEK: `SHA256(TEK)[0:4]` as 8 lowercase hex chars.
+  ///
+  /// Delegates to the top-level [displayIdFromTek].
+  static String computeDisplayId(Uint8List tek) {
+    return displayIdFromTek(tek);
   }
 }

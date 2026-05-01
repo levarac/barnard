@@ -19,8 +19,9 @@ import {
 
 interface Detection {
   id: string;
-  displayId: string;
+  detectedDisplayId: string | null;
   rssi: number;
+  enin: number;
   timestamp: string;
   transport: string;
 }
@@ -29,6 +30,9 @@ const App = () => {
   const [manager] = useState(() => new BarnardManager());
   const [capabilities, setCapabilities] = useState<BarnardCapabilities | null>(null);
   const [state, setState] = useState<BarnardState>({ isScanning: false, isAdvertising: false });
+  const [myDisplayId, setMyDisplayId] = useState<string>('—');
+  const [currentEnin, setCurrentEnin] = useState<number | null>(null);
+  const [currentEventCode, setCurrentEventCode] = useState<string | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [permissionsGranted, setPermissionsGranted] = useState(false);
 
@@ -41,7 +45,7 @@ const App = () => {
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
         ]);
         const granted = Object.values(result).every(
-          status => status === PermissionsAndroid.RESULTS.GRANTED
+          (status) => status === PermissionsAndroid.RESULTS.GRANTED
         );
         setPermissionsGranted(granted);
         if (!granted) {
@@ -55,7 +59,7 @@ const App = () => {
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
         ]);
         const granted = Object.values(result).every(
-          status => status === PermissionsAndroid.RESULTS.GRANTED
+          (status) => status === PermissionsAndroid.RESULTS.GRANTED
         );
         setPermissionsGranted(granted);
         if (!granted) {
@@ -68,55 +72,72 @@ const App = () => {
     return true;
   }, []);
 
+  const refreshIdentity = useCallback(async () => {
+    try {
+      const [displayId, enin, code] = await Promise.all([
+        manager.getMyDisplayId(),
+        manager.getCurrentEnin(),
+        manager.getCurrentEventCode(),
+      ]);
+      setMyDisplayId(displayId);
+      setCurrentEnin(enin);
+      setCurrentEventCode(code);
+    } catch (err) {
+      console.warn('identity refresh failed', err);
+    }
+  }, [manager]);
+
   useEffect(() => {
     requestPermissions();
 
-    // Get capabilities
-    manager.getCapabilities().then(caps => {
+    manager.getCapabilities().then((caps) => {
       setCapabilities(caps);
       console.log('Capabilities:', caps);
     });
 
-    // Subscribe to detections
+    refreshIdentity();
+
     const unsubDetection = manager.onDetection((event: DetectionEvent) => {
-      console.log('Detection:', event.displayId, event.rssi);
-      setDetections(prev => {
+      console.log('Detection:', event.detectedDisplayId, event.rssi, event.enin);
+      setDetections((prev) => {
         const newDetection: Detection = {
           id: event.rpid,
-          displayId: event.displayId,
+          detectedDisplayId: event.detectedDisplayId,
           rssi: event.rssi,
+          enin: event.enin,
           timestamp: new Date(event.timestamp).toLocaleTimeString(),
           transport: event.transport,
         };
-        // Keep last 20 detections
         return [newDetection, ...prev].slice(0, 20);
       });
     });
 
-    // Subscribe to state changes
-    const unsubState = manager.onStateChange(event => {
+    const unsubState = manager.onStateChange((event) => {
       console.log('State change:', event.state);
       setState(event.state);
+      if (event.state.eventCode !== undefined) {
+        setCurrentEventCode(event.state.eventCode ?? null);
+      }
     });
 
-    // Subscribe to constraints
-    const unsubConstraint = manager.onConstraint(event => {
+    const unsubConstraint = manager.onConstraint((event) => {
       console.log('Constraint:', event.code, event.message);
       Alert.alert('Constraint', `${event.code}: ${event.message}`);
     });
 
-    // Subscribe to errors
-    const unsubError = manager.onError(event => {
+    const unsubError = manager.onError((event) => {
       console.log('Error:', event.code, event.message);
       Alert.alert('Error', `${event.code}: ${event.message}`);
     });
 
-    // Subscribe to debug events
-    const unsubDebug = manager.onDebug(event => {
+    const unsubDebug = manager.onDebug((event) => {
       console.log('Debug:', event.level, event.name, event.data);
     });
 
+    const id = setInterval(refreshIdentity, 3000);
+
     return () => {
+      clearInterval(id);
       unsubDetection();
       unsubState();
       unsubConstraint();
@@ -124,7 +145,7 @@ const App = () => {
       unsubDebug();
       manager.dispose();
     };
-  }, [manager, requestPermissions]);
+  }, [manager, refreshIdentity, requestPermissions]);
 
   const handleStartAuto = async () => {
     if (!permissionsGranted) {
@@ -137,6 +158,7 @@ const App = () => {
         advertise: { formatVersion: 1 },
       });
       console.log('Started:', result);
+      await refreshIdentity();
     } catch (error) {
       console.error('Start failed:', error);
       Alert.alert('Start Failed', String(error));
@@ -152,50 +174,26 @@ const App = () => {
     }
   };
 
-  const handleStartScan = async () => {
-    if (!permissionsGranted) {
-      const granted = await requestPermissions();
-      if (!granted) return;
-    }
+  const handleExportTek = async () => {
     try {
-      await manager.startScan({ allowDuplicates: true });
+      const tek = await manager.exportCurrentTek();
+      Alert.alert('TEK exported', tek);
     } catch (error) {
-      Alert.alert('Start Scan Failed', String(error));
-    }
-  };
-
-  const handleStopScan = async () => {
-    try {
-      await manager.stopScan();
-    } catch (error) {
-      console.error('Stop scan failed:', error);
-    }
-  };
-
-  const handleStartAdvertise = async () => {
-    if (!permissionsGranted) {
-      const granted = await requestPermissions();
-      if (!granted) return;
-    }
-    try {
-      await manager.startAdvertise({ formatVersion: 1 });
-    } catch (error) {
-      Alert.alert('Start Advertise Failed', String(error));
-    }
-  };
-
-  const handleStopAdvertise = async () => {
-    try {
-      await manager.stopAdvertise();
-    } catch (error) {
-      console.error('Stop advertise failed:', error);
+      Alert.alert('Export failed', String(error));
     }
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.title}>Barnard Demo</Text>
+        <Text style={styles.title}>Barnard v2 Demo</Text>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Identity (v2)</Text>
+          <Text style={styles.infoText}>myDisplayId: {myDisplayId}</Text>
+          <Text style={styles.infoText}>currentEnin: {currentEnin ?? '—'}</Text>
+          <Text style={styles.infoText}>eventCode: {currentEventCode ?? '—'}</Text>
+        </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Capabilities</Text>
@@ -234,15 +232,7 @@ const App = () => {
             />
           </View>
           <View style={styles.buttonRow}>
-            <Button
-              title={state.isScanning ? 'Stop Scan' : 'Start Scan'}
-              onPress={state.isScanning ? handleStopScan : handleStartScan}
-            />
-            <View style={styles.buttonSpacer} />
-            <Button
-              title={state.isAdvertising ? 'Stop Adv' : 'Start Adv'}
-              onPress={state.isAdvertising ? handleStopAdvertise : handleStartAdvertise}
-            />
+            <Button title="Export TEK" onPress={handleExportTek} />
           </View>
         </View>
 
@@ -255,9 +245,11 @@ const App = () => {
           ) : (
             detections.map((detection, index) => (
               <View key={`${detection.id}-${index}`} style={styles.detectionItem}>
-                <Text style={styles.detectionId}>{detection.displayId}</Text>
+                <Text style={styles.detectionId}>
+                  {detection.detectedDisplayId ?? '(no B003)'}
+                </Text>
                 <Text style={styles.detectionInfo}>
-                  RSSI: {detection.rssi} dBm | {detection.timestamp}
+                  RSSI: {detection.rssi} dBm | ENIN: {detection.enin} | {detection.timestamp}
                 </Text>
               </View>
             ))

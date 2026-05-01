@@ -136,50 +136,28 @@ object BarnardCrypto {
         return hash.copyOfRange(0, 8)
     }
 
-    // MARK: - RPI Resolution
+    // MARK: - Display ID (v2)
 
     /**
-     * Attempt to resolve an RPI to a known TEK.
-     *
-     * Searches within a time window around the current ENIN (±6 past + 1 future).
-     *
-     * @param rpi The 16-byte RPI to resolve
-     * @param knownTeks List of known TEKs to search
-     * @param currentEnin Current ENIN (defaults to now)
-     * @return The matching TEK if found, null otherwise
+     * v2 displayId bytes: `SHA256(TEK)[0:4]` = 4 bytes.
      */
-    fun resolveRpi(rpi: ByteArray, knownTeks: List<ByteArray>, currentEnin: UInt? = null): ByteArray? {
-        if (rpi.size != 16) return null
-
-        val enin = currentEnin ?: calculateEnin()
-
-        for (tek in knownTeks) {
-            if (tek.size != 16) continue
-
-            val rpik = deriveRpik(tek)
-
-            // Search window: 6 intervals past + current + 1 future
-            for (offset in -6..1) {
-                val testEnin = (enin.toInt() + offset).toUInt()
-                val candidate = generateRpi(rpik, testEnin)
-
-                if (candidate.contentEquals(rpi)) {
-                    return tek
-                }
-            }
-        }
-
-        return null
+    fun displayId4(tek: ByteArray): ByteArray {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(tek)
+        return hash.copyOfRange(0, 4)
     }
-
-    // MARK: - Display ID
 
     /**
-     * Get displayId from TEK (first 3 bytes as lowercase hex).
+     * v2 displayId string: 8 lowercase hex chars, `SHA256(TEK)[0:4]`.
      */
-    fun displayId(tek: ByteArray): String {
-        return tek.take(3).joinToString("") { "%02x".format(it) }
+    fun displayIdString(tek: ByteArray): String {
+        return displayId4(tek).toHex()
     }
+
+    /**
+     * Lowercase-hex encoder for method-channel payloads.
+     */
+    fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     // MARK: - HKDF
 

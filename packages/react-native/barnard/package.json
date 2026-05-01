@@ -12,7 +12,7 @@
     "lib",
     "ios",
     "android",
-    "react-native-barnard.podspec",
+    "barnard.podspec",
     "README.md"
   ],
   "scripts": {
