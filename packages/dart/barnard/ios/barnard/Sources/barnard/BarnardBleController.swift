@@ -67,6 +67,9 @@ final class BarnardBleController: NSObject {
   private var isAdvertising = false
   private var allowDuplicates = true
   private var formatVersion: UInt8 = 1
+  private var eninMode: BarnardCrypto.EninMode = .fixedLength
+  private var eninSeconds: Int = 600
+  private var beaconChain: BarnardCrypto.BeaconChainConfig = .ethereumMainnet
 
   private var lastDiscoveryNameById: [UUID: String] = [:]
 
@@ -126,6 +129,60 @@ final class BarnardBleController: NSObject {
 
   private func shouldServeGattDisplayId() -> Bool {
     BarnardV2Policy.shouldServeGattDisplayId(eventCode: rpid.eventCode)
+  }
+
+  private func configure(_ args: [String: Any]) {
+    eninMode = (args["eninMode"] as? String) == "beaconSlot" ? .beaconSlot : .fixedLength
+    let requestedSeconds = (args["eninSeconds"] as? Int) ?? 600
+    eninSeconds = min(max(requestedSeconds, 12), 3600)
+
+    let chain = args["beaconChain"] as? [String: Any]
+    beaconChain = BarnardCrypto.BeaconChainConfig(
+      chainId: (chain?["chainId"] as? String) ?? "mainnet",
+      genesisUnixSeconds: (chain?["genesisUnixSeconds"] as? Int) ?? 1_606_824_023,
+      slotSeconds: (chain?["slotSeconds"] as? Int) ?? 12
+    )
+
+    knownPeers.removeAll()
+    emitDebug(level: "info", name: "configure", data: [
+      "eninMode": eninModeName(),
+      "eninSeconds": eninSeconds,
+      "beaconChain": beaconChainDict(),
+    ])
+  }
+
+  private func currentEnin(_ date: Date = Date()) -> UInt32 {
+    BarnardCrypto.calculateEnin(
+      for: date,
+      mode: eninMode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+  }
+
+  private func currentPayload(now: Date) -> Data {
+    rpid.currentPayload(
+      formatVersion: formatVersion,
+      now: now,
+      eninMode: eninMode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+  }
+
+  private func eninModeName() -> String {
+    switch eninMode {
+    case .beaconSlot: return "beaconSlot"
+    case .fixedLength: return "fixedLength"
+    }
+  }
+
+  private func beaconChainDict() -> [String: Any] {
+    [
+      "chainId": beaconChain.chainId,
+      "genesisUnixSeconds": beaconChain.effectiveGenesisUnixSeconds,
+      "slotSeconds": beaconChain.effectiveSlotSeconds,
+    ]
   }
 
   // MARK: - Event Sinks
@@ -207,6 +264,9 @@ final class BarnardBleController: NSObject {
         "supportsGattFallback": true,
         "supportsBackground": false,
         "supportsHighRateRssi": false,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ])
 
     case "getState":
@@ -214,7 +274,15 @@ final class BarnardBleController: NSObject {
         "isScanning": isScanning,
         "isAdvertising": isAdvertising,
         "eventCode": rpid.eventCode as Any,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ])
+
+    case "configure":
+      let args = (call.arguments as? [String: Any]) ?? [:]
+      configure(args)
+      result(nil)
 
     case "getCurrentEventCode":
       result(rpid.eventCode)
@@ -224,11 +292,11 @@ final class BarnardBleController: NSObject {
 
     case "getCurrentRpi":
       let rpik = BarnardCrypto.deriveRpik(from: rpid.getCurrentTek())
-      let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: BarnardCrypto.calculateEnin(for: Date()))
+      let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: currentEnin())
       result(rpi.hexString)
 
     case "getCurrentEnin":
-      result(Int(BarnardCrypto.calculateEnin(for: Date())))
+      result(Int(currentEnin()))
 
     case "exportCurrentTek":
       // Explicit privacy egress. SDK never transmits TEK over BLE; caller
@@ -685,7 +753,7 @@ final class BarnardBleController: NSObject {
       )
 
       if rpidData.count == 17 {
-        let peerEnin = BarnardCrypto.calculateEnin(for: ts)
+        let peerEnin = currentEnin(ts)
         knownPeers[id] = KnownPeer(
           rpid: rpidData,
           enin: peerEnin,
@@ -718,6 +786,9 @@ final class BarnardBleController: NSObject {
         "isScanning": isScanning,
         "isAdvertising": isAdvertising,
         "eventCode": rpid.eventCode as Any,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ],
       "reasonCode": reasonCode as Any,
     ])
@@ -763,8 +834,8 @@ final class BarnardBleController: NSObject {
 
     // Atomic snapshot: use the observation timestamp for both reporterRpid
     // and enin, so they always agree across ENIN boundaries.
-    let reporterPayload = rpid.currentPayload(formatVersion: formatVersion, now: timestamp)
-    let enin = Int(BarnardCrypto.calculateEnin(for: timestamp))
+    let reporterPayload = currentPayload(now: timestamp)
+    let enin = Int(currentEnin(timestamp))
 
     var event: [String: Any] = [
       "type": "detection",
@@ -794,8 +865,8 @@ final class BarnardBleController: NSObject {
     guard let peer = knownPeers[peripheralId] else { return }
 
     // Atomic reporter snapshot (same contract as DetectionEvent).
-    let reporterPayload = rpid.currentPayload(formatVersion: formatVersion, now: timestamp)
-    let enin = Int(BarnardCrypto.calculateEnin(for: timestamp))
+    let reporterPayload = currentPayload(now: timestamp)
+    let enin = Int(currentEnin(timestamp))
 
     var event: [String: Any] = [
       "type": "rssi_update",
@@ -927,15 +998,15 @@ extension BarnardBleController: CBCentralManagerDelegate {
     #endif
 
     if let knownPeer = knownPeers[peripheral.identifier] {
-      let currentEnin = BarnardCrypto.calculateEnin(for: now)
-      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEnin) {
+      let currentEninValue = currentEnin(now)
+      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEninValue) {
         emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
       } else {
         knownPeers.removeValue(forKey: peripheral.identifier)
         emitDebug(level: "trace", name: "known_peer_rpid_expired", data: [
           "id": peripheral.identifier.uuidString,
           "cachedEnin": Int(knownPeer.enin),
-          "currentEnin": Int(currentEnin),
+          "currentEnin": Int(currentEninValue),
         ])
         // Force a fresh resolution. enqueueConnect dedups against in-flight /
         // queued connects, so following advertisements on the same identifier
@@ -1179,7 +1250,7 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
   func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
     switch request.characteristic.uuid {
     case rpidCharacteristicUUID:
-      let payload = rpid.currentPayload(formatVersion: formatVersion, now: Date())
+      let payload = currentPayload(now: Date())
       respondRead(
         peripheral,
         request: request,

@@ -22,6 +22,26 @@ import Foundation
 ///                      RPI = AES128-ECB(RPIK, PaddedData)
 /// ```
 enum BarnardCrypto {
+  enum EninMode {
+    case fixedLength
+    case beaconSlot
+  }
+
+  struct BeaconChainConfig {
+    let chainId: String
+    let genesisUnixSeconds: Int
+    let slotSeconds: Int
+
+    static let ethereumMainnet = BeaconChainConfig(
+      chainId: "mainnet",
+      genesisUnixSeconds: 1_606_824_023,
+      slotSeconds: 12
+    )
+
+    var effectiveGenesisUnixSeconds: Int { max(0, genesisUnixSeconds) }
+    var effectiveSlotSeconds: Int { max(1, slotSeconds) }
+  }
+
   // MARK: - TEK Derivation
 
   /// Derive TEK for Event Mode from DeviceSecret and EventCode.
@@ -143,8 +163,22 @@ enum BarnardCrypto {
   /// `ENIN = floor(unix_timestamp_seconds / 600)`
   ///
   /// Each ENIN represents a 10-minute interval.
-  static func calculateEnin(for date: Date = Date()) -> UInt32 {
-    UInt32(Int(date.timeIntervalSince1970) / 600)
+  static func calculateEnin(
+    for date: Date = Date(),
+    mode: EninMode = .fixedLength,
+    eninSeconds: Int = 600,
+    beaconChain: BeaconChainConfig = .ethereumMainnet
+  ) -> UInt32 {
+    let unixSeconds = Int(date.timeIntervalSince1970)
+    switch mode {
+    case .fixedLength:
+      let effectiveSeconds = min(max(eninSeconds, 12), 3600)
+      return UInt32(unixSeconds / effectiveSeconds)
+    case .beaconSlot:
+      let elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds
+      if elapsed <= 0 { return 0 }
+      return UInt32(elapsed / beaconChain.effectiveSlotSeconds)
+    }
   }
 
   // MARK: - EventCodeHash

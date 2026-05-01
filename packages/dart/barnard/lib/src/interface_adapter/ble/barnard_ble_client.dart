@@ -2,6 +2,7 @@ import "dart:async";
 
 import "../../domain/capabilities.dart";
 import "../../domain/config.dart";
+import "../../domain/crypto.dart";
 import "../../domain/events.dart";
 import "../../domain/hex.dart";
 import "../../domain/rssi.dart";
@@ -47,7 +48,14 @@ class BarnardBleClient implements BarnardClient {
   String _myDisplayId;
   bool _disposed = false;
 
-  static Future<BarnardBleClient> create() async {
+  static Future<BarnardBleClient> create({
+    BarnardConfig config = const BarnardConfig(),
+  }) async {
+    await _methods.invokeMethod<void>(
+      "configure",
+      _encodeBarnardConfig(config),
+    );
+
     final Map<Object?, Object?> capsMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>(
           "getCapabilities",
@@ -130,7 +138,12 @@ class BarnardBleClient implements BarnardClient {
     // cannot await. The plugin emits ENIN on every detection event — host
     // apps that need fresh ENIN should read it from the latest event. This
     // getter therefore returns an approximation computed in Dart.
-    return DateTime.now().millisecondsSinceEpoch ~/ 1000 ~/ 600;
+    return calculateEnin(
+      DateTime.now(),
+      mode: _capabilities.eninMode,
+      eninSeconds: _capabilities.eninSeconds,
+      beaconChain: _capabilities.beaconChain,
+    );
   }
 
   @override
@@ -309,6 +322,19 @@ Map<String, Object?> _encodeAutoConfig(AutoConfig? config) => <String, Object?>{
   "advertise": _encodeAdvertiseConfig(config?.advertise),
 };
 
+Map<String, Object?> _encodeBarnardConfig(BarnardConfig config) =>
+    <String, Object?>{
+      "transport": config.transport.name,
+      "eventCode": config.eventCode,
+      "eninMode": config.eninMode.name,
+      "eninSeconds": config.effectiveEninSeconds,
+      "beaconChain": <String, Object?>{
+        "chainId": config.beaconChain.chainId,
+        "genesisUnixSeconds": config.beaconChain.effectiveGenesisUnixSeconds,
+        "slotSeconds": config.beaconChain.effectiveSlotSeconds,
+      },
+    };
+
 BarnardStartResult _parseStartResult(Map<Object?, Object?> map) {
   final bool scanningStarted = map["scanningStarted"] == true;
   final bool advertisingStarted = map["advertisingStarted"] == true;
@@ -356,13 +382,42 @@ BarnardCapabilities _parseCapabilities(Map<Object?, Object?> map) {
     supportsGattFallback: map["supportsGattFallback"] == true,
     supportsBackground: map["supportsBackground"] == true,
     supportsHighRateRssi: map["supportsHighRateRssi"] == true,
+    eninMode: _parseEninMode(map["eninMode"]),
+    eninSeconds: ((map["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+    beaconChain: _parseBeaconChain(map["beaconChain"]),
   );
 }
 
 BarnardState _parseState(Map<Object?, Object?> map) {
   final bool isScanning = map["isScanning"] == true;
   final bool isAdvertising = map["isAdvertising"] == true;
-  return BarnardState(isScanning: isScanning, isAdvertising: isAdvertising);
+  return BarnardState(
+    isScanning: isScanning,
+    isAdvertising: isAdvertising,
+    eninMode: _parseEninMode(map["eninMode"]),
+    eninSeconds: ((map["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+    beaconChain: _parseBeaconChain(map["beaconChain"]),
+  );
+}
+
+EninMode _parseEninMode(Object? value) {
+  if (value == "beaconSlot") return EninMode.beaconSlot;
+  return EninMode.fixedLength;
+}
+
+BeaconChainConfig _parseBeaconChain(Object? value) {
+  if (value is! Map) return BeaconChainConfig.ethereumMainnet;
+  return BeaconChainConfig(
+    chainId:
+        (value["chainId"] as String?) ??
+        BeaconChainConfig.ethereumMainnet.chainId,
+    genesisUnixSeconds:
+        (value["genesisUnixSeconds"] as int?) ??
+        BeaconChainConfig.ethereumMainnet.genesisUnixSeconds,
+    slotSeconds:
+        (value["slotSeconds"] as int?) ??
+        BeaconChainConfig.ethereumMainnet.slotSeconds,
+  );
 }
 
 /// Parse a v2 event payload. Byte-valued fields are hex-encoded lowercase.
@@ -382,6 +437,9 @@ BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
         state: BarnardState(
           isScanning: state["isScanning"] == true,
           isAdvertising: state["isAdvertising"] == true,
+          eninMode: _parseEninMode(state["eninMode"]),
+          eninSeconds: ((state["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+          beaconChain: _parseBeaconChain(state["beaconChain"]),
         ),
         reasonCode: map["reasonCode"] as String?,
       );

@@ -41,10 +41,12 @@ class MockBarnard implements BarnardClient {
   MockBarnard({
     int simulatedPeerCount = 50,
     int tickMs = 200,
+    BarnardConfig config = const BarnardConfig(),
     MockBarnardOverrides? overrides,
     Uint8List? deviceSecret,
   }) : _tickMs = tickMs.clamp(50, 2000),
        _random = Random(),
+       _config = config,
        _overrides = overrides,
        _deviceSecret = deviceSecret ?? _generateRandomBytes(32) {
     _peers = List<MockPeer>.generate(simulatedPeerCount.clamp(1, 2000), (
@@ -54,7 +56,7 @@ class MockBarnard implements BarnardClient {
       return MockPeer(id: i, seed: seed, transport: TransportKind.ble);
     });
 
-    _state = BarnardState.idle;
+    _state = _buildState(isScanning: false, isAdvertising: false);
     _events = StreamController<BarnardEvent>.broadcast();
     _debugEvents = StreamController<BarnardDebugEvent>.broadcast();
     _debugBuffer = RingBuffer<BarnardDebugEvent>(2000);
@@ -69,6 +71,7 @@ class MockBarnard implements BarnardClient {
 
   final int _tickMs;
   final Random _random;
+  final BarnardConfig _config;
   final MockBarnardOverrides? _overrides;
   final Uint8List _deviceSecret;
 
@@ -99,12 +102,15 @@ class MockBarnard implements BarnardClient {
       (_overrides?.b004MismatchRate ?? 0.0).clamp(0.0, 1.0);
 
   @override
-  BarnardCapabilities get capabilities => const BarnardCapabilities(
-    supportedTransports: {TransportKind.ble},
+  BarnardCapabilities get capabilities => BarnardCapabilities(
+    supportedTransports: const {TransportKind.ble},
     supportsConnectionlessRpid: true,
     supportsGattFallback: false,
     supportsBackground: false,
     supportsHighRateRssi: true,
+    eninMode: _effectiveEninMode,
+    eninSeconds: _effectiveEninSeconds,
+    beaconChain: _config.beaconChain,
   );
 
   @override
@@ -117,7 +123,7 @@ class MockBarnard implements BarnardClient {
   String get myDisplayId => displayIdFromTek(_currentTek);
 
   @override
-  int get currentEnin => BarnardCrypto.currentEnin();
+  int get currentEnin => _calculateEnin(DateTime.now());
 
   @override
   Stream<BarnardEvent> get events => _events.stream;
@@ -130,7 +136,7 @@ class MockBarnard implements BarnardClient {
     _ensureNotDisposed();
     if (_state.isScanning) return;
     _setState(
-      BarnardState(isScanning: true, isAdvertising: _state.isAdvertising),
+      _buildState(isScanning: true, isAdvertising: _state.isAdvertising),
       reasonCode: "scan_start",
     );
     _ensureTicker();
@@ -141,7 +147,7 @@ class MockBarnard implements BarnardClient {
     _ensureNotDisposed();
     if (!_state.isScanning) return;
     _setState(
-      BarnardState(isScanning: false, isAdvertising: _state.isAdvertising),
+      _buildState(isScanning: false, isAdvertising: _state.isAdvertising),
       reasonCode: "scan_stop",
     );
     _clearAggregation();
@@ -153,7 +159,7 @@ class MockBarnard implements BarnardClient {
     _ensureNotDisposed();
     if (_state.isAdvertising) return;
     _setState(
-      BarnardState(isScanning: _state.isScanning, isAdvertising: true),
+      _buildState(isScanning: _state.isScanning, isAdvertising: true),
       reasonCode: "advertise_start",
     );
     _ensureTicker();
@@ -164,7 +170,7 @@ class MockBarnard implements BarnardClient {
     _ensureNotDisposed();
     if (!_state.isAdvertising) return;
     _setState(
-      BarnardState(isScanning: _state.isScanning, isAdvertising: false),
+      _buildState(isScanning: _state.isScanning, isAdvertising: false),
       reasonCode: "advertise_stop",
     );
     _maybeStopTicker();
@@ -288,15 +294,14 @@ class MockBarnard implements BarnardClient {
     if (!_state.isScanning) return;
 
     final DateTime now = DateTime.now();
-    final int rotationSeconds = _clampRotationSeconds();
-    final int windowIndex =
-        (now.millisecondsSinceEpoch ~/ 1000) ~/ rotationSeconds;
+    final int windowIndex = _calculateEnin(now);
     if (_lastWindowIndex != windowIndex) {
       _lastWindowIndex = windowIndex;
       _clearAggregation();
       _emitDebug(DebugLevel.info, "mock_rotation_window", <String, Object?>{
         "windowIndex": windowIndex,
-        "rotationSeconds": rotationSeconds,
+        "eninMode": _effectiveEninMode.name,
+        "eninSeconds": _effectiveEninSeconds,
       });
     }
 
@@ -355,7 +360,7 @@ class MockBarnard implements BarnardClient {
     agg.resetAfterEmit(now);
 
     // Capture reporter's own RPID wire form at this observation timestamp.
-    final int enin = calculateEnin(now);
+    final int enin = _calculateEnin(now);
     final Uint8List myRpik = deriveRpik(_currentTek);
     final Uint8List myRpi = generateRpi(myRpik, enin);
     final Uint8List reporterRpid = Uint8List(17);
@@ -456,12 +461,34 @@ class MockBarnard implements BarnardClient {
     if (_disposed) throw StateError("MockBarnard is disposed");
   }
 
-  int _clampRotationSeconds() {
-    final int rotationSeconds =
-        _overrides?.rotationSeconds ?? const RpidConfig().rotationSeconds;
-    return rotationSeconds.clamp(
-      const RpidConfig().minRotationSeconds,
-      const RpidConfig().maxRotationSeconds,
+  EninMode get _effectiveEninMode => _overrides?.rotationSeconds == null
+      ? _config.eninMode
+      : EninMode.fixedLength;
+
+  int get _effectiveEninSeconds {
+    final int seconds = _overrides?.rotationSeconds ?? _config.eninSeconds;
+    return seconds.clamp(12, 3600);
+  }
+
+  int _calculateEnin(DateTime timestamp) {
+    return calculateEnin(
+      timestamp,
+      mode: _effectiveEninMode,
+      eninSeconds: _effectiveEninSeconds,
+      beaconChain: _config.beaconChain,
+    );
+  }
+
+  BarnardState _buildState({
+    required bool isScanning,
+    required bool isAdvertising,
+  }) {
+    return BarnardState(
+      isScanning: isScanning,
+      isAdvertising: isAdvertising,
+      eninMode: _effectiveEninMode,
+      eninSeconds: _effectiveEninSeconds,
+      beaconChain: _config.beaconChain,
     );
   }
 

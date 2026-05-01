@@ -9,6 +9,20 @@
       "type": "string",
       "enum": ["ble", "uwb", "thread", "unknown"]
     },
+    "EninMode": {
+      "type": "string",
+      "enum": ["fixedLength", "beaconSlot"]
+    },
+    "BeaconChainConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chainId": { "type": "string", "minLength": 1 },
+        "genesisUnixSeconds": { "type": "integer", "minimum": 0 },
+        "slotSeconds": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["chainId", "genesisUnixSeconds", "slotSeconds"]
+    },
     "DebugLevel": {
       "type": "string",
       "enum": ["trace", "info", "warn", "error"]

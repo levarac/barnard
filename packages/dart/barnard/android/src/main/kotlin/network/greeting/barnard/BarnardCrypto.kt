@@ -30,6 +30,18 @@ import javax.crypto.spec.SecretKeySpec
  * ```
  */
 object BarnardCrypto {
+    enum class EninMode { FIXED_LENGTH, BEACON_SLOT }
+
+    data class BeaconChainConfig(
+        val chainId: String = "mainnet",
+        val genesisUnixSeconds: Long = 1606824023L,
+        val slotSeconds: Long = 12L,
+    ) {
+        val effectiveGenesisUnixSeconds: Long
+            get() = genesisUnixSeconds.coerceAtLeast(0L)
+        val effectiveSlotSeconds: Long
+            get() = slotSeconds.coerceAtLeast(1L)
+    }
 
     // MARK: - TEK Derivation
 
@@ -118,8 +130,23 @@ object BarnardCrypto {
      *
      * Each ENIN represents a 10-minute interval.
      */
-    fun calculateEnin(timestampMs: Long = System.currentTimeMillis()): UInt {
-        return ((timestampMs / 1000) / 600).toUInt()
+    fun calculateEnin(
+        timestampMs: Long = System.currentTimeMillis(),
+        mode: EninMode = EninMode.FIXED_LENGTH,
+        eninSeconds: Long = 600L,
+        beaconChain: BeaconChainConfig = BeaconChainConfig(),
+    ): UInt {
+        val unixSeconds = timestampMs / 1000
+        return when (mode) {
+            EninMode.FIXED_LENGTH -> {
+                val effectiveSeconds = eninSeconds.coerceIn(12L, 3600L)
+                (unixSeconds / effectiveSeconds).toUInt()
+            }
+            EninMode.BEACON_SLOT -> {
+                val elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds
+                if (elapsed <= 0L) 0U else (elapsed / beaconChain.effectiveSlotSeconds).toUInt()
+            }
+        }
     }
 
     // MARK: - EventCodeHash

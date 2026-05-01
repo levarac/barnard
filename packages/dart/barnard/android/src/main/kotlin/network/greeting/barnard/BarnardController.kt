@@ -87,6 +87,9 @@ internal class BarnardController(
     private var formatVersion: Int = 1
     private var debugOriginalName: String? = null
     private val unavailableRssi: Int = 127
+    private var eninMode: BarnardCrypto.EninMode = BarnardCrypto.EninMode.FIXED_LENGTH
+    private var eninSeconds: Long = 600L
+    private var beaconChain: BarnardCrypto.BeaconChainConfig = BarnardCrypto.BeaconChainConfig()
 
     // MARK: - Event Mode
 
@@ -203,6 +206,9 @@ internal class BarnardController(
                     "supportsGattFallback" to true,
                     "supportsBackground" to false,
                     "supportsHighRateRssi" to false,
+                    "eninMode" to eninModeName(),
+                    "eninSeconds" to eninSeconds,
+                    "beaconChain" to beaconChainMap(),
                 )
             )
 
@@ -210,9 +216,18 @@ internal class BarnardController(
                 mapOf(
                     "isScanning" to isScanning,
                     "isAdvertising" to isAdvertising,
-                    "eventCode" to eventCode
+                    "eventCode" to eventCode,
+                    "eninMode" to eninModeName(),
+                    "eninSeconds" to eninSeconds,
+                    "beaconChain" to beaconChainMap(),
                 )
             )
+
+            "configure" -> {
+                val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
+                configure(args)
+                result.success(null)
+            }
 
             "getCurrentEventCode" -> result.success(eventCode)
 
@@ -220,11 +235,11 @@ internal class BarnardController(
 
             "getCurrentRpi" -> {
                 val rpik = BarnardCrypto.deriveRpik(currentTek)
-                val rpi = BarnardCrypto.generateRpi(rpik, BarnardCrypto.calculateEnin())
+                val rpi = BarnardCrypto.generateRpi(rpik, currentEnin())
                 result.success(rpi.toHex())
             }
 
-            "getCurrentEnin" -> result.success(BarnardCrypto.calculateEnin().toLong())
+            "getCurrentEnin" -> result.success(currentEnin().toLong())
 
             "exportCurrentTek" -> {
                 // Explicit privacy egress. SDK never transmits TEK over BLE.
@@ -341,6 +356,50 @@ internal class BarnardController(
 
     private val isEventMode: Boolean
         get() = eventCode != null
+
+    private fun configure(args: Map<*, *>) {
+        eninMode = when (args["eninMode"] as? String) {
+            "beaconSlot" -> BarnardCrypto.EninMode.BEACON_SLOT
+            else -> BarnardCrypto.EninMode.FIXED_LENGTH
+        }
+        eninSeconds = ((args["eninSeconds"] as? Number)?.toLong() ?: 600L).coerceIn(12L, 3600L)
+
+        val chain = args["beaconChain"] as? Map<*, *>
+        beaconChain = BarnardCrypto.BeaconChainConfig(
+            chainId = chain?.get("chainId") as? String ?: "mainnet",
+            genesisUnixSeconds = (chain?.get("genesisUnixSeconds") as? Number)?.toLong() ?: 1606824023L,
+            slotSeconds = (chain?.get("slotSeconds") as? Number)?.toLong() ?: 12L,
+        )
+
+        knownPeers.clear()
+        emitDebug("info", "configure", mapOf(
+            "eninMode" to eninModeName(),
+            "eninSeconds" to eninSeconds,
+            "beaconChain" to beaconChainMap(),
+        ))
+    }
+
+    private fun currentEnin(timestampMs: Long = System.currentTimeMillis()): UInt {
+        return BarnardCrypto.calculateEnin(
+            timestampMs = timestampMs,
+            mode = eninMode,
+            eninSeconds = eninSeconds,
+            beaconChain = beaconChain,
+        )
+    }
+
+    private fun eninModeName(): String {
+        return when (eninMode) {
+            BarnardCrypto.EninMode.BEACON_SLOT -> "beaconSlot"
+            BarnardCrypto.EninMode.FIXED_LENGTH -> "fixedLength"
+        }
+    }
+
+    private fun beaconChainMap(): Map<String, Any> = mapOf(
+        "chainId" to beaconChain.chainId,
+        "genesisUnixSeconds" to beaconChain.effectiveGenesisUnixSeconds,
+        "slotSeconds" to beaconChain.effectiveSlotSeconds,
+    )
 
     private fun getEventCodeHash(): ByteArray {
         val code = eventCode ?: return ByteArray(0)
@@ -612,7 +671,7 @@ internal class BarnardController(
      * and RPI from the same timestamp.
      */
     private fun computePayload(nowMs: Long): ByteArray {
-        val enin = BarnardCrypto.calculateEnin(nowMs)
+        val enin = currentEnin(nowMs)
         val rpik = BarnardCrypto.deriveRpik(currentTek)
         val rpi = BarnardCrypto.generateRpi(rpik, enin)
 
@@ -631,7 +690,10 @@ internal class BarnardController(
             "state" to mapOf(
                 "isScanning" to isScanning,
                 "isAdvertising" to isAdvertising,
-                "eventCode" to eventCode
+                "eventCode" to eventCode,
+                "eninMode" to eninModeName(),
+                "eninSeconds" to eninSeconds,
+                "beaconChain" to beaconChainMap(),
             ),
             "reasonCode" to reasonCode,
         )
@@ -682,7 +744,7 @@ internal class BarnardController(
 
         // Atomic reporter snapshot at the observation timestamp.
         val reporterPayload = computePayload(timestampMs)
-        val enin = BarnardCrypto.calculateEnin(timestampMs).toLong()
+        val enin = currentEnin(timestampMs).toLong()
 
         val payload = mutableMapOf<String, Any?>(
             "type" to "detection",
@@ -711,7 +773,7 @@ internal class BarnardController(
 
         // Atomic reporter snapshot (same contract as DetectionEvent).
         val reporterPayload = computePayload(timestampMs)
-        val enin = BarnardCrypto.calculateEnin(timestampMs).toLong()
+        val enin = currentEnin(timestampMs).toLong()
 
         val payload = mutableMapOf<String, Any?>(
             "type" to "rssi_update",
@@ -860,7 +922,7 @@ internal class BarnardController(
 
         val knownPeer = knownPeers[address]
         if (knownPeer != null) {
-            val currentEnin = BarnardCrypto.calculateEnin(nowMs).toLong()
+            val currentEnin = currentEnin(nowMs).toLong()
             if (BarnardV2Policy.KnownPeerWindow(knownPeer.enin).matches(currentEnin)) {
                 emitRssiUpdate(address, result.rssi, nowMs)
             } else {
@@ -1255,7 +1317,7 @@ internal class BarnardController(
                 resolutionBackoffUntilMs.remove(address)
 
                 if (rpidData.size == 17) {
-                    val peerEnin = BarnardCrypto.calculateEnin(ts).toLong()
+                    val peerEnin = currentEnin(ts).toLong()
                     knownPeers[address] = KnownPeer(
                         rpidData,
                         peerEnin,
