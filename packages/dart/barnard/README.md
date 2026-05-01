@@ -33,6 +33,23 @@ flutter pub get
 flutter run
 ```
 
+## Local Verification
+
+Run Dart and Flutter tests:
+
+```bash
+flutter pub get
+flutter test
+```
+
+Run the Android plugin unit tests, including `android/src/test/kotlin`:
+
+```bash
+cd android
+flutter precache --android
+./gradlew testDebugUnitTest
+```
+
 ## Requirements
 
 - Flutter 3.41.0 or newer

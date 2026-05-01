@@ -20,6 +20,11 @@ jobs:
           flutter pub get
           flutter analyze
           flutter test
+      - name: Flutter plugin Android unit tests
+        working-directory: packages/dart/barnard/android
+        run: |
+          flutter precache --android
+          ./gradlew testDebugUnitTest
       - name: Flutter example (analyze)
         working-directory: examples/flutter/barnard_poc
         run: |

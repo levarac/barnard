@@ -13,7 +13,7 @@ It focuses on **Scan/Advertise** and delivering a stable event model (main + deb
 - `examples/`
   - `examples/dart/barnard_demo/` — demo using the mock implementation
   - `examples/flutter/barnard_poc/` — Flutter PoC app (real BLE via GATT-first RPID read)
-- `.github/workflows/` — CI (Flutter analyze/test + demos)
+- `.github/workflows/` — CI (Flutter analyze/test, Android plugin unit tests, and demos)
 
 ## Dart (Flutter) quick start
 
@@ -22,6 +22,14 @@ From `packages/dart/barnard`:
 ```bash
 flutter pub get
 flutter test
+```
+
+Run the Flutter plugin Android unit tests:
+
+```bash
+cd packages/dart/barnard/android
+flutter precache --android
+./gradlew testDebugUnitTest
 ```
 
 Run the demo:
