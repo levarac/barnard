@@ -99,8 +99,7 @@ final class BarnardBleController: NSObject {
   private var knownPeers: [UUID: KnownPeer] = [:]
 
   private func shouldServeGattDisplayId() -> Bool {
-    guard let eventCode = rpid.eventCode else { return false }
-    return !eventCode.isEmpty
+    BarnardV2Policy.shouldServeGattDisplayId(eventCode: rpid.eventCode)
   }
 
   /// Event callback. `eventName` is one of: BarnardDetection, BarnardState,
@@ -833,7 +832,7 @@ extension BarnardBleController: CBCentralManagerDelegate {
 
     if let knownPeer = knownPeers[peripheral.identifier] {
       let currentEnin = BarnardCrypto.calculateEnin(for: now)
-      if knownPeer.enin == currentEnin {
+      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEnin) {
         emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
       } else {
         knownPeers.removeValue(forKey: peripheral.identifier)
@@ -842,6 +841,9 @@ extension BarnardBleController: CBCentralManagerDelegate {
           "cachedEnin": Int(knownPeer.enin),
           "currentEnin": Int(currentEnin),
         ])
+        // Force a fresh resolution. enqueueConnect dedups against in-flight /
+        // queued connects, so following advertisements on the same identifier
+        // remain safe.
         enqueueConnect(peripheral)
       }
     } else if isResolutionBackedOff(peripheral.identifier, now: now) {

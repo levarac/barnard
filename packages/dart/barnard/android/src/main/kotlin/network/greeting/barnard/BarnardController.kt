@@ -870,6 +870,9 @@ internal class BarnardController(
                     "cachedEnin" to knownPeer.enin,
                     "currentEnin" to currentEnin,
                 ))
+                // Force a fresh resolution. enqueueConnect dedups against in-flight /
+                // queued connects, so following advertisements on the same address
+                // remain safe.
                 enqueueConnect(device)
             }
         } else if (isResolutionBackedOff(address, nowMs)) {
