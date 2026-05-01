@@ -64,9 +64,16 @@
           "additionalProperties": false,
           "properties": {
             "isScanning": { "type": "boolean" },
-            "isAdvertising": { "type": "boolean" }
+            "isAdvertising": { "type": "boolean" },
+            "eninMode": { "$ref": "common.schema.json#/$defs/EninMode" },
+            "eninSeconds": {
+              "type": "integer",
+              "minimum": 12,
+              "maximum": 3600
+            },
+            "beaconChain": { "$ref": "common.schema.json#/$defs/BeaconChainConfig" }
           },
-          "required": ["isScanning", "isAdvertising"]
+          "required": ["isScanning", "isAdvertising", "eninMode", "eninSeconds", "beaconChain"]
         },
         "reasonCode": { "type": ["string", "null"] }
       },

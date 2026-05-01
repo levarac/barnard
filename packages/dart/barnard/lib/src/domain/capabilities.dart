@@ -1,3 +1,4 @@
+import "config.dart";
 import "transport.dart";
 
 class BarnardCapabilities {
@@ -7,6 +8,9 @@ class BarnardCapabilities {
     required this.supportsGattFallback,
     required this.supportsBackground,
     required this.supportsHighRateRssi,
+    this.eninMode = EninMode.fixedLength,
+    this.eninSeconds = 600,
+    this.beaconChain = BeaconChainConfig.ethereumMainnet,
   });
 
   final Set<TransportKind> supportedTransports;
@@ -22,4 +26,13 @@ class BarnardCapabilities {
 
   /// Whether this implementation can produce high-rate RSSI observations.
   final bool supportsHighRateRssi;
+
+  /// ENIN mode currently used by this implementation.
+  final EninMode eninMode;
+
+  /// Effective fixed-length ENIN window when [eninMode] is [EninMode.fixedLength].
+  final int eninSeconds;
+
+  /// Beacon Chain timing parameters when [eninMode] is [EninMode.beaconSlot].
+  final BeaconChainConfig beaconChain;
 }

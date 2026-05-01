@@ -103,8 +103,19 @@ final class BarnardRpidGenerator {
   ///   - formatVersion: Protocol version byte (default: 1)
   ///   - now: Current timestamp (default: now)
   /// - Returns: 17 bytes: [formatVersion(1) + RPI(16)]
-  func currentPayload(formatVersion: UInt8 = 1, now: Date = Date()) -> Data {
-    let enin = BarnardCrypto.calculateEnin(for: now)
+  func currentPayload(
+    formatVersion: UInt8 = 1,
+    now: Date = Date(),
+    eninMode: BarnardCrypto.EninMode = .fixedLength,
+    eninSeconds: Int = 600,
+    beaconChain: BarnardCrypto.BeaconChainConfig = .ethereumMainnet
+  ) -> Data {
+    let enin = BarnardCrypto.calculateEnin(
+      for: now,
+      mode: eninMode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
     let rpik = BarnardCrypto.deriveRpik(from: currentTek)
     let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: enin)
 

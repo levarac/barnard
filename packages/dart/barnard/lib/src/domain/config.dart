@@ -5,6 +5,9 @@ class BarnardConfig {
   const BarnardConfig({
     this.transport = TransportKind.ble,
     this.eventCode,
+    this.eninMode = EninMode.fixedLength,
+    this.eninSeconds = 600,
+    this.beaconChain = BeaconChainConfig.ethereumMainnet,
     this.tekStorage = const TekStorageConfig(),
     this.rpid = const RpidConfig(),
     this.rssi = const RssiConfig(),
@@ -25,12 +28,59 @@ class BarnardConfig {
   /// - Peers can be identified and tracked within the event scope
   final String? eventCode;
 
+  /// ENIN derivation mode. Defaults to GAEN-compatible fixed-length windows.
+  final EninMode eninMode;
+
+  /// Fixed-length ENIN window in seconds. Effective value is clamped to 12..3600.
+  final int eninSeconds;
+
+  /// Beacon Chain timing parameters used when [eninMode] is [EninMode.beaconSlot].
+  final BeaconChainConfig beaconChain;
+
   /// Configuration for TEK storage.
   final TekStorageConfig tekStorage;
 
   final RpidConfig rpid;
   final RssiConfig rssi;
   final ConnectConfig connect;
+
+  int get effectiveEninSeconds => eninSeconds.clamp(12, 3600);
+}
+
+enum EninMode { fixedLength, beaconSlot }
+
+class BeaconChainConfig {
+  const BeaconChainConfig({
+    required this.chainId,
+    required this.genesisUnixSeconds,
+    required this.slotSeconds,
+  });
+
+  static const ethereumMainnet = BeaconChainConfig(
+    chainId: "mainnet",
+    genesisUnixSeconds: 1606824023,
+    slotSeconds: 12,
+  );
+
+  final String chainId;
+  final int genesisUnixSeconds;
+  final int slotSeconds;
+
+  int get effectiveGenesisUnixSeconds =>
+      genesisUnixSeconds < 0 ? 0 : genesisUnixSeconds;
+
+  int get effectiveSlotSeconds => slotSeconds < 1 ? 1 : slotSeconds;
+
+  @override
+  bool operator ==(Object other) {
+    return other is BeaconChainConfig &&
+        other.chainId == chainId &&
+        other.genesisUnixSeconds == genesisUnixSeconds &&
+        other.slotSeconds == slotSeconds;
+  }
+
+  @override
+  int get hashCode => Object.hash(chainId, genesisUnixSeconds, slotSeconds);
 }
 
 class ScanConfig {

@@ -75,6 +75,9 @@ internal class BarnardController(
     private var allowDuplicates: Boolean = true
     private var formatVersion: Int = 1
     private var debugOriginalName: String? = null
+    private var eninMode: BarnardCrypto.EninMode = BarnardCrypto.EninMode.FIXED_LENGTH
+    private var eninSeconds: Long = 600L
+    private var beaconChain: BarnardCrypto.BeaconChainConfig = BarnardCrypto.BeaconChainConfig()
 
     // MARK: - Event Mode
 
@@ -186,6 +189,9 @@ internal class BarnardController(
                     "supportsGattFallback" to true,
                     "supportsBackground" to false,
                     "supportsHighRateRssi" to false,
+                    "eninMode" to eninModeName(),
+                    "eninSeconds" to eninSeconds,
+                    "beaconChain" to beaconChainMap(),
                 )
             )
 
@@ -194,9 +200,18 @@ internal class BarnardController(
                     "isScanning" to isScanning,
                     "isAdvertising" to isAdvertising,
                     "eventMode" to if (eventCode != null) "event" else "anonymous",
-                    "eventCode" to eventCode
+                    "eventCode" to eventCode,
+                    "eninMode" to eninModeName(),
+                    "eninSeconds" to eninSeconds,
+                    "beaconChain" to beaconChainMap(),
                 )
             )
+
+            "configure" -> {
+                val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
+                configure(args)
+                result.success(null)
+            }
 
             "getEventMode" -> result.success(
                 mapOf(
@@ -352,6 +367,50 @@ internal class BarnardController(
 
     private val isEventMode: Boolean
         get() = eventCode != null
+
+    private fun configure(args: Map<*, *>) {
+        eninMode = when (args["eninMode"] as? String) {
+            "beaconSlot" -> BarnardCrypto.EninMode.BEACON_SLOT
+            else -> BarnardCrypto.EninMode.FIXED_LENGTH
+        }
+        eninSeconds = ((args["eninSeconds"] as? Number)?.toLong() ?: 600L).coerceIn(12L, 3600L)
+
+        val chain = args["beaconChain"] as? Map<*, *>
+        beaconChain = BarnardCrypto.BeaconChainConfig(
+            chainId = chain?.get("chainId") as? String ?: "mainnet",
+            genesisUnixSeconds = (chain?.get("genesisUnixSeconds") as? Number)?.toLong() ?: 1606824023L,
+            slotSeconds = (chain?.get("slotSeconds") as? Number)?.toLong() ?: 12L,
+        )
+
+        knownPeers.clear()
+        emitDebug("info", "configure", mapOf(
+            "eninMode" to eninModeName(),
+            "eninSeconds" to eninSeconds,
+            "beaconChain" to beaconChainMap(),
+        ))
+    }
+
+    private fun currentEnin(timestampMs: Long = System.currentTimeMillis()): UInt {
+        return BarnardCrypto.calculateEnin(
+            timestampMs = timestampMs,
+            mode = eninMode,
+            eninSeconds = eninSeconds,
+            beaconChain = beaconChain,
+        )
+    }
+
+    private fun eninModeName(): String {
+        return when (eninMode) {
+            BarnardCrypto.EninMode.BEACON_SLOT -> "beaconSlot"
+            BarnardCrypto.EninMode.FIXED_LENGTH -> "fixedLength"
+        }
+    }
+
+    private fun beaconChainMap(): Map<String, Any> = mapOf(
+        "chainId" to beaconChain.chainId,
+        "genesisUnixSeconds" to beaconChain.effectiveGenesisUnixSeconds,
+        "slotSeconds" to beaconChain.effectiveSlotSeconds,
+    )
 
     private fun getEventCodeHash(): ByteArray {
         val code = eventCode ?: return ByteArray(0)
@@ -613,7 +672,7 @@ internal class BarnardController(
     // MARK: - RPID Payload Generation
 
     private fun computePayload(nowMs: Long): ByteArray {
-        val enin = BarnardCrypto.calculateEnin(nowMs)
+        val enin = currentEnin(nowMs)
         val rpik = BarnardCrypto.deriveRpik(currentTek)
         val rpi = BarnardCrypto.generateRpi(rpik, enin)
 
@@ -633,7 +692,10 @@ internal class BarnardController(
                 "isScanning" to isScanning,
                 "isAdvertising" to isAdvertising,
                 "eventMode" to if (isEventMode) "event" else "anonymous",
-                "eventCode" to eventCode
+                "eventCode" to eventCode,
+                "eninMode" to eninModeName(),
+                "eninSeconds" to eninSeconds,
+                "beaconChain" to beaconChainMap(),
             ),
             "reasonCode" to reasonCode,
         )
@@ -690,7 +752,13 @@ internal class BarnardController(
             val eventCodeHash = getEventCodeHash()
             val knownTeks = tekStorage.getTeks(eventCodeHash)
 
-            resolvedTekToEmit = BarnardCrypto.resolveRpi(rpid, knownTeks)
+            resolvedTekToEmit = BarnardCrypto.resolveRpi(
+                rpi = rpid,
+                knownTeks = knownTeks,
+                mode = eninMode,
+                eninSeconds = eninSeconds,
+                beaconChain = beaconChain,
+            )
             if (resolvedTekToEmit != null) {
                 // Update lastSeenAt
                 tekStorage.updateLastSeen(resolvedTekToEmit, eventCodeHash)

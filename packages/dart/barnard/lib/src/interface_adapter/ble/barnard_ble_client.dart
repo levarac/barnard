@@ -18,11 +18,11 @@ class BarnardBleClient implements BarnardClient {
     required EventMode initialMode,
     String? initialEventCode,
     String? initialMyResolvedDisplayId,
-  })  : _capabilities = capabilities,
-        _state = initialState,
-        _currentMode = initialMode,
-        _currentEventCode = initialEventCode,
-        _myResolvedDisplayId = initialMyResolvedDisplayId;
+  }) : _capabilities = capabilities,
+       _state = initialState,
+       _currentMode = initialMode,
+       _currentEventCode = initialEventCode,
+       _myResolvedDisplayId = initialMyResolvedDisplayId;
 
   static const MethodChannel _methods = MethodChannel("barnard/methods");
   static const EventChannel _eventsChannel = EventChannel("barnard/events");
@@ -51,19 +51,28 @@ class BarnardBleClient implements BarnardClient {
   String? _myResolvedDisplayId;
   bool _disposed = false;
 
-  static Future<BarnardBleClient> create() async {
+  static Future<BarnardBleClient> create({
+    BarnardConfig config = const BarnardConfig(),
+  }) async {
+    await _methods.invokeMethod<void>(
+      "configure",
+      _encodeBarnardConfig(config),
+    );
+
     final Map<Object?, Object?> capsMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>(
-              "getCapabilities",
-            )) ??
-            <Object?, Object?>{};
+          "getCapabilities",
+        )) ??
+        <Object?, Object?>{};
     final Map<Object?, Object?> stateMap =
         (await _methods.invokeMethod<Map<Object?, Object?>>("getState")) ??
-            <Object?, Object?>{};
+        <Object?, Object?>{};
     Map<Object?, Object?> modeMap;
     try {
-      modeMap = (await _methods
-              .invokeMethod<Map<Object?, Object?>>("getEventMode")) ??
+      modeMap =
+          (await _methods.invokeMethod<Map<Object?, Object?>>(
+            "getEventMode",
+          )) ??
           <Object?, Object?>{};
     } on MissingPluginException {
       modeMap = <Object?, Object?>{};
@@ -72,8 +81,9 @@ class BarnardBleClient implements BarnardClient {
     }
 
     final String? modeStr = modeMap["mode"] as String?;
-    final EventMode initialMode =
-        modeStr == "event" ? EventMode.event : EventMode.anonymous;
+    final EventMode initialMode = modeStr == "event"
+        ? EventMode.event
+        : EventMode.anonymous;
     final String? eventCode = modeMap["eventCode"] as String?;
 
     // Fetch own resolved display ID
@@ -176,11 +186,11 @@ class BarnardBleClient implements BarnardClient {
   @override
   Future<BarnardStartResult> startAuto([AutoConfig? config]) async {
     _ensureNotDisposed();
-    final Map<Object?, Object?>? out =
-        await _methods.invokeMethod<Map<Object?, Object?>>(
-      "startAuto",
-      _encodeAutoConfig(config),
-    );
+    final Map<Object?, Object?>? out = await _methods
+        .invokeMethod<Map<Object?, Object?>>(
+          "startAuto",
+          _encodeAutoConfig(config),
+        );
     if (out == null) {
       return const BarnardStartResult(
         scanningStarted: false,
@@ -278,8 +288,9 @@ class BarnardBleClient implements BarnardClient {
     int? limit,
     List<int>? rpidBytes,
   }) {
-    final Uint8List? filterRpid =
-        rpidBytes == null ? null : Uint8List.fromList(rpidBytes);
+    final Uint8List? filterRpid = rpidBytes == null
+        ? null
+        : Uint8List.fromList(rpidBytes);
     Iterable<RssiSample> samples = _rssiBuffer.toList();
     if (since != null) {
       samples = samples.where((RssiSample s) => !s.timestamp.isBefore(since));
@@ -313,10 +324,10 @@ class BarnardBleClient implements BarnardClient {
 }
 
 Map<String, Object?> _encodeScanConfig(ScanConfig? config) => <String, Object?>{
-      "transport": (config?.transport ?? TransportKind.ble).name,
-      "allowDuplicates":
-          config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
-    };
+  "transport": (config?.transport ?? TransportKind.ble).name,
+  "allowDuplicates":
+      config?.allowDuplicates ?? const ScanConfig().allowDuplicates,
+};
 
 Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     <String, Object?>{
@@ -326,8 +337,21 @@ Map<String, Object?> _encodeAdvertiseConfig(AdvertiseConfig? config) =>
     };
 
 Map<String, Object?> _encodeAutoConfig(AutoConfig? config) => <String, Object?>{
-      "scan": _encodeScanConfig(config?.scan),
-      "advertise": _encodeAdvertiseConfig(config?.advertise),
+  "scan": _encodeScanConfig(config?.scan),
+  "advertise": _encodeAdvertiseConfig(config?.advertise),
+};
+
+Map<String, Object?> _encodeBarnardConfig(BarnardConfig config) =>
+    <String, Object?>{
+      "transport": config.transport.name,
+      "eventCode": config.eventCode,
+      "eninMode": config.eninMode.name,
+      "eninSeconds": config.effectiveEninSeconds,
+      "beaconChain": <String, Object?>{
+        "chainId": config.beaconChain.chainId,
+        "genesisUnixSeconds": config.beaconChain.effectiveGenesisUnixSeconds,
+        "slotSeconds": config.beaconChain.effectiveSlotSeconds,
+      },
     };
 
 BarnardStartResult _parseStartResult(Map<Object?, Object?> map) {
@@ -377,13 +401,45 @@ BarnardCapabilities _parseCapabilities(Map<Object?, Object?> map) {
     supportsGattFallback: map["supportsGattFallback"] == true,
     supportsBackground: map["supportsBackground"] == true,
     supportsHighRateRssi: map["supportsHighRateRssi"] == true,
+    eninMode: _parseEninMode(map["eninMode"]),
+    eninSeconds: ((map["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+    beaconChain: _parseBeaconChain(map["beaconChain"]),
   );
 }
 
 BarnardState _parseState(Map<Object?, Object?> map) {
   final bool isScanning = map["isScanning"] == true;
   final bool isAdvertising = map["isAdvertising"] == true;
-  return BarnardState(isScanning: isScanning, isAdvertising: isAdvertising);
+  return BarnardState(
+    isScanning: isScanning,
+    isAdvertising: isAdvertising,
+    eninMode: _parseEninMode(map["eninMode"]),
+    eninSeconds: ((map["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+    beaconChain: _parseBeaconChain(map["beaconChain"]),
+  );
+}
+
+EninMode _parseEninMode(Object? value) {
+  if (value == "beaconSlot") return EninMode.beaconSlot;
+  return EninMode.fixedLength;
+}
+
+BeaconChainConfig _parseBeaconChain(Object? value) {
+  if (value is! Map) return BeaconChainConfig.ethereumMainnet;
+  final String chainId =
+      (value["chainId"] as String?) ??
+      BeaconChainConfig.ethereumMainnet.chainId;
+  final int genesisUnixSeconds =
+      (value["genesisUnixSeconds"] as int?) ??
+      BeaconChainConfig.ethereumMainnet.genesisUnixSeconds;
+  final int slotSeconds =
+      (value["slotSeconds"] as int?) ??
+      BeaconChainConfig.ethereumMainnet.slotSeconds;
+  return BeaconChainConfig(
+    chainId: chainId,
+    genesisUnixSeconds: genesisUnixSeconds,
+    slotSeconds: slotSeconds,
+  );
 }
 
 BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
@@ -399,6 +455,9 @@ BarnardEvent _parseBarnardEvent(Map<Object?, Object?> map) {
         state: BarnardState(
           isScanning: state["isScanning"] == true,
           isAdvertising: state["isAdvertising"] == true,
+          eninMode: _parseEninMode(state["eninMode"]),
+          eninSeconds: ((state["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+          beaconChain: _parseBeaconChain(state["beaconChain"]),
         ),
         reasonCode: map["reasonCode"] as String?,
       );
@@ -492,8 +551,9 @@ BarnardDebugEvent _parseDebugEvent(Map<Object?, Object?> map) {
     _ => DebugLevel.info,
   };
   final String name = (map["name"] as String?) ?? "debug";
-  final Map<Object?, Object?>? rawData =
-      map["data"] is Map ? map["data"] as Map<Object?, Object?> : null;
+  final Map<Object?, Object?>? rawData = map["data"] is Map
+      ? map["data"] as Map<Object?, Object?>
+      : null;
   final Map<String, Object?>? data = rawData?.map(
     (k, v) => MapEntry(k.toString(), v),
   );

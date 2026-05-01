@@ -13,14 +13,23 @@
     "supportsConnectionlessRpid": { "type": "boolean" },
     "supportsGattFallback": { "type": "boolean" },
     "supportsBackground": { "type": "boolean" },
-    "supportsHighRateRssi": { "type": "boolean" }
+    "supportsHighRateRssi": { "type": "boolean" },
+    "eninMode": { "$ref": "common.schema.json#/$defs/EninMode" },
+    "eninSeconds": {
+      "type": "integer",
+      "minimum": 12,
+      "maximum": 3600
+    },
+    "beaconChain": { "$ref": "common.schema.json#/$defs/BeaconChainConfig" }
   },
   "required": [
     "supportedTransports",
     "supportsConnectionlessRpid",
     "supportsGattFallback",
     "supportsBackground",
-    "supportsHighRateRssi"
+    "supportsHighRateRssi",
+    "eninMode",
+    "eninSeconds",
+    "beaconChain"
   ]
 }
-

@@ -6,11 +6,20 @@
   "additionalProperties": false,
   "properties": {
     "transport": { "$ref": "common.schema.json#/$defs/TransportKind" },
+    "eventCode": { "type": ["string", "null"] },
+    "eninMode": { "$ref": "common.schema.json#/$defs/EninMode" },
+    "eninSeconds": {
+      "type": "integer",
+      "minimum": 12,
+      "maximum": 3600,
+      "description": "Fixed-length ENIN window in seconds when eninMode is fixedLength. Default is 600."
+    },
+    "beaconChain": { "$ref": "common.schema.json#/$defs/BeaconChainConfig" },
     "rpid": { "$ref": "#/$defs/RpidConfig" },
     "rssi": { "$ref": "#/$defs/RssiConfig" },
     "connect": { "$ref": "#/$defs/ConnectConfig" }
   },
-  "required": ["transport", "rpid", "rssi", "connect"],
+  "required": ["transport", "eninMode", "eninSeconds", "beaconChain", "rpid", "rssi", "connect"],
   "$defs": {
     "RpidConfig": {
       "type": "object",
@@ -52,4 +61,3 @@
     }
   }
 }
-

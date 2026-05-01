@@ -28,6 +28,8 @@ import 'dart:typed_data';
 
 import 'package:pointycastle/export.dart';
 
+import 'config.dart';
+
 /// HKDF-SHA256 key derivation function (RFC 5869).
 ///
 /// - [ikm]: Input keying material
@@ -167,11 +169,26 @@ Uint8List generateRpi(Uint8List rpik, int enin) {
 
 /// Calculate ENIN (EN Interval Number) for a given timestamp.
 ///
-/// `ENIN = floor(unix_timestamp_seconds / 600)`
+/// Defaults to GAEN-compatible `floor(unix_timestamp_seconds / 600)`.
 ///
-/// Each ENIN represents a 10-minute interval.
-int calculateEnin(DateTime timestamp) {
-  return timestamp.millisecondsSinceEpoch ~/ 1000 ~/ 600;
+/// With [EninMode.beaconSlot], the returned ENIN is the Beacon Chain slot
+/// number for [beaconChain].
+int calculateEnin(
+  DateTime timestamp, {
+  EninMode mode = EninMode.fixedLength,
+  int eninSeconds = 600,
+  BeaconChainConfig beaconChain = BeaconChainConfig.ethereumMainnet,
+}) {
+  final int unixSeconds = timestamp.millisecondsSinceEpoch ~/ 1000;
+  switch (mode) {
+    case EninMode.fixedLength:
+      final int effectiveSeconds = eninSeconds.clamp(12, 3600);
+      return unixSeconds ~/ effectiveSeconds;
+    case EninMode.beaconSlot:
+      final int elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds;
+      if (elapsed <= 0) return 0;
+      return elapsed ~/ beaconChain.effectiveSlotSeconds;
+  }
 }
 
 /// Calculate EventCodeHash from EventCode.
@@ -203,6 +220,7 @@ Uint8List? resolveRpi({
     // Search window: 6 intervals past + current + 1 future
     for (var offset = -6; offset <= 1; offset++) {
       final enin = currentEnin + offset;
+      if (enin < 0) continue;
       final candidate = generateRpi(rpik, enin);
 
       if (_bytesEqual(candidate, rpi)) {
@@ -278,8 +296,17 @@ abstract class BarnardCrypto {
   }
 
   /// Calculate current ENIN.
-  static int currentEnin() {
-    return calculateEnin(DateTime.now());
+  static int currentEnin({
+    EninMode mode = EninMode.fixedLength,
+    int eninSeconds = 600,
+    BeaconChainConfig beaconChain = BeaconChainConfig.ethereumMainnet,
+  }) {
+    return calculateEnin(
+      DateTime.now(),
+      mode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain,
+    );
   }
 
   /// Attempt to resolve an RPI to a known TEK.

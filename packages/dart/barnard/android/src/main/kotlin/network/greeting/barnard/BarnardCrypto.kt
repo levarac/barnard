@@ -30,6 +30,18 @@ import javax.crypto.spec.SecretKeySpec
  * ```
  */
 object BarnardCrypto {
+    enum class EninMode { FIXED_LENGTH, BEACON_SLOT }
+
+    data class BeaconChainConfig(
+        val chainId: String = "mainnet",
+        val genesisUnixSeconds: Long = 1606824023L,
+        val slotSeconds: Long = 12L,
+    ) {
+        val effectiveGenesisUnixSeconds: Long
+            get() = genesisUnixSeconds.coerceAtLeast(0L)
+        val effectiveSlotSeconds: Long
+            get() = slotSeconds.coerceAtLeast(1L)
+    }
 
     // MARK: - TEK Derivation
 
@@ -118,8 +130,23 @@ object BarnardCrypto {
      *
      * Each ENIN represents a 10-minute interval.
      */
-    fun calculateEnin(timestampMs: Long = System.currentTimeMillis()): UInt {
-        return ((timestampMs / 1000) / 600).toUInt()
+    fun calculateEnin(
+        timestampMs: Long = System.currentTimeMillis(),
+        mode: EninMode = EninMode.FIXED_LENGTH,
+        eninSeconds: Long = 600L,
+        beaconChain: BeaconChainConfig = BeaconChainConfig(),
+    ): UInt {
+        val unixSeconds = timestampMs / 1000
+        return when (mode) {
+            EninMode.FIXED_LENGTH -> {
+                val effectiveSeconds = eninSeconds.coerceIn(12L, 3600L)
+                (unixSeconds / effectiveSeconds).toUInt()
+            }
+            EninMode.BEACON_SLOT -> {
+                val elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds
+                if (elapsed <= 0L) 0U else (elapsed / beaconChain.effectiveSlotSeconds).toUInt()
+            }
+        }
     }
 
     // MARK: - EventCodeHash
@@ -148,10 +175,21 @@ object BarnardCrypto {
      * @param currentEnin Current ENIN (defaults to now)
      * @return The matching TEK if found, null otherwise
      */
-    fun resolveRpi(rpi: ByteArray, knownTeks: List<ByteArray>, currentEnin: UInt? = null): ByteArray? {
+    fun resolveRpi(
+        rpi: ByteArray,
+        knownTeks: List<ByteArray>,
+        currentEnin: UInt? = null,
+        mode: EninMode = EninMode.FIXED_LENGTH,
+        eninSeconds: Long = 600L,
+        beaconChain: BeaconChainConfig = BeaconChainConfig(),
+    ): ByteArray? {
         if (rpi.size != 16) return null
 
-        val enin = currentEnin ?: calculateEnin()
+        val enin = currentEnin ?: calculateEnin(
+            mode = mode,
+            eninSeconds = eninSeconds,
+            beaconChain = beaconChain,
+        )
 
         for (tek in knownTeks) {
             if (tek.size != 16) continue
@@ -160,7 +198,9 @@ object BarnardCrypto {
 
             // Search window: 6 intervals past + current + 1 future
             for (offset in -6..1) {
-                val testEnin = (enin.toInt() + offset).toUInt()
+                val testEninInt = enin.toInt() + offset
+                if (testEninInt < 0) continue
+                val testEnin = testEninInt.toUInt()
                 val candidate = generateRpi(rpik, testEnin)
 
                 if (candidate.contentEquals(rpi)) {

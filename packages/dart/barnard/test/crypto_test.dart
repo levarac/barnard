@@ -83,17 +83,21 @@ void main() {
       expect(tek1, isNot(equals(tek2)));
     });
 
-    test("deriveTek produces different output for different device secrets",
-        () {
-      final deviceSecret1 = Uint8List.fromList(List.generate(32, (i) => i));
-      final deviceSecret2 = Uint8List.fromList(List.generate(32, (i) => i + 1));
-      const eventCode = "TECH2026";
+    test(
+      "deriveTek produces different output for different device secrets",
+      () {
+        final deviceSecret1 = Uint8List.fromList(List.generate(32, (i) => i));
+        final deviceSecret2 = Uint8List.fromList(
+          List.generate(32, (i) => i + 1),
+        );
+        const eventCode = "TECH2026";
 
-      final tek1 = deriveTek(deviceSecret1, eventCode);
-      final tek2 = deriveTek(deviceSecret2, eventCode);
+        final tek1 = deriveTek(deviceSecret1, eventCode);
+        final tek2 = deriveTek(deviceSecret2, eventCode);
 
-      expect(tek1, isNot(equals(tek2)));
-    });
+        expect(tek1, isNot(equals(tek2)));
+      },
+    );
   });
 
   group("RPIK derivation", () {
@@ -173,8 +177,10 @@ void main() {
   group("ENIN calculation", () {
     test("calculateEnin returns correct value", () {
       // UNIX timestamp 1736947200 = 2026-01-15 12:00:00 UTC
-      final timestamp =
-          DateTime.fromMillisecondsSinceEpoch(1736947200 * 1000, isUtc: true);
+      final timestamp = DateTime.fromMillisecondsSinceEpoch(
+        1736947200 * 1000,
+        isUtc: true,
+      );
 
       final enin = calculateEnin(timestamp);
 
@@ -183,11 +189,14 @@ void main() {
     });
 
     test("calculateEnin changes every 10 minutes", () {
-      final timestamp1 =
-          DateTime.fromMillisecondsSinceEpoch(1736947200 * 1000, isUtc: true);
+      final timestamp1 = DateTime.fromMillisecondsSinceEpoch(
+        1736947200 * 1000,
+        isUtc: true,
+      );
       final timestamp2 = DateTime.fromMillisecondsSinceEpoch(
-          (1736947200 + 600) * 1000,
-          isUtc: true);
+        (1736947200 + 600) * 1000,
+        isUtc: true,
+      );
 
       final enin1 = calculateEnin(timestamp1);
       final enin2 = calculateEnin(timestamp2);
@@ -196,16 +205,87 @@ void main() {
     });
 
     test("calculateEnin is stable within 10-minute window", () {
-      final timestamp1 =
-          DateTime.fromMillisecondsSinceEpoch(1736947200 * 1000, isUtc: true);
+      final timestamp1 = DateTime.fromMillisecondsSinceEpoch(
+        1736947200 * 1000,
+        isUtc: true,
+      );
       final timestamp2 = DateTime.fromMillisecondsSinceEpoch(
-          (1736947200 + 599) * 1000,
-          isUtc: true);
+        (1736947200 + 599) * 1000,
+        isUtc: true,
+      );
 
       final enin1 = calculateEnin(timestamp1);
       final enin2 = calculateEnin(timestamp2);
 
       expect(enin1, equals(enin2));
+    });
+
+    test("calculateEnin supports fixed-length windows", () {
+      final timestamp = DateTime.fromMillisecondsSinceEpoch(
+        1736947224 * 1000,
+        isUtc: true,
+      );
+
+      final enin = calculateEnin(
+        timestamp,
+        mode: EninMode.fixedLength,
+        eninSeconds: 12,
+      );
+
+      expect(enin, equals(144745602));
+    });
+
+    test("calculateEnin clamps fixed-length windows to safe bounds", () {
+      final timestamp = DateTime.fromMillisecondsSinceEpoch(
+        3600 * 1000,
+        isUtc: true,
+      );
+
+      expect(calculateEnin(timestamp, eninSeconds: 1), equals(300));
+      expect(calculateEnin(timestamp, eninSeconds: 7200), equals(1));
+    });
+
+    test("calculateEnin supports Beacon Chain slot identity", () {
+      final timestamp = DateTime.fromMillisecondsSinceEpoch(
+        (BeaconChainConfig.ethereumMainnet.genesisUnixSeconds + 24) * 1000,
+        isUtc: true,
+      );
+
+      final enin = calculateEnin(
+        timestamp,
+        mode: EninMode.beaconSlot,
+        beaconChain: BeaconChainConfig.ethereumMainnet,
+      );
+
+      expect(enin, equals(2));
+    });
+
+    test(
+      "calculateEnin clamps pre-genesis Beacon Chain timestamps to zero",
+      () {
+        final timestamp = DateTime.fromMillisecondsSinceEpoch(
+          (BeaconChainConfig.ethereumMainnet.genesisUnixSeconds - 1) * 1000,
+          isUtc: true,
+        );
+
+        final enin = calculateEnin(
+          timestamp,
+          mode: EninMode.beaconSlot,
+          beaconChain: BeaconChainConfig.ethereumMainnet,
+        );
+
+        expect(enin, equals(0));
+      },
+    );
+
+    test("resolveRpi skips negative ENIN candidates near zero", () {
+      final rpi = Uint8List.fromList(List.generate(16, (i) => i));
+      final tek = Uint8List.fromList(List.generate(16, (i) => i + 1));
+
+      expect(
+        () => resolveRpi(rpi: rpi, knownTeks: <Uint8List>[tek], currentEnin: 0),
+        returnsNormally,
+      );
     });
   });
 
@@ -227,16 +307,18 @@ void main() {
       expect(hash1, equals(hash2));
     });
 
-    test("calculateEventCodeHash produces different output for different codes",
-        () {
-      const eventCode1 = "EVENT_A";
-      const eventCode2 = "EVENT_B";
+    test(
+      "calculateEventCodeHash produces different output for different codes",
+      () {
+        const eventCode1 = "EVENT_A";
+        const eventCode2 = "EVENT_B";
 
-      final hash1 = calculateEventCodeHash(eventCode1);
-      final hash2 = calculateEventCodeHash(eventCode2);
+        final hash1 = calculateEventCodeHash(eventCode1);
+        final hash2 = calculateEventCodeHash(eventCode2);
 
-      expect(hash1, isNot(equals(hash2)));
-    });
+        expect(hash1, isNot(equals(hash2)));
+      },
+    );
   });
 
   group("RPI resolution", () {

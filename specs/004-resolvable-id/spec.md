@@ -42,8 +42,8 @@ Key constraint: **No global device uniqueness** - identity must be scoped to a s
 | **Event Code** | User-input string (e.g., "TECH2026") shared among event participants |
 | **TEK** | Temporary Exposure Key (16 bytes), derived from DeviceSecret + Event Code |
 | **RPIK** | RPI Key (16 bytes), derived from TEK |
-| **RPI** | Rolling Proximity Identifier (16 bytes), rotates every 10-15 minutes |
-| **ENIN** | EN Interval Number = floor(unix_timestamp / 600) |
+| **RPI** | Rolling Proximity Identifier (16 bytes), rotates at ENIN boundaries |
+| **ENIN** | EN Interval Number. Default is `floor(unix_timestamp / 600)`; Beacon Slot mode makes ENIN equal to an Ethereum Beacon Chain slot number. |
 | **displayId** | Event-scoped device ID: first 3 bytes of TEK as hex (6 chars) |
 
 ## Two Modes
@@ -89,13 +89,33 @@ DeviceSecret (32 bytes, device-generated, never transmitted)
     where PaddedData = "EN-RPI" (6 bytes) ‖ 0x000000000000 (6 bytes) ‖ ENIN (4 bytes, big-endian)
 ```
 
-### ENIN Calculation
+### ENIN Derivation Modes
+
+Barnard supports two ENIN derivation modes. Peers in the same event MUST use the same `(eninMode, eninSeconds, beaconChain)` parameters; otherwise they derive different RPIs and detections can fail to resolve.
+
+#### Mode A: fixedLength
 
 ```
-ENIN = floor(unix_timestamp_seconds / 600)
+ENIN = floor(unix_timestamp_seconds / eninSeconds)
 ```
 
-Each ENIN represents a 10-minute interval. RPI rotates at ENIN boundaries.
+- Default: `eninMode = fixedLength`, `eninSeconds = 600`.
+- `eninSeconds` is clamped to `12..3600`.
+- This preserves GAEN-compatible behavior when unset.
+- This mode has no external time-anchor semantics; ENIN is only a Barnard-internal counter.
+
+#### Mode B: beaconSlot
+
+```
+ENIN = floor((unix_timestamp_seconds - beaconChain.genesisUnixSeconds) / beaconChain.slotSeconds)
+```
+
+- Default Beacon Chain preset: Ethereum mainnet, `genesisUnixSeconds = 1606824023`, `slotSeconds = 12`.
+- Pre-genesis timestamps clamp to ENIN `0`.
+- In this mode, the ENIN integer is semantically the Beacon Chain slot number.
+- Attestation consumers MUST NOT interpret ENIN values from one chain under another chain's timing parameters.
+
+Beacon Slot mode is recommended for attendance-proof flows that commit observations onchain because the ENIN can be verified against the beacon slot's canonical time axis. The on-wire RPID and event shapes do not add device-unique persistent identifiers; the existing RPI payload remains `[formatVersion + RPI]`.
 
 ### EventCodeHash Calculation
 
@@ -293,12 +313,34 @@ class BarnardConfig {
   const BarnardConfig({
     this.transport = TransportKind.ble,
     this.eventCode,  // null for Anonymous Mode
+    this.eninMode = EninMode.fixedLength,
+    this.eninSeconds = 600,
+    this.beaconChain = BeaconChainConfig.ethereumMainnet,
     this.tekStorage = const TekStorageConfig(),
     // ... existing fields
   });
   
   final String? eventCode;
+  final EninMode eninMode;
+  final int eninSeconds; // effective value clamped to 12..3600
+  final BeaconChainConfig beaconChain;
   final TekStorageConfig tekStorage;
+}
+
+enum EninMode { fixedLength, beaconSlot }
+
+class BeaconChainConfig {
+  const BeaconChainConfig({
+    required this.chainId,
+    required this.genesisUnixSeconds,
+    required this.slotSeconds,
+  });
+
+  static const ethereumMainnet = BeaconChainConfig(
+    chainId: "mainnet",
+    genesisUnixSeconds: 1606824023,
+    slotSeconds: 12,
+  );
 }
 
 class TekStorageConfig {

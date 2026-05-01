@@ -59,6 +59,9 @@ final class BarnardBleController: NSObject {
   private var isAdvertising = false
   private var allowDuplicates = true
   private var formatVersion: UInt8 = 1
+  private var eninMode: BarnardCrypto.EninMode = .fixedLength
+  private var eninSeconds: Int = 600
+  private var beaconChain: BarnardCrypto.BeaconChainConfig = .ethereumMainnet
 
   private var lastDiscoveryNameById: [UUID: String] = [:]
 
@@ -141,6 +144,9 @@ final class BarnardBleController: NSObject {
         "supportsGattFallback": true,
         "supportsBackground": false,
         "supportsHighRateRssi": false,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ])
 
     case "getState":
@@ -149,7 +155,15 @@ final class BarnardBleController: NSObject {
         "isAdvertising": isAdvertising,
         "eventMode": rpid.isEventMode ? "event" : "anonymous",
         "eventCode": rpid.eventCode as Any,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ])
+
+    case "configure":
+      let args = (call.arguments as? [String: Any]) ?? [:]
+      configure(args)
+      result(nil)
 
     case "getEventMode":
       result([
@@ -574,6 +588,41 @@ final class BarnardBleController: NSObject {
     return myHash == remoteHash
   }
 
+  private func configure(_ args: [String: Any]) {
+    eninMode = (args["eninMode"] as? String) == "beaconSlot" ? .beaconSlot : .fixedLength
+    let requestedSeconds = (args["eninSeconds"] as? Int) ?? 600
+    eninSeconds = min(max(requestedSeconds, 12), 3600)
+
+    let chain = args["beaconChain"] as? [String: Any]
+    beaconChain = BarnardCrypto.BeaconChainConfig(
+      chainId: (chain?["chainId"] as? String) ?? "mainnet",
+      genesisUnixSeconds: (chain?["genesisUnixSeconds"] as? Int) ?? 1_606_824_023,
+      slotSeconds: (chain?["slotSeconds"] as? Int) ?? 12
+    )
+
+    knownPeers.removeAll()
+    emitDebug(level: "info", name: "configure", data: [
+      "eninMode": eninModeName(),
+      "eninSeconds": eninSeconds,
+      "beaconChain": beaconChainDict(),
+    ])
+  }
+
+  private func eninModeName() -> String {
+    switch eninMode {
+    case .beaconSlot: return "beaconSlot"
+    case .fixedLength: return "fixedLength"
+    }
+  }
+
+  private func beaconChainDict() -> [String: Any] {
+    [
+      "chainId": beaconChain.chainId,
+      "genesisUnixSeconds": beaconChain.effectiveGenesisUnixSeconds,
+      "slotSeconds": beaconChain.effectiveSlotSeconds,
+    ]
+  }
+
   // MARK: - Event Emission
 
   private func emitState(reasonCode: String?) {
@@ -585,6 +634,9 @@ final class BarnardBleController: NSObject {
         "isAdvertising": isAdvertising,
         "eventMode": rpid.isEventMode ? "event" : "anonymous",
         "eventCode": rpid.eventCode as Any,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ],
       "reasonCode": reasonCode as Any,
     ])
@@ -638,7 +690,13 @@ final class BarnardBleController: NSObject {
       let eventCodeHash = rpid.getEventCodeHash()
       let knownTeks = tekStorage.getTeks(for: eventCodeHash)
 
-      if let matched = BarnardCrypto.resolveRpi(rpidBytes, knownTeks: knownTeks) {
+      if let matched = BarnardCrypto.resolveRpi(
+        rpidBytes,
+        knownTeks: knownTeks,
+        mode: eninMode,
+        eninSeconds: eninSeconds,
+        beaconChain: beaconChain
+      ) {
         resolvedTekToEmit = matched
         // Update lastSeenAt
         tekStorage.updateLastSeen(tek: matched, eventCodeHash: eventCodeHash)
@@ -901,7 +959,13 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
   func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
     switch request.characteristic.uuid {
     case rpidCharacteristicUUID:
-      let payload = rpid.currentPayload(formatVersion: formatVersion, now: Date())
+      let payload = rpid.currentPayload(
+        formatVersion: formatVersion,
+        now: Date(),
+        eninMode: eninMode,
+        eninSeconds: eninSeconds,
+        beaconChain: beaconChain
+      )
       request.value = payload
       peripheral.respond(to: request, withResult: .success)
 
