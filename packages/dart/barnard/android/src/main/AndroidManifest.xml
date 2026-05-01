@@ -1,5 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-  package="network.greeting.barnard">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <!-- BLE permissions are merged into the host app manifest. -->
   <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 

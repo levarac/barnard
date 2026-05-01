@@ -1,35 +1,75 @@
 package network.greeting.barnard
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import org.mockito.Mockito
-import kotlin.test.Test
+import java.nio.ByteBuffer
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
-/*
- * This demonstrates a simple unit test of the Kotlin portion of this plugin's implementation.
- *
- * Once you have built the plugin's example app, you can run these tests from the command
- * line by running `./gradlew testDebugUnitTest` in the `example/android/` directory, or
- * you can run them directly from IDEs that support JUnit such as Android Studio.
- */
-
+@RunWith(RobolectricTestRunner::class)
 internal class BarnardPluginTest {
+
+    private lateinit var context: Context
+
+    @Before
+    fun setUp() {
+        context = ApplicationProvider.getApplicationContext()
+        context.getSharedPreferences("barnard", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
+    }
+
     @Test
     fun onMethodCall_getCapabilities_returnsMap() {
-        val context = Mockito.mock(android.content.Context::class.java)
-        val prefs = Mockito.mock(android.content.SharedPreferences::class.java)
-        val manager = Mockito.mock(android.bluetooth.BluetoothManager::class.java)
-
-        Mockito.`when`(context.getSharedPreferences("barnard", android.content.Context.MODE_PRIVATE)).thenReturn(prefs)
-        Mockito.`when`(context.getSystemService(android.content.Context.BLUETOOTH_SERVICE)).thenReturn(manager)
-
-        val messenger = Mockito.mock(io.flutter.plugin.common.BinaryMessenger::class.java)
+        val messenger = RecordingBinaryMessenger()
+        val result = RecordingResult()
 
         val controller = BarnardController(context, messenger)
         val call = MethodCall("getCapabilities", null)
-        val mockResult: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
-        controller.onMethodCall(call, mockResult)
+        controller.onMethodCall(call, result)
 
-        Mockito.verify(mockResult).success(Mockito.anyMap<String, Any>())
+        assertTrue(result.value is Map<*, *>)
+    }
+
+    private class RecordingBinaryMessenger : BinaryMessenger {
+        private val handlers: MutableMap<String, BinaryMessenger.BinaryMessageHandler?> = mutableMapOf()
+
+        override fun send(channel: String, message: ByteBuffer?) = Unit
+
+        override fun send(
+            channel: String,
+            message: ByteBuffer?,
+            callback: BinaryMessenger.BinaryReply?
+        ) = Unit
+
+        override fun setMessageHandler(
+            channel: String,
+            handler: BinaryMessenger.BinaryMessageHandler?
+        ) {
+            handlers[channel] = handler
+        }
+    }
+
+    private class RecordingResult : MethodChannel.Result {
+        var value: Any? = null
+
+        override fun success(result: Any?) {
+            value = result
+        }
+
+        override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+            throw AssertionError("Unexpected error: $errorCode $errorMessage")
+        }
+
+        override fun notImplemented() {
+            throw AssertionError("Unexpected notImplemented")
+        }
     }
 }
