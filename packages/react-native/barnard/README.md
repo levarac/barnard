@@ -43,6 +43,8 @@ cd ios && pod install
 
 Barnard does not initialize CoreBluetooth when the native module is registered. The iOS Bluetooth permission dialog can only be triggered by an explicit app action such as `requestPermissions()`, `startScan()`, `startAdvertise()`, or `startAuto()`.
 
+Barnard does not require iOS Local Network permission. If a debug run shows a "Find Devices on Local Networks" dialog, that is from development tooling such as Metro, not Barnard BLE registration.
+
 ### Android Setup
 
 The plugin automatically adds the required BLE and legacy location declarations to `AndroidManifest.xml` through manifest merge. Use Barnard's permission API so the app controls when Android shows runtime permission dialogs:

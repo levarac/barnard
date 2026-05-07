@@ -64,6 +64,7 @@ class _MyAppState extends State<MyApp> {
   );
 
   BarnardState _state = BarnardState.idle;
+  BarnardPermissionStatus? _permissionStatus;
   final List<BarnardEvent> _events = <BarnardEvent>[];
   final List<BarnardDebugEvent> _debugEvents = <BarnardDebugEvent>[];
   final Map<String, _SeenEntry> _seenById = <String, _SeenEntry>{};
@@ -131,7 +132,8 @@ class _MyAppState extends State<MyApp> {
   Future<void> _init() async {
     await _smokeLog.reset();
     final BarnardBleClient client = await BarnardBleClient.create();
-    await _ensurePermissions(client);
+    final BarnardPermissionStatus permissionStatus = await client
+        .getPermissionStatus();
 
     _eventsSub = client.events.listen((BarnardEvent e) {
       unawaited(_smokeLog.write(_formatEventForSmokeLog(e)));
@@ -217,6 +219,7 @@ class _MyAppState extends State<MyApp> {
     setState(() {
       _client = client;
       _state = client.state;
+      _permissionStatus = permissionStatus;
       if (client.currentEventCode != null &&
           client.currentEventCode!.isNotEmpty) {
         _eventCodeController.text = client.currentEventCode!;
@@ -224,11 +227,26 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
-  Future<void> _ensurePermissions(BarnardBleClient client) async {
+  Future<bool> _ensurePermissionsForStart(BarnardBleClient client) async {
     final BarnardPermissionStatus status = await client.getPermissionStatus();
-    if (status.allGranted) return;
-    await client.requestPermissions();
+    if (mounted) setState(() => _permissionStatus = status);
+    if (status.allGranted) return true;
+
+    final BarnardPermissionStatus requested = await client.requestPermissions();
+    if (mounted) setState(() => _permissionStatus = requested);
+    if (requested.allGranted) return true;
+
+    _showMessage("Bluetooth permission is required");
+    return false;
   }
+
+  Future<void> _requestPermissionsNow() => _run((c) async {
+    final BarnardPermissionStatus requested = await c.requestPermissions();
+    if (mounted) setState(() => _permissionStatus = requested);
+    if (!requested.allGranted) {
+      _showMessage("Bluetooth permission is required");
+    }
+  });
 
   String _formatEventForSmokeLog(BarnardEvent e) {
     if (e is DetectionEvent) {
@@ -326,6 +344,7 @@ class _MyAppState extends State<MyApp> {
     if (_state.isScanning) {
       await c.stopScan();
     } else {
+      if (!await _ensurePermissionsForStart(c)) return;
       await _ensureEventJoined(c);
       await c.startScan(const ScanConfig(allowDuplicates: true));
     }
@@ -335,6 +354,7 @@ class _MyAppState extends State<MyApp> {
     if (_state.isAdvertising) {
       await c.stopAdvertise();
     } else {
+      if (!await _ensurePermissionsForStart(c)) return;
       await _ensureEventJoined(c);
       await c.startAdvertise(const AdvertiseConfig());
     }
@@ -344,6 +364,7 @@ class _MyAppState extends State<MyApp> {
     if (_state.isScanning || _state.isAdvertising) {
       await c.stopAuto();
     } else {
+      if (!await _ensurePermissionsForStart(c)) return;
       await _ensureEventJoined(c);
       await c.startAuto(const AutoConfig());
     }
@@ -447,11 +468,13 @@ class _MyAppState extends State<MyApp> {
                     _ControlPanel(
                       eventCodeController: _eventCodeController,
                       state: _state,
+                      permissionStatus: _permissionStatus,
                       busy: _busy,
                       onToggleScan: _toggleScan,
                       onToggleAdvertise: _toggleAdvertise,
                       onToggleAuto: _toggleAuto,
                       onExportTek: _exportTek,
+                      onRequestPermissions: _requestPermissionsNow,
                     ),
                     const Divider(height: 1),
                     Expanded(
@@ -813,20 +836,24 @@ class _ControlPanel extends StatelessWidget {
   const _ControlPanel({
     required this.eventCodeController,
     required this.state,
+    required this.permissionStatus,
     required this.busy,
     required this.onToggleScan,
     required this.onToggleAdvertise,
     required this.onToggleAuto,
     required this.onExportTek,
+    required this.onRequestPermissions,
   });
 
   final TextEditingController eventCodeController;
   final BarnardState state;
+  final BarnardPermissionStatus? permissionStatus;
   final bool busy;
   final VoidCallback onToggleScan;
   final VoidCallback onToggleAdvertise;
   final VoidCallback onToggleAuto;
   final VoidCallback onExportTek;
+  final VoidCallback onRequestPermissions;
 
   @override
   Widget build(BuildContext context) {
@@ -859,6 +886,12 @@ class _ControlPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
+          _PermissionStrip(
+            status: permissionStatus,
+            busy: busy,
+            onRequestPermissions: onRequestPermissions,
+          ),
+          const SizedBox(height: 8),
           _PrimaryActionButton(
             state: state,
             busy: busy,
@@ -869,6 +902,68 @@ class _ControlPanel extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _PermissionStrip extends StatelessWidget {
+  const _PermissionStrip({
+    required this.status,
+    required this.busy,
+    required this.onRequestPermissions,
+  });
+
+  final BarnardPermissionStatus? status;
+  final bool busy;
+  final VoidCallback onRequestPermissions;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme cs = Theme.of(context).colorScheme;
+    final bool granted = status?.allGranted == true;
+    final String label = _permissionLabel(status);
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: granted ? cs.secondaryContainer : cs.errorContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(
+            granted ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+            size: 18,
+            color: granted ? cs.onSecondaryContainer : cs.onErrorContainer,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: granted ? cs.onSecondaryContainer : cs.onErrorContainer,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          if (!granted)
+            TextButton.icon(
+              onPressed: busy ? null : onRequestPermissions,
+              icon: const Icon(Icons.verified_user, size: 16),
+              label: const Text("Allow"),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _permissionLabel(BarnardPermissionStatus? status) {
+    if (status == null) return "Bluetooth: Checking";
+    if (status.allGranted) return "Bluetooth: Allowed";
+    final String missing = status.missingPermissions.join(", ");
+    if (missing.isEmpty) return "Bluetooth: Not allowed";
+    return "Bluetooth: ${missing.replaceAll("ios.bluetooth", "Not determined")}";
   }
 }
 

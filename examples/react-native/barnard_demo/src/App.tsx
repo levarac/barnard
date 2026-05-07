@@ -7,11 +7,13 @@ import {
   View,
   Button,
   Alert,
+  Platform,
 } from 'react-native';
 import {
   BarnardManager,
   DetectionEvent,
   BarnardCapabilities,
+  BarnardPermissionStatus,
   BarnardState,
 } from 'barnard';
 
@@ -24,6 +26,15 @@ interface Detection {
   transport: string;
 }
 
+const permissionStatusLabel = (status: BarnardPermissionStatus | null): string => {
+  if (!status) return 'Checking';
+  if (status.missingPermissions.length === 0) return 'Allowed';
+  if (status.missingPermissions.includes('ios.bluetooth')) {
+    return 'Not determined';
+  }
+  return status.missingPermissions.join(', ');
+};
+
 const App = () => {
   const [manager] = useState(() => new BarnardManager());
   const [capabilities, setCapabilities] = useState<BarnardCapabilities | null>(null);
@@ -33,9 +44,18 @@ const App = () => {
   const [currentEventCode, setCurrentEventCode] = useState<string | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [permissionsGranted, setPermissionsGranted] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<BarnardPermissionStatus | null>(null);
+
+  const refreshPermissions = useCallback(async () => {
+    const status = await manager.getPermissionStatus();
+    setPermissionStatus(status);
+    setPermissionsGranted(status.missingPermissions.length === 0);
+    return status;
+  }, [manager]);
 
   const requestPermissions = useCallback(async () => {
     const status = await manager.requestPermissions();
+    setPermissionStatus(status);
     const granted = status.missingPermissions.length === 0;
     setPermissionsGranted(granted);
     if (!granted) {
@@ -60,7 +80,7 @@ const App = () => {
   }, [manager]);
 
   useEffect(() => {
-    requestPermissions();
+    refreshPermissions();
 
     manager.getCapabilities().then((caps) => {
       setCapabilities(caps);
@@ -117,7 +137,7 @@ const App = () => {
       unsubDebug();
       manager.dispose();
     };
-  }, [manager, refreshIdentity, requestPermissions]);
+  }, [manager, refreshIdentity, refreshPermissions]);
 
   const handleStartAuto = async () => {
     if (!permissionsGranted) {
@@ -192,6 +212,14 @@ const App = () => {
           <Text style={styles.infoText}>
             Permissions: {permissionsGranted ? '✓' : '✗'}
           </Text>
+          <Text style={styles.infoText}>
+            Bluetooth: {permissionStatusLabel(permissionStatus)}
+          </Text>
+          {!permissionsGranted && (
+            <View style={styles.buttonRow}>
+              <Button title="Allow Bluetooth" onPress={requestPermissions} />
+            </View>
+          )}
         </View>
 
         <View style={styles.section}>

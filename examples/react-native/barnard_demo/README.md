@@ -70,6 +70,7 @@ To test proximity detection:
 ## Notes
 
 - **iOS**: Requires physical device (BLE not supported in simulator)
+- **iOS Debug**: React Native / Flutter-style debug tooling can show the Local Network dialog for development server or VM Service discovery. That dialog is separate from Barnard's Bluetooth permission flow.
 - **Android**: Requires physical device with BLE support
 - **Background mode**: Not supported in this MVP version
 - **Permissions**: Barnard supplies Android manifest declarations; grant the runtime permissions when prompted

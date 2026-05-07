@@ -77,6 +77,8 @@ Add Bluetooth usage-description strings to the host app `ios/Runner/Info.plist`:
 
 Barnard does not initialize CoreBluetooth during plugin registration. The iOS Bluetooth permission dialog can only be triggered by an explicit app action such as `requestPermissions()`, `startScan()`, `startAdvertise()`, or `startAuto()`.
 
+Barnard does not require iOS Local Network permission. If a debug run shows a "Find Devices on Local Networks" dialog, that is from development tooling such as Flutter VM Service discovery, not Barnard BLE registration.
+
 Barnard is foreground-only. iOS simulators do not support the BLE flows used by this Transport, so use physical devices for Scan / Advertise testing.
 
 ### Android
