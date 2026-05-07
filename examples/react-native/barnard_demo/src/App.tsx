@@ -6,14 +6,15 @@ import {
   Text,
   View,
   Button,
-  PermissionsAndroid,
-  Platform,
   Alert,
+  AppState,
+  Platform,
 } from 'react-native';
 import {
   BarnardManager,
   DetectionEvent,
   BarnardCapabilities,
+  BarnardPermissionStatus,
   BarnardState,
 } from 'barnard';
 
@@ -26,6 +27,16 @@ interface Detection {
   transport: string;
 }
 
+const permissionStatusLabel = (status: BarnardPermissionStatus | null): string => {
+  if (!status) return 'Checking';
+  if (status.missingPermissions.length === 0) return 'Allowed';
+  if (status.blockedPermissions.length > 0) return 'Open Settings';
+  if (status.missingPermissions.includes('ios.bluetooth')) {
+    return 'Not determined';
+  }
+  return status.missingPermissions.join(', ');
+};
+
 const App = () => {
   const [manager] = useState(() => new BarnardManager());
   const [capabilities, setCapabilities] = useState<BarnardCapabilities | null>(null);
@@ -35,42 +46,37 @@ const App = () => {
   const [currentEventCode, setCurrentEventCode] = useState<string | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [permissionsGranted, setPermissionsGranted] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<BarnardPermissionStatus | null>(null);
+
+  const refreshPermissions = useCallback(async () => {
+    const status = await manager.getPermissionStatus();
+    setPermissionStatus(status);
+    setPermissionsGranted(status.missingPermissions.length === 0);
+    return status;
+  }, [manager]);
 
   const requestPermissions = useCallback(async () => {
-    if (Platform.OS === 'android') {
-      if (Platform.Version >= 31) {
-        const result = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADVERTISE,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-        ]);
-        const granted = Object.values(result).every(
-          (status) => status === PermissionsAndroid.RESULTS.GRANTED
-        );
-        setPermissionsGranted(granted);
-        if (!granted) {
-          Alert.alert('Permissions Required', 'Please grant all Bluetooth permissions');
-        }
-        return granted;
-      } else {
-        const result = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADMIN,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ]);
-        const granted = Object.values(result).every(
-          (status) => status === PermissionsAndroid.RESULTS.GRANTED
-        );
-        setPermissionsGranted(granted);
-        if (!granted) {
-          Alert.alert('Permissions Required', 'Please grant all Bluetooth permissions');
-        }
-        return granted;
-      }
+    const current = await manager.getPermissionStatus();
+    setPermissionStatus(current);
+    if (current.blockedPermissions.length > 0) {
+      await manager.openAppSettings();
+      return false;
     }
-    setPermissionsGranted(true);
-    return true;
-  }, []);
+
+    const status = await manager.requestPermissions();
+    setPermissionStatus(status);
+    const granted = status.missingPermissions.length === 0;
+    setPermissionsGranted(granted);
+    if (!granted) {
+      Alert.alert(
+        'Permissions Required',
+        status.blockedPermissions.length > 0
+          ? 'Enable Nearby devices in app settings'
+          : 'Please grant all Bluetooth permissions',
+      );
+    }
+    return granted;
+  }, [manager]);
 
   const refreshIdentity = useCallback(async () => {
     try {
@@ -88,7 +94,7 @@ const App = () => {
   }, [manager]);
 
   useEffect(() => {
-    requestPermissions();
+    refreshPermissions();
 
     manager.getCapabilities().then((caps) => {
       setCapabilities(caps);
@@ -135,9 +141,15 @@ const App = () => {
     });
 
     const id = setInterval(refreshIdentity, 3000);
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        refreshPermissions();
+      }
+    });
 
     return () => {
       clearInterval(id);
+      appStateSubscription.remove();
       unsubDetection();
       unsubState();
       unsubConstraint();
@@ -145,7 +157,7 @@ const App = () => {
       unsubDebug();
       manager.dispose();
     };
-  }, [manager, refreshIdentity, requestPermissions]);
+  }, [manager, refreshIdentity, refreshPermissions]);
 
   const handleStartAuto = async () => {
     if (!permissionsGranted) {
@@ -220,6 +232,21 @@ const App = () => {
           <Text style={styles.infoText}>
             Permissions: {permissionsGranted ? '✓' : '✗'}
           </Text>
+          <Text style={styles.infoText}>
+            Bluetooth: {permissionStatusLabel(permissionStatus)}
+          </Text>
+          {!permissionsGranted && (
+            <View style={styles.buttonRow}>
+              <Button
+                title={
+                  permissionStatus?.blockedPermissions.length
+                    ? 'Open Settings'
+                    : 'Allow Bluetooth'
+                }
+                onPress={requestPermissions}
+              />
+            </View>
+          )}
         </View>
 
         <View style={styles.section}>

@@ -12,16 +12,189 @@ The real BLE Transport implements **Scan / Advertise** with **GATT-first** RPID 
 - The receiver (Central) connects and reads a 17-byte payload from a readable characteristic:
   - `[formatVersion:uint8][rpid:16 bytes]`
 
-## Usage
+## Requirements
 
-Create a client and subscribe to streams:
+- Flutter 3.41.0 or newer
+- Dart 3.11.0 or newer
+- iOS 14.0 or newer
+- Android API 24 or newer for the Flutter plugin package
+
+Swift Package Manager support in Flutter depends on the Flutter 3.41 toolchain.
+
+## Installation
+
+Add Barnard to your Flutter app.
+
+For a local checkout:
+
+```yaml
+dependencies:
+  barnard:
+    path: ../path/to/barnard/packages/dart/barnard
+```
+
+For a Git dependency:
+
+```yaml
+dependencies:
+  barnard:
+    git:
+      url: https://github.com/thegreeting/barnard.git
+      path: packages/dart/barnard
+```
+
+Then fetch dependencies:
+
+```bash
+flutter pub get
+```
+
+Import the BLE Transport when you want real device Scan / Advertise:
 
 ```dart
 import "package:barnard/barnard_ble.dart";
+```
+
+Import the domain API when you only need shared types or the mock implementation:
+
+```dart
+import "package:barnard/barnard.dart";
+import "package:barnard/mock_barnard.dart";
+```
+
+## Platform Setup
+
+### iOS
+
+Add Bluetooth usage-description strings to the host app `ios/Runner/Info.plist`:
+
+```xml
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>This app uses Bluetooth to detect nearby devices.</string>
+<key>NSBluetoothPeripheralUsageDescription</key>
+<string>This app uses Bluetooth to advertise to nearby devices.</string>
+```
+
+Barnard does not initialize CoreBluetooth during plugin registration. The iOS Bluetooth permission dialog can only be triggered by an explicit app action such as `requestPermissions()`, `startScan()`, `startAdvertise()`, or `startAuto()`.
+
+Barnard does not require iOS Local Network permission. If a debug run shows a "Find Devices on Local Networks" dialog, that is from development tooling such as Flutter VM Service discovery, not Barnard BLE registration.
+
+Barnard is foreground-only. iOS simulators do not support the BLE flows used by this Transport, so use physical devices for Scan / Advertise testing.
+
+### Android
+
+Barnard's Android library manifest is merged into the host app, so apps do not need to copy BLE permissions into their own manifest for the default foreground BLE Transport. The package declares:
+
+```xml
+<!-- BLE permissions for Android 12+ -->
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
+<!-- Legacy permissions for Android 11 and below -->
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="28" />
+
+<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+```
+
+The `neverForLocation` flag on `BLUETOOTH_SCAN` means Android 12+ BLE Scan does not require location permission. This flag is scoped to the Bluetooth Scan permission and does not prevent the host app from requesting `ACCESS_FINE_LOCATION` or `ACCESS_COARSE_LOCATION` for GPS, maps, geofencing, or other non-BLE location features. Android 11 and below still require legacy location permission for BLE Scan discovery.
+
+If the host app uses BLE Scan results themselves to infer physical location, do not use Barnard's default `neverForLocation` declaration. Android may filter some BLE beacons when this flag is present. Override the merged permission in the app manifest:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        tools:remove="android:usesPermissionFlags" />
+</manifest>
+```
+
+## Usage
+
+Create a client, request permissions at an app-controlled point, subscribe to events, and start Scan + Advertise:
+
+```dart
+import "dart:async";
+
+import "package:barnard/barnard.dart";
+import "package:barnard/barnard_ble.dart";
 
 final client = await BarnardBleClient.create();
+
+final BarnardPermissionStatus permissions = await client.requestPermissions();
+if (!permissions.allGranted) {
+  // Show app-specific guidance before starting BLE.
+  return;
+}
+
+final StreamSubscription<BarnardEvent> eventsSub = client.events.listen((
+  BarnardEvent event,
+) {
+  switch (event) {
+    case DetectionEvent():
+      print("Detected ${event.detectedDisplayId} rssi=${event.rssi}");
+    case RssiUpdateEvent():
+      print("RSSI update rssi=${event.rssi}");
+    case ConstraintEvent():
+      print("Constraint ${event.code}: ${event.message}");
+    case ErrorEvent():
+      print("Error ${event.code}: ${event.message}");
+    default:
+      break;
+  }
+});
+
+await client.joinEvent("EXAMPLE_EVENT");
 await client.startAuto();
+
+// Later:
+await client.stopAuto();
+await eventsSub.cancel();
+await client.dispose();
 ```
+
+Use `startScan()` or `startAdvertise()` instead of `startAuto()` when the app wants to control the Central and Peripheral roles independently.
+
+### Permission API
+
+Use `getPermissionStatus()` when you want to inspect current permissions without showing an OS dialog:
+
+```dart
+final status = await client.getPermissionStatus();
+if (!status.allGranted) {
+  if (status.hasBlockedPermissions) {
+    await client.openAppSettings();
+    return;
+  }
+  final requested = await client.requestPermissions();
+  if (requested.hasBlockedPermissions) {
+    await client.openAppSettings();
+    return;
+  }
+  if (!requested.allGranted) return;
+}
+```
+
+On iOS, `requestPermissions()` creates the CoreBluetooth managers and lets the system show the Bluetooth dialog if authorization is still undetermined. On Android, it requests the runtime permissions required for the current API level. If the user denies an Android 12+ Nearby devices request, Android may mark the Bluetooth permissions as blocked (`blockedPermissions` is non-empty) and will not show the dialog again. Use `openAppSettings()` and tell the user to enable **Nearby devices** for the app; Android Settings does not label this group as "Bluetooth".
+
+After calling `openAppSettings()`, refresh `getPermissionStatus()` when the app returns to the foreground (for example from `AppLifecycleState.resumed`). Android does not notify Barnard directly when the user changes Nearby devices in Settings, so the host app should update its cached permission UI on resume.
+
+### Event Shape
+
+Barnard v2 emits byte-valued fields as lowercase hex strings at the native bridge boundary and as `Uint8List` in Dart events.
+
+Important fields:
+- `DetectionEvent.rpid`: 17-byte wire form `[formatVersion(1) + RPI(16)]`
+- `DetectionEvent.reporterRpid`: this device's 17-byte RPID at the observation timestamp
+- `DetectionEvent.detectedDisplayId`: 8-char lowercase hex `SHA256(peerTEK)[0:4]`, or `null` if the B003 GATT read failed
+- `DetectionEvent.enin`: ENIN at the observation timestamp
+
+The SDK never transmits TEK over BLE. `exportCurrentTek()` is an explicit host-app API for non-BLE egress.
 
 ## Example
 
@@ -50,65 +223,17 @@ flutter precache --android
 ./gradlew testDebugUnitTest
 ```
 
-## Requirements
+## Troubleshooting
 
-- Flutter 3.41.0 or newer
-- Dart 3.11.0 or newer
+- `permission_denied` constraint: call `requestPermissions()` from an app-controlled UX point and retry after the returned status has no `missingPermissions`. If `blockedPermissions` is non-empty, open app settings instead of requesting again.
+- `bluetooth_off` or `bluetooth_not_ready`: ask the user to enable Bluetooth and retry.
+- No iOS detections in simulator: use physical devices. CoreBluetooth Scan / Advertise is not available in the simulator.
+- Android app does not show permission dialogs: confirm the app is using the Barnard plugin package and did not remove merged permissions with manifest tools rules.
+- Cross-platform discovery is foreground-only. iOS background advertising may move Service UUIDs to the overflow area, making devices hard to discover.
 
-Swift Package Manager support in Flutter depends on the Flutter 3.41 toolchain.
-
-## Platform notes
-
-### iOS
-
-- Host app must include `NSBluetoothAlwaysUsageDescription` (and typically `NSBluetoothPeripheralUsageDescription`) in `Info.plist`.
-- Foreground-only.
-- Flutter 3.41+ can consume the plugin through Swift Package Manager. When SPM is enabled in the host app toolchain, Barnard no longer requires CocoaPods on iOS.
-
-### Android
-
-#### Permissions
-
-**Android 12+ (API 31+):**
-
-Add the following to your `AndroidManifest.xml`:
-
-```xml
-<!-- BLE permissions for Android 12+ -->
-<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-    android:usesPermissionFlags="neverForLocation" />
-<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
-
-<!-- Legacy permissions for Android 11 and below -->
-<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="28" />
-
-<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
-```
-
-**Important:** The `neverForLocation` flag on `BLUETOOTH_SCAN` eliminates the need for location permission on Android 12+. Without this flag, `ACCESS_FINE_LOCATION` is required and users must grant "Precise location" (not just "Approximate") for BLE scanning to work.
-
-#### Runtime Permission Request
-
-With the `neverForLocation` flag, only request Bluetooth permissions at runtime:
-
-```dart
-// Android 12+ with neverForLocation flag - no location needed
-await [
-  Permission.bluetoothScan,
-  Permission.bluetoothConnect,
-  Permission.bluetoothAdvertise,
-].request();
-```
-
-#### Scan Filter
+## Scan Filter
 
 The SDK uses a Service UUID filter (`0000B001-0000-1000-8000-00805F9B34FB`) for efficient scanning. This reduces battery consumption and filters out non-Barnard devices at the system level.
-
-**Note:** iOS devices in background mode may not include the Service UUID in advertisement data (moved to "overflow area"). Foreground advertising works reliably.
 
 ## Channels
 

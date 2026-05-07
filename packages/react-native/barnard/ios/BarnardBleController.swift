@@ -44,8 +44,9 @@ final class BarnardBleController: NSObject {
 
   private let rpid = BarnardRpidGenerator()
 
-  private var centralManager: CBCentralManager!
-  private var peripheralManager: CBPeripheralManager!
+  private var centralManager: CBCentralManager?
+  private var peripheralManager: CBPeripheralManager?
+  private var pendingPermissionCompletions: [([String: Any]) -> Void] = []
 
   private var rpidCharacteristic: CBMutableCharacteristic?
   private var displayIdCharacteristic: CBMutableCharacteristic?
@@ -53,6 +54,8 @@ final class BarnardBleController: NSObject {
 
   private var isScanning = false
   private var isAdvertising = false
+  private var shouldStartScanWhenReady = false
+  private var shouldStartAdvertiseWhenReady = false
   private var allowDuplicates = true
   private var formatVersion: UInt8 = 1
 
@@ -110,8 +113,6 @@ final class BarnardBleController: NSObject {
 
   override init() {
     super.init()
-    centralManager = CBCentralManager(delegate: self, queue: nil)
-    peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
 
     NotificationCenter.default.addObserver(
       self,
@@ -129,6 +130,92 @@ final class BarnardBleController: NSObject {
 
   deinit {
     NotificationCenter.default.removeObserver(self)
+  }
+
+  private func ensureCentralManager() -> CBCentralManager {
+    if let manager = centralManager {
+      return manager
+    }
+    let manager = CBCentralManager(delegate: self, queue: nil)
+    centralManager = manager
+    return manager
+  }
+
+  private func ensurePeripheralManager() -> CBPeripheralManager {
+    if let manager = peripheralManager {
+      return manager
+    }
+    let manager = CBPeripheralManager(delegate: self, queue: nil)
+    peripheralManager = manager
+    return manager
+  }
+
+  private func ensureBleManagers() {
+    _ = ensureCentralManager()
+    _ = ensurePeripheralManager()
+  }
+
+  private func bluetoothPermissionStatus() -> String {
+    switch CBManager.authorization {
+    case .allowedAlways:
+      return "granted"
+    case .denied:
+      return "denied"
+    case .restricted:
+      return "restricted"
+    case .notDetermined:
+      return "notDetermined"
+    @unknown default:
+      return "unknown"
+    }
+  }
+
+  func getPermissionStatus() -> [String: Any] {
+    let permissionName = "ios.bluetooth"
+    let status = bluetoothPermissionStatus()
+    let missing = status == "granted" ? [] : [permissionName]
+    let blocked = (status == "denied" || status == "restricted") ? [permissionName] : []
+    let requestable = missing.filter { !blocked.contains($0) }
+    return [
+      "platform": "ios",
+      "permissions": [permissionName: status],
+      "requiredPermissions": [permissionName],
+      "missingPermissions": missing,
+      "requestablePermissions": requestable,
+      "blockedPermissions": blocked,
+      "canScan": status == "granted",
+      "canAdvertise": status == "granted",
+    ]
+  }
+
+  func requestPermissions(completion: @escaping ([String: Any]) -> Void) {
+    if bluetoothPermissionStatus() != "notDetermined" {
+      completion(getPermissionStatus())
+      return
+    }
+
+    pendingPermissionCompletions.append(completion)
+    ensureBleManagers()
+    resolvePendingPermissionCompletionsIfPossible()
+  }
+
+  private func resolvePendingPermissionCompletionsIfPossible() {
+    guard !pendingPermissionCompletions.isEmpty else { return }
+    guard bluetoothPermissionStatus() != "notDetermined" else { return }
+
+    let payload = getPermissionStatus()
+    let completions = pendingPermissionCompletions
+    pendingPermissionCompletions.removeAll()
+    for completion in completions {
+      completion(payload)
+    }
+  }
+
+  func openAppSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    DispatchQueue.main.async {
+      UIApplication.shared.open(url)
+    }
   }
 
   func dispose() {
@@ -150,7 +237,7 @@ final class BarnardBleController: NSObject {
       return
     }
     let activeFormat = Int(formatVersion)
-    peripheralManager.stopAdvertising()
+    peripheralManager?.stopAdvertising()
     isAdvertising = false
     startAdvertise(formatVersion: activeFormat)
     emitDebug(level: "info", name: "advertise_restart_on_foreground", data: nil)
@@ -211,22 +298,36 @@ final class BarnardBleController: NSObject {
   }
 
   func startScan(allowDuplicates: Bool) {
+    let manager = ensureCentralManager()
     self.allowDuplicates = allowDuplicates
-    guard centralManager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(centralManager.state.rawValue)")
+    if isScanning {
+      shouldStartScanWhenReady = false
       return
     }
-    if isScanning { return }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartScanWhenReady = true
+        emitDebug(level: "info", name: "scan_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartScanWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartScanWhenReady = false
     let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
-    centralManager.scanForPeripherals(withServices: [discoveryServiceUUID], options: options)
+    manager.scanForPeripherals(withServices: [discoveryServiceUUID], options: options)
     isScanning = true
     emitState(reasonCode: "scan_start")
     emitDebug(level: "info", name: "scan_start", data: ["allowDuplicates": allowDuplicates])
   }
 
   func stopScan() {
+    shouldStartScanWhenReady = false
     if !isScanning { return }
-    centralManager.stopScan()
+    centralManager?.stopScan()
     isScanning = false
     resetPeerDiscoveryState(reason: "scan_stop")
 
@@ -237,7 +338,7 @@ final class BarnardBleController: NSObject {
   private func resetPeerDiscoveryState(reason: String) {
     connectQueue.removeAll()
     if let active = activePeripheral {
-      centralManager.cancelPeripheralConnection(active)
+      centralManager?.cancelPeripheralConnection(active)
     }
     activePeripheral = nil
     cancelConnectWatchdog()
@@ -258,12 +359,25 @@ final class BarnardBleController: NSObject {
   }
 
   func startAdvertise(formatVersion: Int) {
+    let manager = ensurePeripheralManager()
     self.formatVersion = acceptFormatVersion(formatVersion)
-    guard peripheralManager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(peripheralManager.state.rawValue)")
+    if isAdvertising {
+      shouldStartAdvertiseWhenReady = false
       return
     }
-    if isAdvertising { return }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartAdvertiseWhenReady = true
+        emitDebug(level: "info", name: "advertise_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartAdvertiseWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartAdvertiseWhenReady = false
     ensureGattService()
     var ad: [String: Any] = [
       CBAdvertisementDataServiceUUIDsKey: [discoveryServiceUUID],
@@ -271,7 +385,7 @@ final class BarnardBleController: NSObject {
     #if DEBUG
     ad[CBAdvertisementDataLocalNameKey] = debugLocalName
     #endif
-    peripheralManager.startAdvertising(ad)
+    manager.startAdvertising(ad)
     isAdvertising = true
     emitState(reasonCode: "advertise_start")
     emitDebug(
@@ -286,8 +400,9 @@ final class BarnardBleController: NSObject {
   }
 
   func stopAdvertise() {
+    shouldStartAdvertiseWhenReady = false
     if !isAdvertising { return }
-    peripheralManager.stopAdvertising()
+    peripheralManager?.stopAdvertising()
     isAdvertising = false
     emitState(reasonCode: "advertise_stop")
     emitDebug(level: "info", name: "advertise_stop", data: nil)
@@ -315,14 +430,15 @@ final class BarnardBleController: NSObject {
   // MARK: - GATT Service Management
 
   private func ensureGattService() {
+    _ = ensurePeripheralManager()
     if rpidCharacteristic != nil { return }
     buildAndAddGattService()
   }
 
   private func rebuildGattServiceIfNeeded() {
-    guard peripheralManager.state == .poweredOn else { return }
+    guard let manager = peripheralManager, manager.state == .poweredOn else { return }
 
-    peripheralManager.removeAllServices()
+    manager.removeAllServices()
     rpidCharacteristic = nil
     displayIdCharacteristic = nil
     eventCodeHashCharacteristic = nil
@@ -333,6 +449,8 @@ final class BarnardBleController: NSObject {
   }
 
   private func buildAndAddGattService() {
+    guard let manager = peripheralManager else { return }
+
     let rpidCh = CBMutableCharacteristic(
       type: rpidCharacteristicUUID,
       properties: [.read],
@@ -357,7 +475,7 @@ final class BarnardBleController: NSObject {
 
     let svc = CBMutableService(type: discoveryServiceUUID, primary: true)
     svc.characteristics = [rpidCh, displayIdCh, eventCodeHashCh]
-    peripheralManager.add(svc)
+    manager.add(svc)
 
     rpidCharacteristic = rpidCh
     displayIdCharacteristic = displayIdCh
@@ -411,6 +529,7 @@ final class BarnardBleController: NSObject {
       connectQueue.removeFirst()
       return
     }
+    guard let manager = centralManager else { return }
 
     connectQueue.removeFirst()
     activePeripheral = p
@@ -420,7 +539,7 @@ final class BarnardBleController: NSObject {
     b004ReadRetries[nextId] = 0
 
     p.delegate = self
-    centralManager.connect(p, options: nil)
+    manager.connect(p, options: nil)
     emitDebug(level: "trace", name: "connect_attempt", data: ["id": nextId.uuidString])
     armConnectWatchdog(for: nextId)
   }
@@ -442,7 +561,7 @@ final class BarnardBleController: NSObject {
         recoverable: true,
         extra: ["seconds": self.connectTimeoutSeconds]
       )
-      self.centralManager.cancelPeripheralConnection(pinned)
+      self.centralManager?.cancelPeripheralConnection(pinned)
       self.peripheralCharacteristics.removeValue(forKey: id)
       self.peripheralReadValues.removeValue(forKey: id)
       self.lastDiscoveryNameById.removeValue(forKey: id)
@@ -613,7 +732,7 @@ final class BarnardBleController: NSObject {
     peripheralReadValues.removeValue(forKey: id)
     b004ReadRetries.removeValue(forKey: id)
     lastDiscoveryNameById.removeValue(forKey: id)
-    centralManager.cancelPeripheralConnection(peripheral)
+    centralManager?.cancelPeripheralConnection(peripheral)
   }
 
   private func characteristicName(_ uuid: CBUUID) -> String {
@@ -793,8 +912,11 @@ final class BarnardBleController: NSObject {
 
 extension BarnardBleController: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    resolvePendingPermissionCompletionsIfPossible()
     emitDebug(level: "info", name: "central_state", data: ["state": central.state.rawValue])
-    if central.state != .poweredOn, isScanning {
+    if central.state == .poweredOn, shouldStartScanWhenReady {
+      startScan(allowDuplicates: allowDuplicates)
+    } else if central.state != .poweredOn, isScanning {
       stopScan()
     }
   }
@@ -1063,8 +1185,11 @@ extension BarnardBleController: CBPeripheralDelegate {
 
 extension BarnardBleController: CBPeripheralManagerDelegate {
   func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+    resolvePendingPermissionCompletionsIfPossible()
     emitDebug(level: "info", name: "peripheral_state", data: ["state": peripheral.state.rawValue])
-    if peripheral.state != .poweredOn, isAdvertising {
+    if peripheral.state == .poweredOn, shouldStartAdvertiseWhenReady {
+      startAdvertise(formatVersion: Int(formatVersion))
+    } else if peripheral.state != .poweredOn, isAdvertising {
       stopAdvertise()
     }
   }

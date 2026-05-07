@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v2/permissions.schema.json",
+  "title": "Barnard Permission Status (v2)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Native platform that produced the permission status, e.g. ios, android, or mock."
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "granted",
+          "denied",
+          "notDetermined",
+          "restricted",
+          "unsupported",
+          "unknown"
+        ]
+      },
+      "description": "Map from platform permission name to Barnard's normalized decision string."
+    },
+    "requiredPermissions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Runtime permissions Barnard needs on this platform/API level."
+    },
+    "missingPermissions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Required runtime permissions that are not currently granted."
+    },
+    "requestablePermissions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Missing permissions that the OS may still present through a runtime permission dialog."
+    },
+    "blockedPermissions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Missing permissions that the OS no longer allows to be requested with a runtime dialog. The host app should guide the user to system settings."
+    },
+    "canScan": {
+      "type": "boolean",
+      "description": "Whether Barnard has the permissions required to start Scan."
+    },
+    "canAdvertise": {
+      "type": "boolean",
+      "description": "Whether Barnard has the permissions required to start Advertise."
+    }
+  },
+  "required": [
+    "platform",
+    "permissions",
+    "requiredPermissions",
+    "missingPermissions",
+    "requestablePermissions",
+    "blockedPermissions",
+    "canScan",
+    "canAdvertise"
+  ]
+}

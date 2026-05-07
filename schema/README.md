@@ -9,4 +9,4 @@ Goals
 
 Layout
 - `schema/barnard/v1/`: Barnard v1 JSON Schemas
-
+- `schema/barnard/v2/`: Barnard v2 JSON Schemas for event streams, permissions, and shared types

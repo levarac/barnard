@@ -4,6 +4,7 @@ import "../domain/rssi.dart";
 import "../domain/capabilities.dart";
 import "../domain/config.dart";
 import "../domain/events.dart";
+import "../domain/permissions.dart";
 import "../domain/state.dart";
 
 class BarnardStartResult {
@@ -47,6 +48,16 @@ abstract class BarnardClient {
 
   Stream<BarnardEvent> get events;
   Stream<BarnardDebugEvent> get debugEvents;
+
+  /// Returns the current platform BLE permission state without prompting.
+  Future<BarnardPermissionStatus> getPermissionStatus();
+
+  /// Requests platform BLE permissions at an app-controlled moment.
+  Future<BarnardPermissionStatus> requestPermissions();
+
+  /// Opens the host app's system settings page for permissions that the OS no
+  /// longer allows to be requested with a runtime dialog.
+  Future<void> openAppSettings();
 
   Future<void> startScan([ScanConfig? config]);
   Future<void> stopScan();

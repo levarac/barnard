@@ -11,6 +11,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 internal class BarnardPluginTest {
@@ -36,6 +37,27 @@ internal class BarnardPluginTest {
         controller.onMethodCall(call, result)
 
         assertTrue(result.value is Map<*, *>)
+    }
+
+    @Test
+    @Config(sdk = [31])
+    fun onMethodCall_getPermissionStatus_returnsStableShape() {
+        val messenger = RecordingBinaryMessenger()
+        val result = RecordingResult()
+
+        val controller = BarnardController(context, messenger)
+        val call = MethodCall("getPermissionStatus", null)
+        controller.onMethodCall(call, result)
+
+        val value = result.value as Map<*, *>
+        assertTrue(value["platform"] == "android")
+        assertTrue(value["permissions"] is Map<*, *>)
+        assertTrue(value["requiredPermissions"] is List<*>)
+        assertTrue(value["missingPermissions"] is List<*>)
+        assertTrue(value["requestablePermissions"] is List<*>)
+        assertTrue(value["blockedPermissions"] is List<*>)
+        assertTrue(value["canScan"] is Boolean)
+        assertTrue(value["canAdvertise"] is Boolean)
     }
 
     private class RecordingBinaryMessenger : BinaryMessenger {
