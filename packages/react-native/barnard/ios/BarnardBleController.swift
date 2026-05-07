@@ -54,6 +54,8 @@ final class BarnardBleController: NSObject {
 
   private var isScanning = false
   private var isAdvertising = false
+  private var shouldStartScanWhenReady = false
+  private var shouldStartAdvertiseWhenReady = false
   private var allowDuplicates = true
   private var formatVersion: UInt8 = 1
 
@@ -298,11 +300,23 @@ final class BarnardBleController: NSObject {
   func startScan(allowDuplicates: Bool) {
     let manager = ensureCentralManager()
     self.allowDuplicates = allowDuplicates
-    guard manager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(manager.state.rawValue)")
+    if isScanning {
+      shouldStartScanWhenReady = false
       return
     }
-    if isScanning { return }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartScanWhenReady = true
+        emitDebug(level: "info", name: "scan_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartScanWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartScanWhenReady = false
     let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
     manager.scanForPeripherals(withServices: [discoveryServiceUUID], options: options)
     isScanning = true
@@ -311,6 +325,7 @@ final class BarnardBleController: NSObject {
   }
 
   func stopScan() {
+    shouldStartScanWhenReady = false
     if !isScanning { return }
     centralManager?.stopScan()
     isScanning = false
@@ -346,11 +361,23 @@ final class BarnardBleController: NSObject {
   func startAdvertise(formatVersion: Int) {
     let manager = ensurePeripheralManager()
     self.formatVersion = acceptFormatVersion(formatVersion)
-    guard manager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(manager.state.rawValue)")
+    if isAdvertising {
+      shouldStartAdvertiseWhenReady = false
       return
     }
-    if isAdvertising { return }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartAdvertiseWhenReady = true
+        emitDebug(level: "info", name: "advertise_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartAdvertiseWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartAdvertiseWhenReady = false
     ensureGattService()
     var ad: [String: Any] = [
       CBAdvertisementDataServiceUUIDsKey: [discoveryServiceUUID],
@@ -373,6 +400,7 @@ final class BarnardBleController: NSObject {
   }
 
   func stopAdvertise() {
+    shouldStartAdvertiseWhenReady = false
     if !isAdvertising { return }
     peripheralManager?.stopAdvertising()
     isAdvertising = false
@@ -886,7 +914,9 @@ extension BarnardBleController: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
     resolvePendingPermissionCompletionsIfPossible()
     emitDebug(level: "info", name: "central_state", data: ["state": central.state.rawValue])
-    if central.state != .poweredOn, isScanning {
+    if central.state == .poweredOn, shouldStartScanWhenReady {
+      startScan(allowDuplicates: allowDuplicates)
+    } else if central.state != .poweredOn, isScanning {
       stopScan()
     }
   }
@@ -1157,7 +1187,9 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
   func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
     resolvePendingPermissionCompletionsIfPossible()
     emitDebug(level: "info", name: "peripheral_state", data: ["state": peripheral.state.rawValue])
-    if peripheral.state != .poweredOn, isAdvertising {
+    if peripheral.state == .poweredOn, shouldStartAdvertiseWhenReady {
+      startAdvertise(formatVersion: Int(formatVersion))
+    } else if peripheral.state != .poweredOn, isAdvertising {
       stopAdvertise()
     }
   }
