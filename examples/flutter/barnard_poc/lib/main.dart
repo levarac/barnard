@@ -10,6 +10,19 @@ import "package:flutter/services.dart" show Clipboard, ClipboardData;
 
 void main() => runApp(const MyApp());
 
+const Key barnardPermissionStripKey = ValueKey<String>(
+  "barnard_permission_strip",
+);
+const Key barnardAllowBluetoothButtonKey = ValueKey<String>(
+  "barnard_allow_bluetooth_button",
+);
+const Key barnardStartAutoButtonKey = ValueKey<String>(
+  "barnard_start_auto_button",
+);
+const Key barnardControlMenuButtonKey = ValueKey<String>(
+  "barnard_control_menu_button",
+);
+
 bool shouldJoinEventForInput(String? currentEventCode, String input) {
   final String code = input.trim();
   return code.isNotEmpty && currentEventCode != code;
@@ -922,6 +935,7 @@ class _PermissionStrip extends StatelessWidget {
     final bool granted = status?.allGranted == true;
     final String label = _permissionLabel(status);
     return Container(
+      key: barnardPermissionStripKey,
       height: 40,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
@@ -949,6 +963,7 @@ class _PermissionStrip extends StatelessWidget {
           ),
           if (!granted)
             TextButton.icon(
+              key: barnardAllowBluetoothButtonKey,
               onPressed: busy ? null : onRequestPermissions,
               icon: const Icon(Icons.verified_user, size: 16),
               label: const Text("Allow"),
@@ -1005,6 +1020,7 @@ class _PrimaryActionButton extends StatelessWidget {
                 bottomLeft: Radius.circular(22),
               ),
               child: InkWell(
+                key: barnardStartAutoButtonKey,
                 onTap: primaryOnTap,
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(22),
@@ -1058,6 +1074,7 @@ class _PrimaryActionButton extends StatelessWidget {
               bottomRight: Radius.circular(22),
             ),
             child: PopupMenuButton<_ControlMenuAction>(
+              key: barnardControlMenuButtonKey,
               tooltip: "Scan / Advertise only",
               enabled: !busy,
               onSelected: (action) {
