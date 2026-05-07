@@ -7,6 +7,8 @@ class BarnardPermissionStatus {
     required this.permissions,
     required this.requiredPermissions,
     required this.missingPermissions,
+    required this.requestablePermissions,
+    required this.blockedPermissions,
     required this.canScan,
     required this.canAdvertise,
   });
@@ -31,6 +33,8 @@ class BarnardPermissionStatus {
       ),
       requiredPermissions: _stringList(map["requiredPermissions"]),
       missingPermissions: _stringList(map["missingPermissions"]),
+      requestablePermissions: _stringList(map["requestablePermissions"]),
+      blockedPermissions: _stringList(map["blockedPermissions"]),
       canScan: map["canScan"] == true,
       canAdvertise: map["canAdvertise"] == true,
     );
@@ -40,10 +44,14 @@ class BarnardPermissionStatus {
   final Map<String, BarnardPermissionDecision> permissions;
   final List<String> requiredPermissions;
   final List<String> missingPermissions;
+  final List<String> requestablePermissions;
+  final List<String> blockedPermissions;
   final bool canScan;
   final bool canAdvertise;
 
   bool get allGranted => missingPermissions.isEmpty;
+  bool get canRequest => requestablePermissions.isNotEmpty;
+  bool get hasBlockedPermissions => blockedPermissions.isNotEmpty;
 }
 
 enum BarnardPermissionDecision {

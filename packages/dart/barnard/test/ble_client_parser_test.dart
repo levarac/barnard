@@ -8,24 +8,23 @@ import "package:flutter_test/flutter_test.dart";
 void main() {
   group("BarnardPermissionStatus", () {
     test("parses stable permission result fields", () {
-      final BarnardPermissionStatus status = BarnardPermissionStatus.fromMap(
-        <Object?, Object?>{
-          "platform": "android",
-          "permissions": <Object?, Object?>{
-            "android.permission.BLUETOOTH_SCAN": "granted",
-            "android.permission.BLUETOOTH_CONNECT": "denied",
-          },
-          "requiredPermissions": <Object?>[
-            "android.permission.BLUETOOTH_SCAN",
-            "android.permission.BLUETOOTH_CONNECT",
-          ],
-          "missingPermissions": <Object?>[
-            "android.permission.BLUETOOTH_CONNECT",
-          ],
-          "canScan": true,
-          "canAdvertise": false,
+      final BarnardPermissionStatus
+      status = BarnardPermissionStatus.fromMap(<Object?, Object?>{
+        "platform": "android",
+        "permissions": <Object?, Object?>{
+          "android.permission.BLUETOOTH_SCAN": "granted",
+          "android.permission.BLUETOOTH_CONNECT": "denied",
         },
-      );
+        "requiredPermissions": <Object?>[
+          "android.permission.BLUETOOTH_SCAN",
+          "android.permission.BLUETOOTH_CONNECT",
+        ],
+        "missingPermissions": <Object?>["android.permission.BLUETOOTH_CONNECT"],
+        "requestablePermissions": <Object?>[],
+        "blockedPermissions": <Object?>["android.permission.BLUETOOTH_CONNECT"],
+        "canScan": true,
+        "canAdvertise": false,
+      });
 
       expect(status.platform, equals("android"));
       expect(
@@ -44,6 +43,12 @@ void main() {
         status.missingPermissions,
         equals(<String>["android.permission.BLUETOOTH_CONNECT"]),
       );
+      expect(status.requestablePermissions, isEmpty);
+      expect(
+        status.blockedPermissions,
+        equals(<String>["android.permission.BLUETOOTH_CONNECT"]),
+      );
+      expect(status.canRequest, isFalse);
       expect(status.canScan, isTrue);
       expect(status.canAdvertise, isFalse);
       expect(status.allGranted, isFalse);

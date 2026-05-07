@@ -90,7 +90,7 @@ class BarnardModule(reactContext: ReactApplicationContext) :
                 promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
                 return
             }
-            promise.resolve(ctrl.getPermissionStatus())
+            promise.resolve(ctrl.getPermissionStatus(currentActivity))
         } catch (e: Exception) {
             promise.reject("E_GET_PERMISSION_STATUS", e.message, e)
         }
@@ -105,11 +105,17 @@ class BarnardModule(reactContext: ReactApplicationContext) :
             }
             val missing = ctrl.requiredRuntimePermissions().filter { !ctrl.hasPermission(it) }
             if (missing.isEmpty()) {
-                promise.resolve(ctrl.getPermissionStatus())
+                promise.resolve(ctrl.getPermissionStatus(currentActivity))
+                return
+            }
+            val activeActivity = currentActivity
+            val requestable = missing.filterNot { ctrl.isPermissionRequestBlocked(it, activeActivity) }
+            if (requestable.isEmpty()) {
+                promise.resolve(ctrl.getPermissionStatus(activeActivity))
                 return
             }
 
-            val permissionActivity = currentActivity as? PermissionAwareActivity
+            val permissionActivity = activeActivity as? PermissionAwareActivity
             if (permissionActivity == null) {
                 promise.reject(
                     "E_NO_ACTIVITY",
@@ -126,14 +132,29 @@ class BarnardModule(reactContext: ReactApplicationContext) :
             }
 
             pendingPermissionPromise = promise
+            ctrl.markPermissionsRequested(requestable)
             permissionActivity.requestPermissions(
-                missing.toTypedArray(),
+                requestable.toTypedArray(),
                 permissionRequestCode,
                 this
             )
         } catch (e: Exception) {
             pendingPermissionPromise = null
             promise.reject("E_REQUEST_PERMISSIONS", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun openAppSettings(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            ctrl.openAppSettings()
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("E_OPEN_APP_SETTINGS", e.message, e)
         }
     }
 
@@ -149,7 +170,7 @@ class BarnardModule(reactContext: ReactApplicationContext) :
         if (ctrl == null) {
             promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
         } else {
-            promise.resolve(ctrl.getPermissionStatus())
+            promise.resolve(ctrl.getPermissionStatus(currentActivity))
         }
         return true
     }

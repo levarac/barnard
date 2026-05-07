@@ -35,6 +35,16 @@
       "items": { "type": "string", "minLength": 1 },
       "description": "Required runtime permissions that are not currently granted."
     },
+    "requestablePermissions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Missing permissions that the OS may still present through a runtime permission dialog."
+    },
+    "blockedPermissions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Missing permissions that the OS no longer allows to be requested with a runtime dialog. The host app should guide the user to system settings."
+    },
     "canScan": {
       "type": "boolean",
       "description": "Whether Barnard has the permissions required to start Scan."
@@ -49,6 +59,8 @@
     "permissions",
     "requiredPermissions",
     "missingPermissions",
+    "requestablePermissions",
+    "blockedPermissions",
     "canScan",
     "canAdvertise"
   ]

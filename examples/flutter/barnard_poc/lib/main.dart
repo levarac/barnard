@@ -244,18 +244,37 @@ class _MyAppState extends State<MyApp> {
     final BarnardPermissionStatus status = await client.getPermissionStatus();
     if (mounted) setState(() => _permissionStatus = status);
     if (status.allGranted) return true;
+    if (status.hasBlockedPermissions) {
+      _showMessage("Enable Nearby devices in app settings");
+      return false;
+    }
 
     final BarnardPermissionStatus requested = await client.requestPermissions();
     if (mounted) setState(() => _permissionStatus = requested);
     if (requested.allGranted) return true;
+    if (requested.hasBlockedPermissions) {
+      _showMessage("Enable Nearby devices in app settings");
+      return false;
+    }
 
     _showMessage("Bluetooth permission is required");
     return false;
   }
 
   Future<void> _requestPermissionsNow() => _run((c) async {
+    final BarnardPermissionStatus status = await c.getPermissionStatus();
+    if (mounted) setState(() => _permissionStatus = status);
+    if (status.hasBlockedPermissions) {
+      await c.openAppSettings();
+      return;
+    }
+
     final BarnardPermissionStatus requested = await c.requestPermissions();
     if (mounted) setState(() => _permissionStatus = requested);
+    if (requested.hasBlockedPermissions) {
+      _showMessage("Enable Nearby devices in app settings");
+      return;
+    }
     if (!requested.allGranted) {
       _showMessage("Bluetooth permission is required");
     }
@@ -933,6 +952,7 @@ class _PermissionStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme cs = Theme.of(context).colorScheme;
     final bool granted = status?.allGranted == true;
+    final bool blocked = status?.hasBlockedPermissions == true;
     final String label = _permissionLabel(status);
     return Container(
       key: barnardPermissionStripKey,
@@ -965,8 +985,11 @@ class _PermissionStrip extends StatelessWidget {
             TextButton.icon(
               key: barnardAllowBluetoothButtonKey,
               onPressed: busy ? null : onRequestPermissions,
-              icon: const Icon(Icons.verified_user, size: 16),
-              label: const Text("Allow"),
+              icon: Icon(
+                blocked ? Icons.settings : Icons.verified_user,
+                size: 16,
+              ),
+              label: Text(blocked ? "Settings" : "Allow"),
             ),
         ],
       ),
@@ -976,6 +999,7 @@ class _PermissionStrip extends StatelessWidget {
   String _permissionLabel(BarnardPermissionStatus? status) {
     if (status == null) return "Bluetooth: Checking";
     if (status.allGranted) return "Bluetooth: Allowed";
+    if (status.hasBlockedPermissions) return "Bluetooth: Open Settings";
     final String missing = status.missingPermissions.join(", ");
     if (missing.isEmpty) return "Bluetooth: Not allowed";
     return "Bluetooth: ${missing.replaceAll("ios.bluetooth", "Not determined")}";

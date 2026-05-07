@@ -55,6 +55,10 @@ abstract class BarnardClient {
   /// Requests platform BLE permissions at an app-controlled moment.
   Future<BarnardPermissionStatus> requestPermissions();
 
+  /// Opens the host app's system settings page for permissions that the OS no
+  /// longer allows to be requested with a runtime dialog.
+  Future<void> openAppSettings();
+
   Future<void> startScan([ScanConfig? config]);
   Future<void> stopScan();
 

@@ -9,6 +9,8 @@ jest.mock('react-native', () => {
       permissions: { 'mock.bluetooth': 'granted' },
       requiredPermissions: ['mock.bluetooth'],
       missingPermissions: [],
+      requestablePermissions: [],
+      blockedPermissions: [],
       canScan: true,
       canAdvertise: true,
     }),
@@ -17,9 +19,12 @@ jest.mock('react-native', () => {
       permissions: { 'mock.bluetooth': 'granted' },
       requiredPermissions: ['mock.bluetooth'],
       missingPermissions: [],
+      requestablePermissions: [],
+      blockedPermissions: [],
       canScan: true,
       canAdvertise: true,
     }),
+    openAppSettings: jest.fn().mockResolvedValue(undefined),
     getCurrentEventCode: jest.fn().mockResolvedValue(null),
     getMyDisplayId: jest.fn().mockResolvedValue('374708ff'),
     getCurrentRpi: jest.fn().mockResolvedValue('00'.repeat(16)),
@@ -157,6 +162,15 @@ describe('BarnardManager v2 API', () => {
 
     expect(nativeModule.getPermissionStatus).toHaveBeenCalledTimes(1);
     expect(nativeModule.requestPermissions).toHaveBeenCalledTimes(1);
+  });
+
+  it('delegates opening app settings to native module', async () => {
+    const { BarnardManager, nativeModule } = setup();
+    const manager = new BarnardManager();
+
+    await manager.openAppSettings();
+
+    expect(nativeModule.openAppSettings).toHaveBeenCalledTimes(1);
   });
 
   it('forwards joinEvent argument to native module', async () => {

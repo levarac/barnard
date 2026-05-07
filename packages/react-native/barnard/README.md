@@ -52,11 +52,20 @@ The plugin automatically adds the required BLE and legacy location declarations 
 ```typescript
 const status = await barnard.getPermissionStatus();
 if (status.missingPermissions.length > 0) {
-  await barnard.requestPermissions();
+  if (status.blockedPermissions.length > 0) {
+    await barnard.openAppSettings();
+  } else {
+    const requested = await barnard.requestPermissions();
+    if (requested.blockedPermissions.length > 0) {
+      await barnard.openAppSettings();
+    }
+  }
 }
 ```
 
 On Android 12+ Barnard requests Bluetooth runtime permissions and declares `BLUETOOTH_SCAN` with `neverForLocation`, so location permission is not required for BLE Scan. This flag is scoped to the Bluetooth Scan permission and does not prevent the host app from requesting `ACCESS_FINE_LOCATION` or `ACCESS_COARSE_LOCATION` for GPS, maps, geofencing, or other non-BLE location features. On Android 11 and below Barnard requests the legacy location permission required by Android BLE Scan.
+
+If the user denies the Android 12+ Nearby devices request, Android may mark the Bluetooth permissions as blocked (`blockedPermissions` is non-empty) and will not show the dialog again. Use `openAppSettings()` and tell the user to enable **Nearby devices** for the app; Android Settings does not label this group as "Bluetooth".
 
 If the host app uses BLE Scan results themselves to infer physical location, do not use Barnard's default `neverForLocation` declaration. Android may filter some BLE beacons when this flag is present. Override the merged permission in the app manifest:
 
@@ -158,6 +167,9 @@ barnard.onDebug((event) => {
 
 - **`requestPermissions()`**: Request platform BLE permissions at an app-controlled moment
   - Returns: `Promise<BarnardPermissionStatus>`
+
+- **`openAppSettings()`**: Open the host app's system settings page when permissions are blocked
+  - Returns: `Promise<void>`
 
 - **`getCurrentEventCode()`**: Get the joined event code, or `null`
   - Returns: `Promise<string | null>`
@@ -291,7 +303,7 @@ interface RssiUpdateEvent {
 
 ## Troubleshooting
 
-- `permission_denied` constraint: call `requestPermissions()` from an app-controlled UX point and retry after the returned status has no `missingPermissions`.
+- `permission_denied` constraint: call `requestPermissions()` from an app-controlled UX point and retry after the returned status has no `missingPermissions`. If `blockedPermissions` is non-empty, open app settings instead of requesting again.
 - `bluetooth_off` or `bluetooth_not_ready`: ask the user to enable Bluetooth and retry.
 - No iOS detections in simulator: use physical devices. CoreBluetooth Scan / Advertise is not available in the simulator.
 - Android app does not show permission dialogs: confirm the package manifest is being merged and the app did not remove Barnard permissions with manifest tools rules.

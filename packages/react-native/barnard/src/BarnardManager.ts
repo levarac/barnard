@@ -61,6 +61,10 @@ export class BarnardManager {
     return BarnardModule.requestPermissions();
   }
 
+  async openAppSettings(): Promise<void> {
+    return BarnardModule.openAppSettings();
+  }
+
   /** v2: currently joined event code, or null. */
   async getCurrentEventCode(): Promise<string | null> {
     return BarnardModule.getCurrentEventCode();

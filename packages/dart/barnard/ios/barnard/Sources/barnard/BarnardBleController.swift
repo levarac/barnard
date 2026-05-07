@@ -213,11 +213,15 @@ final class BarnardBleController: NSObject {
     let permissionName = "ios.bluetooth"
     let status = bluetoothPermissionStatus()
     let missing = status == "granted" ? [] : [permissionName]
+    let blocked = (status == "denied" || status == "restricted") ? [permissionName] : []
+    let requestable = missing.filter { !blocked.contains($0) }
     return [
       "platform": "ios",
       "permissions": [permissionName: status],
       "requiredPermissions": [permissionName],
       "missingPermissions": missing,
+      "requestablePermissions": requestable,
+      "blockedPermissions": blocked,
       "canScan": status == "granted",
       "canAdvertise": status == "granted",
     ]
@@ -243,6 +247,13 @@ final class BarnardBleController: NSObject {
     pendingPermissionCompletions.removeAll()
     for completion in completions {
       completion(payload)
+    }
+  }
+
+  private func openAppSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    DispatchQueue.main.async {
+      UIApplication.shared.open(url)
     }
   }
 
@@ -317,6 +328,10 @@ final class BarnardBleController: NSObject {
       requestPermissions { payload in
         result(payload)
       }
+
+    case "openAppSettings":
+      openAppSettings()
+      result(nil)
 
     case "startScan":
       let args = (call.arguments as? [String: Any]) ?? [:]

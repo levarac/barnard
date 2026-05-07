@@ -46,6 +46,8 @@ const BarnardPermissionStatus _grantedPermissionStatus =
       },
       requiredPermissions: <String>["mock.bluetooth"],
       missingPermissions: <String>[],
+      requestablePermissions: <String>[],
+      blockedPermissions: <String>[],
       canScan: true,
       canAdvertise: true,
     );
@@ -148,6 +150,11 @@ class MockBarnard implements BarnardClient {
   Future<BarnardPermissionStatus> requestPermissions() async {
     _ensureNotDisposed();
     return _grantedPermissionStatus;
+  }
+
+  @override
+  Future<void> openAppSettings() async {
+    _ensureNotDisposed();
   }
 
   @override

@@ -29,6 +29,7 @@ interface Detection {
 const permissionStatusLabel = (status: BarnardPermissionStatus | null): string => {
   if (!status) return 'Checking';
   if (status.missingPermissions.length === 0) return 'Allowed';
+  if (status.blockedPermissions.length > 0) return 'Open Settings';
   if (status.missingPermissions.includes('ios.bluetooth')) {
     return 'Not determined';
   }
@@ -54,12 +55,24 @@ const App = () => {
   }, [manager]);
 
   const requestPermissions = useCallback(async () => {
+    const current = await manager.getPermissionStatus();
+    setPermissionStatus(current);
+    if (current.blockedPermissions.length > 0) {
+      await manager.openAppSettings();
+      return false;
+    }
+
     const status = await manager.requestPermissions();
     setPermissionStatus(status);
     const granted = status.missingPermissions.length === 0;
     setPermissionsGranted(granted);
     if (!granted) {
-      Alert.alert('Permissions Required', 'Please grant all Bluetooth permissions');
+      Alert.alert(
+        'Permissions Required',
+        status.blockedPermissions.length > 0
+          ? 'Enable Nearby devices in app settings'
+          : 'Please grant all Bluetooth permissions',
+      );
     }
     return granted;
   }, [manager]);
@@ -217,7 +230,14 @@ const App = () => {
           </Text>
           {!permissionsGranted && (
             <View style={styles.buttonRow}>
-              <Button title="Allow Bluetooth" onPress={requestPermissions} />
+              <Button
+                title={
+                  permissionStatus?.blockedPermissions.length
+                    ? 'Open Settings'
+                    : 'Allow Bluetooth'
+                }
+                onPress={requestPermissions}
+              />
             </View>
           )}
         </View>

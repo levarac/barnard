@@ -167,12 +167,20 @@ Use `getPermissionStatus()` when you want to inspect current permissions without
 ```dart
 final status = await client.getPermissionStatus();
 if (!status.allGranted) {
+  if (status.hasBlockedPermissions) {
+    await client.openAppSettings();
+    return;
+  }
   final requested = await client.requestPermissions();
+  if (requested.hasBlockedPermissions) {
+    await client.openAppSettings();
+    return;
+  }
   if (!requested.allGranted) return;
 }
 ```
 
-On iOS, `requestPermissions()` creates the CoreBluetooth managers and lets the system show the Bluetooth dialog if authorization is still undetermined. On Android, it requests the runtime permissions required for the current API level.
+On iOS, `requestPermissions()` creates the CoreBluetooth managers and lets the system show the Bluetooth dialog if authorization is still undetermined. On Android, it requests the runtime permissions required for the current API level. If the user denies an Android 12+ Nearby devices request, Android may mark the Bluetooth permissions as blocked (`blockedPermissions` is non-empty) and will not show the dialog again. Use `openAppSettings()` and tell the user to enable **Nearby devices** for the app; Android Settings does not label this group as "Bluetooth".
 
 ### Event Shape
 
@@ -215,7 +223,7 @@ flutter precache --android
 
 ## Troubleshooting
 
-- `permission_denied` constraint: call `requestPermissions()` from an app-controlled UX point and retry after the returned status has no `missingPermissions`.
+- `permission_denied` constraint: call `requestPermissions()` from an app-controlled UX point and retry after the returned status has no `missingPermissions`. If `blockedPermissions` is non-empty, open app settings instead of requesting again.
 - `bluetooth_off` or `bluetooth_not_ready`: ask the user to enable Bluetooth and retry.
 - No iOS detections in simulator: use physical devices. CoreBluetooth Scan / Advertise is not available in the simulator.
 - Android app does not show permission dialogs: confirm the app is using the Barnard plugin package and did not remove merged permissions with manifest tools rules.

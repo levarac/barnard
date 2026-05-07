@@ -76,4 +76,5 @@ Run the React Native demo from `examples/react-native/barnard_demo` after instal
 - Cross-language consistency is driven by **JSON Schema** under `schema/barnard/v2`
 - On-wire BLE payloads must not contain device-unique persistent identifiers
 - Host apps control OS permission dialog timing through Barnard permission APIs
+- Host apps can detect blocked runtime permissions and send users to app settings instead of retrying dialogs the OS will not show
 - Android uses `neverForLocation` for Barnard's default BLE Scan permission; host apps that use BLE Scan results themselves for physical location can override that merged declaration

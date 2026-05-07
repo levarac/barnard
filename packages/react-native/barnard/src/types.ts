@@ -27,6 +27,8 @@ export interface BarnardPermissionStatus {
   permissions: Record<string, BarnardPermissionDecision>;
   requiredPermissions: string[];
   missingPermissions: string[];
+  requestablePermissions: string[];
+  blockedPermissions: string[];
   canScan: boolean;
   canAdvertise: boolean;
 }

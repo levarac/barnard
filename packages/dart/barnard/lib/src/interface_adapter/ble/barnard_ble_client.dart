@@ -163,6 +163,12 @@ class BarnardBleClient implements BarnardClient {
   }
 
   @override
+  Future<void> openAppSettings() async {
+    _ensureNotDisposed();
+    await _methods.invokeMethod<void>("openAppSettings");
+  }
+
+  @override
   Future<void> startScan([ScanConfig? config]) async {
     _ensureNotDisposed();
     await _methods.invokeMethod<void>("startScan", _encodeScanConfig(config));

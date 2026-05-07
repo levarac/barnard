@@ -54,6 +54,8 @@ internal class BarnardPluginTest {
         assertTrue(value["permissions"] is Map<*, *>)
         assertTrue(value["requiredPermissions"] is List<*>)
         assertTrue(value["missingPermissions"] is List<*>)
+        assertTrue(value["requestablePermissions"] is List<*>)
+        assertTrue(value["blockedPermissions"] is List<*>)
         assertTrue(value["canScan"] is Boolean)
         assertTrue(value["canAdvertise"] is Boolean)
     }

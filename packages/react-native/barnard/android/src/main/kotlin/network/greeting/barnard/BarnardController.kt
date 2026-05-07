@@ -4,6 +4,7 @@
 package network.greeting.barnard
 
 import android.Manifest
+import android.app.Activity
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -23,12 +24,15 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import com.facebook.react.bridge.Arguments
@@ -38,6 +42,17 @@ import network.greeting.barnard.BarnardCrypto.toHex
 import java.util.UUID
 
 private const val TAG = "BarnardBLE"
+
+internal fun isRuntimePermissionRequestBlocked(
+    sdkInt: Int,
+    hasPermission: Boolean,
+    wasRequestedBefore: Boolean,
+    shouldShowRequestPermissionRationale: Boolean
+): Boolean {
+    if (sdkInt < 23 || hasPermission) return false
+    if (!wasRequestedBefore) return false
+    return !shouldShowRequestPermissionRationale
+}
 
 /**
  * Barnard v2 BLE controller (React Native bridge variant).
@@ -54,6 +69,10 @@ private const val TAG = "BarnardBLE"
 internal class BarnardController(
     private val appContext: Context
 ) {
+    private companion object {
+        const val permissionRequestedKeyPrefix = "permission_requested:"
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     var onEvent: ((String, WritableMap) -> Unit)? = null
@@ -187,8 +206,8 @@ internal class BarnardController(
         }
     }
 
-    fun getPermissionStatus(): WritableMap {
-        return toWritableMap(permissionStatusPayload())
+    fun getPermissionStatus(activity: Activity? = null): WritableMap {
+        return toWritableMap(permissionStatusPayload(activity))
     }
 
     /** v2 API: current event code (or null). */
@@ -725,9 +744,40 @@ internal class BarnardController(
         return appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun permissionStatusPayload(): Map<String, Any> {
+    fun isPermissionRequestBlocked(permission: String, activity: Activity?): Boolean {
+        if (Build.VERSION.SDK_INT < 23 || hasPermission(permission)) return false
+        val currentActivity = activity ?: return false
+        return isRuntimePermissionRequestBlocked(
+            sdkInt = Build.VERSION.SDK_INT,
+            hasPermission = false,
+            wasRequestedBefore = wasPermissionRequested(permission),
+            shouldShowRequestPermissionRationale =
+                currentActivity.shouldShowRequestPermissionRationale(permission)
+        )
+    }
+
+    fun markPermissionsRequested(permissions: List<String>) {
+        if (permissions.isEmpty()) return
+        prefs.edit().apply {
+            for (permission in permissions) {
+                putBoolean(permissionRequestedKey(permission), true)
+            }
+        }.apply()
+    }
+
+    private fun wasPermissionRequested(permission: String): Boolean {
+        return prefs.getBoolean(permissionRequestedKey(permission), false)
+    }
+
+    private fun permissionRequestedKey(permission: String): String {
+        return "$permissionRequestedKeyPrefix$permission"
+    }
+
+    private fun permissionStatusPayload(activity: Activity?): Map<String, Any> {
         val required = requiredRuntimePermissions()
         val missing = required.filter { !hasPermission(it) }
+        val blocked = missing.filter { isPermissionRequestBlocked(it, activity) }
+        val requestable = missing.filterNot { blocked.contains(it) }
         val permissions = required.associateWith { permission ->
             if (hasPermission(permission)) "granted" else "denied"
         }
@@ -736,9 +786,19 @@ internal class BarnardController(
             "permissions" to permissions,
             "requiredPermissions" to required,
             "missingPermissions" to missing,
+            "requestablePermissions" to requestable,
+            "blockedPermissions" to blocked,
             "canScan" to hasScanPermission(),
             "canAdvertise" to (hasAdvertisePermission() && hasConnectPermission()),
         )
+    }
+
+    fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", appContext.packageName, null)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        appContext.startActivity(intent)
     }
 
     private fun hasScanPermission(): Boolean {

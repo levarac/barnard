@@ -27,6 +27,7 @@ interface BarnardNativeModule {
   getState(): Promise<BarnardState>;
   getPermissionStatus(): Promise<BarnardPermissionStatus>;
   requestPermissions(): Promise<BarnardPermissionStatus>;
+  openAppSettings(): Promise<void>;
 
   // v2 API
   getCurrentEventCode(): Promise<string | null>;
