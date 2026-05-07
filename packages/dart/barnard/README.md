@@ -182,6 +182,8 @@ if (!status.allGranted) {
 
 On iOS, `requestPermissions()` creates the CoreBluetooth managers and lets the system show the Bluetooth dialog if authorization is still undetermined. On Android, it requests the runtime permissions required for the current API level. If the user denies an Android 12+ Nearby devices request, Android may mark the Bluetooth permissions as blocked (`blockedPermissions` is non-empty) and will not show the dialog again. Use `openAppSettings()` and tell the user to enable **Nearby devices** for the app; Android Settings does not label this group as "Bluetooth".
 
+After calling `openAppSettings()`, refresh `getPermissionStatus()` when the app returns to the foreground (for example from `AppLifecycleState.resumed`). Android does not notify Barnard directly when the user changes Nearby devices in Settings, so the host app should update its cached permission UI on resume.
+
 ### Event Shape
 
 Barnard v2 emits byte-valued fields as lowercase hex strings at the native bridge boundary and as `Uint8List` in Dart events.

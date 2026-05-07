@@ -67,6 +67,8 @@ On Android 12+ Barnard requests Bluetooth runtime permissions and declares `BLUE
 
 If the user denies the Android 12+ Nearby devices request, Android may mark the Bluetooth permissions as blocked (`blockedPermissions` is non-empty) and will not show the dialog again. Use `openAppSettings()` and tell the user to enable **Nearby devices** for the app; Android Settings does not label this group as "Bluetooth".
 
+After calling `openAppSettings()`, refresh `getPermissionStatus()` when the app returns to the foreground (for example when React Native `AppState` becomes `active`). Android does not notify Barnard directly when the user changes Nearby devices in Settings, so the host app should update its cached permission UI on foreground resume.
+
 If the host app uses BLE Scan results themselves to infer physical location, do not use Barnard's default `neverForLocation` declaration. Android may filter some BLE beacons when this flag is present. Override the merged permission in the app manifest:
 
 ```xml

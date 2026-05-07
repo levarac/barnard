@@ -1,3 +1,4 @@
+import "package:flutter/widgets.dart";
 import "package:flutter_test/flutter_test.dart";
 import "package:barnard_poc/main.dart";
 
@@ -91,5 +92,32 @@ void main() {
       expect(isDebugPeerLocalName("BND-d6a7"), isFalse);
       expect(isDebugPeerLocalName(null), isFalse);
     });
+  });
+
+  group("shouldRefreshPermissionsForLifecycle", () {
+    test("refreshes permissions when returning to the app", () {
+      expect(
+        shouldRefreshPermissionsForLifecycle(AppLifecycleState.resumed),
+        isTrue,
+      );
+    });
+
+    test(
+      "does not refresh permissions while the app is leaving foreground",
+      () {
+        expect(
+          shouldRefreshPermissionsForLifecycle(AppLifecycleState.inactive),
+          isFalse,
+        );
+        expect(
+          shouldRefreshPermissionsForLifecycle(AppLifecycleState.paused),
+          isFalse,
+        );
+        expect(
+          shouldRefreshPermissionsForLifecycle(AppLifecycleState.detached),
+          isFalse,
+        );
+      },
+    );
   });
 }

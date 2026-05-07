@@ -7,6 +7,7 @@ import {
   View,
   Button,
   Alert,
+  AppState,
   Platform,
 } from 'react-native';
 import {
@@ -140,9 +141,15 @@ const App = () => {
     });
 
     const id = setInterval(refreshIdentity, 3000);
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        refreshPermissions();
+      }
+    });
 
     return () => {
       clearInterval(id);
+      appStateSubscription.remove();
       unsubDetection();
       unsubState();
       unsubConstraint();

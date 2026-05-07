@@ -58,6 +58,10 @@ ScanResolutionState scanResolutionForDebugEvent(
 bool isDebugPeerLocalName(String? name) =>
     name != null && RegExp(r"^BND-[0-9A-F]{4}$").hasMatch(name);
 
+bool shouldRefreshPermissionsForLifecycle(AppLifecycleState state) {
+  return state == AppLifecycleState.resumed;
+}
+
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
@@ -65,7 +69,7 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
   BarnardBleClient? _client;
@@ -125,6 +129,7 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _init();
     _uiTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
@@ -134,12 +139,19 @@ class _MyAppState extends State<MyApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _eventsSub?.cancel();
     _debugSub?.cancel();
     _client?.dispose();
     _eventCodeController.dispose();
     _uiTicker?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!shouldRefreshPermissionsForLifecycle(state)) return;
+    unawaited(_refreshPermissions());
   }
 
   Future<void> _init() async {
@@ -238,6 +250,14 @@ class _MyAppState extends State<MyApp> {
         _eventCodeController.text = client.currentEventCode!;
       }
     });
+  }
+
+  Future<void> _refreshPermissions() async {
+    final BarnardBleClient? client = _client;
+    if (client == null) return;
+    final BarnardPermissionStatus status = await client.getPermissionStatus();
+    if (!mounted) return;
+    setState(() => _permissionStatus = status);
   }
 
   Future<bool> _ensurePermissionsForStart(BarnardBleClient client) async {
