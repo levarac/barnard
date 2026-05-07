@@ -7,7 +7,6 @@ import "package:barnard/barnard.dart";
 import "package:barnard/barnard_ble.dart";
 import "package:flutter/material.dart";
 import "package:flutter/services.dart" show Clipboard, ClipboardData;
-import "package:permission_handler/permission_handler.dart";
 
 void main() => runApp(const MyApp());
 
@@ -130,9 +129,9 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _init() async {
-    await _ensurePermissions();
     await _smokeLog.reset();
     final BarnardBleClient client = await BarnardBleClient.create();
+    await _ensurePermissions(client);
 
     _eventsSub = client.events.listen((BarnardEvent e) {
       unawaited(_smokeLog.write(_formatEventForSmokeLog(e)));
@@ -225,13 +224,10 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
-  Future<void> _ensurePermissions() async {
-    if (!Platform.isAndroid) return;
-    await <Permission>[
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.bluetoothAdvertise,
-    ].request();
+  Future<void> _ensurePermissions(BarnardBleClient client) async {
+    final BarnardPermissionStatus status = await client.getPermissionStatus();
+    if (status.allGranted) return;
+    await client.requestPermissions();
   }
 
   String _formatEventForSmokeLog(BarnardEvent e) {

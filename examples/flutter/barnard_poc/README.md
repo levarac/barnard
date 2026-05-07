@@ -12,4 +12,4 @@ flutter run
 ## Notes
 
 - iOS requires `NSBluetoothAlwaysUsageDescription` (and typically `NSBluetoothPeripheralUsageDescription`) in `Info.plist`.
-- Android requires BLE permissions (Android 12+) and location permission on Android 11 and below.
+- Android BLE and legacy location manifest declarations are supplied by the Barnard plugin. The app calls Barnard's permission API for runtime prompts.

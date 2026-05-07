@@ -4,6 +4,7 @@ export "src/domain/config.dart";
 export "src/domain/crypto.dart";
 export "src/domain/events.dart";
 export "src/domain/hex.dart";
+export "src/domain/permissions.dart";
 export "src/domain/rssi.dart";
 export "src/domain/state.dart";
 export "src/domain/transport.dart";

@@ -6,8 +6,6 @@ import {
   Text,
   View,
   Button,
-  PermissionsAndroid,
-  Platform,
   Alert,
 } from 'react-native';
 import {
@@ -37,40 +35,14 @@ const App = () => {
   const [permissionsGranted, setPermissionsGranted] = useState(false);
 
   const requestPermissions = useCallback(async () => {
-    if (Platform.OS === 'android') {
-      if (Platform.Version >= 31) {
-        const result = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADVERTISE,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-        ]);
-        const granted = Object.values(result).every(
-          (status) => status === PermissionsAndroid.RESULTS.GRANTED
-        );
-        setPermissionsGranted(granted);
-        if (!granted) {
-          Alert.alert('Permissions Required', 'Please grant all Bluetooth permissions');
-        }
-        return granted;
-      } else {
-        const result = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADMIN,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ]);
-        const granted = Object.values(result).every(
-          (status) => status === PermissionsAndroid.RESULTS.GRANTED
-        );
-        setPermissionsGranted(granted);
-        if (!granted) {
-          Alert.alert('Permissions Required', 'Please grant all Bluetooth permissions');
-        }
-        return granted;
-      }
+    const status = await manager.requestPermissions();
+    const granted = status.missingPermissions.length === 0;
+    setPermissionsGranted(granted);
+    if (!granted) {
+      Alert.alert('Permissions Required', 'Please grant all Bluetooth permissions');
     }
-    setPermissionsGranted(true);
-    return true;
-  }, []);
+    return granted;
+  }, [manager]);
 
   const refreshIdentity = useCallback(async () => {
     try {

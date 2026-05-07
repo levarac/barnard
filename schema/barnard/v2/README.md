@@ -4,6 +4,7 @@ JSON Schema (draft 2020-12) for the Barnard SDK v2 event stream.
 
 - [`common.schema.json`](common.schema.json) — shared type definitions (`RpidHex`, `DisplayIdHex`, `TekHex`, etc.).
 - [`events.schema.json`](events.schema.json) — `DetectionEvent`, `RssiUpdateEvent`, `StateEvent`, `ConstraintEvent`, `ErrorEvent`, `DebugEvent`.
+- [`permissions.schema.json`](permissions.schema.json) — normalized host-visible permission status returned by `getPermissionStatus()` / `requestPermissions()`.
 
 Byte-valued fields are lowercase hex strings at the method-channel / RN bridge boundary. TEK is never emitted over BLE and therefore never appears in a DetectionEvent — it is only exposed to host apps via `exportCurrentTek()` / `exportCurrentTek` on the respective SDK.
 

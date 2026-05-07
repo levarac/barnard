@@ -74,6 +74,32 @@ class Barnard: RCTEventEmitter {
     resolve(controller.getState())
   }
 
+  @objc
+  func getPermissionStatus(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let controller = controller else {
+      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
+      return
+    }
+    resolve(controller.getPermissionStatus())
+  }
+
+  @objc
+  func requestPermissions(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let controller = controller else {
+      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
+      return
+    }
+    controller.requestPermissions { payload in
+      resolve(payload)
+    }
+  }
+
   // v2 API
 
   @objc

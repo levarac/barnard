@@ -2,6 +2,7 @@ import { EmitterSubscription } from 'react-native';
 import { BarnardModule, BarnardEventEmitter } from './NativeBarnard';
 import type {
   BarnardCapabilities,
+  BarnardPermissionStatus,
   BarnardState,
   ScanConfig,
   AdvertiseConfig,
@@ -50,6 +51,14 @@ export class BarnardManager {
 
   async getState(): Promise<BarnardState> {
     return BarnardModule.getState();
+  }
+
+  async getPermissionStatus(): Promise<BarnardPermissionStatus> {
+    return BarnardModule.getPermissionStatus();
+  }
+
+  async requestPermissions(): Promise<BarnardPermissionStatus> {
+    return BarnardModule.requestPermissions();
   }
 
   /** v2: currently joined event code, or null. */

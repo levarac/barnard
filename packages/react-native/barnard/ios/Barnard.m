@@ -9,6 +9,12 @@ RCT_EXTERN_METHOD(getCapabilities:(RCTPromiseResolveBlock)resolve
 RCT_EXTERN_METHOD(getState:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(getPermissionStatus:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(requestPermissions:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
 // v2 API
 
 RCT_EXTERN_METHOD(getCurrentEventCode:(RCTPromiseResolveBlock)resolve

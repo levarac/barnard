@@ -187,6 +187,10 @@ internal class BarnardController(
         }
     }
 
+    fun getPermissionStatus(): WritableMap {
+        return toWritableMap(permissionStatusPayload())
+    }
+
     /** v2 API: current event code (or null). */
     fun getCurrentEventCode(): String? = eventCode
 
@@ -300,7 +304,7 @@ internal class BarnardController(
         if (!hasScanPermission()) {
             emitConstraint(
                 "permission_denied",
-                "Missing BLUETOOTH_SCAN permission",
+                "Missing ${requiredScanPermission()} permission",
                 requiredAction = "grant_permission"
             )
             return
@@ -704,19 +708,63 @@ internal class BarnardController(
 
     // MARK: - Permissions
 
+    fun requiredRuntimePermissions(): List<String> {
+        return when {
+            Build.VERSION.SDK_INT >= 31 -> listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+            Build.VERSION.SDK_INT >= 23 -> listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            else -> emptyList()
+        }
+    }
+
+    fun hasPermission(permission: String): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return true
+        return appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun permissionStatusPayload(): Map<String, Any> {
+        val required = requiredRuntimePermissions()
+        val missing = required.filter { !hasPermission(it) }
+        val permissions = required.associateWith { permission ->
+            if (hasPermission(permission)) "granted" else "denied"
+        }
+        return mapOf(
+            "platform" to "android",
+            "permissions" to permissions,
+            "requiredPermissions" to required,
+            "missingPermissions" to missing,
+            "canScan" to hasScanPermission(),
+            "canAdvertise" to (hasAdvertisePermission() && hasConnectPermission()),
+        )
+    }
+
     private fun hasScanPermission(): Boolean {
-        if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        return when {
+            Build.VERSION.SDK_INT >= 31 -> hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+            Build.VERSION.SDK_INT >= 23 -> hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            else -> true
+        }
+    }
+
+    private fun requiredScanPermission(): String {
+        return if (Build.VERSION.SDK_INT >= 31) {
+            Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
     }
 
     private fun hasAdvertisePermission(): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
+        return hasPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
     }
 
     private fun hasConnectPermission(): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        return hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
     }
 
     // MARK: - Advertise Callback

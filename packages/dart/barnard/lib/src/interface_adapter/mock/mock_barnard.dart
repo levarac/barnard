@@ -8,6 +8,7 @@ import "../../domain/capabilities.dart";
 import "../../domain/config.dart";
 import "../../domain/crypto.dart";
 import "../../domain/events.dart";
+import "../../domain/permissions.dart";
 import "../../domain/rssi.dart";
 import "../../domain/state.dart";
 import "../../domain/transport.dart";
@@ -36,6 +37,18 @@ class MockBarnardOverrides {
   /// [DetectionEvent.detectedDisplayId] to be `null`. Defaults to 0.1 (10%).
   final double? b003FailureRate;
 }
+
+const BarnardPermissionStatus _grantedPermissionStatus =
+    BarnardPermissionStatus(
+      platform: "mock",
+      permissions: <String, BarnardPermissionDecision>{
+        "mock.bluetooth": BarnardPermissionDecision.granted,
+      },
+      requiredPermissions: <String>["mock.bluetooth"],
+      missingPermissions: <String>[],
+      canScan: true,
+      canAdvertise: true,
+    );
 
 class MockBarnard implements BarnardClient {
   MockBarnard({
@@ -124,6 +137,18 @@ class MockBarnard implements BarnardClient {
 
   @override
   Stream<BarnardDebugEvent> get debugEvents => _debugEvents.stream;
+
+  @override
+  Future<BarnardPermissionStatus> getPermissionStatus() async {
+    _ensureNotDisposed();
+    return _grantedPermissionStatus;
+  }
+
+  @override
+  Future<BarnardPermissionStatus> requestPermissions() async {
+    _ensureNotDisposed();
+    return _grantedPermissionStatus;
+  }
 
   @override
   Future<void> startScan([ScanConfig? config]) async {

@@ -53,7 +53,7 @@ npx react-native run-android
 
 ## Usage
 
-1. **Grant Permissions**: When the app launches, it will request Bluetooth permissions
+1. **Grant Permissions**: The app calls Barnard's permission API when it is ready to show Bluetooth permission dialogs
 2. **Start All**: Tap "Start All" to begin scanning and advertising
 3. **View Detections**: Nearby devices running the same app will appear in the detection list
 4. **Individual Controls**: Use "Start Scan" and "Start Adv" for granular control
@@ -72,20 +72,20 @@ To test proximity detection:
 - **iOS**: Requires physical device (BLE not supported in simulator)
 - **Android**: Requires physical device with BLE support
 - **Background mode**: Not supported in this MVP version
-- **Permissions**: Make sure to grant all Bluetooth permissions when prompted
+- **Permissions**: Barnard supplies Android manifest declarations; grant the runtime permissions when prompted
 
 ## Troubleshooting
 
 ### iOS
 
 - If pods fail to install, try `pod repo update` then `pod install`
-- Ensure Bluetooth permissions are set in Info.plist
+- Ensure Bluetooth usage-description strings are set in Info.plist
 - Physical device required (simulator doesn't support BLE)
 
 ### Android
 
 - Ensure Android SDK is properly configured
-- Check that all Bluetooth permissions are granted
+- Check that Barnard runtime permissions are granted
 - Try rebuilding if native modules don't link: `cd android && ./gradlew clean`
 
 ## Related
