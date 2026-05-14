@@ -10,6 +10,12 @@
   Advertise are not available on iOS Simulator. Host apps can drop any
   simulator-detection workarounds and branch on these capability flags
   directly. See issue #57.
+- Android `getPermissionStatus()` now also checks hardware capability
+  (`PackageManager.FEATURE_BLUETOOTH_LE`, `BluetoothLeAdvertiser`
+  availability, `isMultipleAdvertisementSupported`) in addition to runtime
+  permissions. Android Emulators and BLE-less devices therefore report
+  `canScan: false` / `canAdvertise: false` even when permissions are
+  granted, matching the iOS Simulator behavior above. See issue #57.
 
 ## 0.1.0 — Barnard v2 BLE protocol (#42)
 

@@ -308,6 +308,7 @@ interface RssiUpdateEvent {
 - `permission_denied` constraint: call `requestPermissions()` from an app-controlled UX point and retry after the returned status has no `missingPermissions`. If `blockedPermissions` is non-empty, open app settings instead of requesting again.
 - `bluetooth_off` or `bluetooth_not_ready`: ask the user to enable Bluetooth and retry.
 - No iOS detections in simulator: use physical devices. CoreBluetooth Scan / Advertise is not available in the simulator. On iOS Simulator `getPermissionStatus()` / `requestPermissions()` return `canScan: false` and `canAdvertise: false` even when authorization is granted, so host apps should branch on those capability flags rather than on `allGranted` alone.
+- No Android detections in emulator or on BLE-less devices: Android Emulator does not virtualize BLE and some devices lack BLE / multi-advertisement hardware. `getPermissionStatus()` returns `canScan: false` / `canAdvertise: false` on these devices regardless of permission grants. As on iOS, branch on the capability flags rather than on `allGranted`.
 - Android app does not show permission dialogs: confirm the package manifest is being merged and the app did not remove Barnard permissions with manifest tools rules.
 - Cross-platform discovery is foreground-only. iOS background advertising may move Service UUIDs to the overflow area, making devices hard to discover.
 
