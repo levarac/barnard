@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- iOS Simulator now reports `canScan: false` and `canAdvertise: false` from
+  `getPermissionStatus()` / `requestPermissions()` even when CoreBluetooth
+  authorization is granted, reflecting the fact that CoreBluetooth Scan /
+  Advertise are not available on iOS Simulator. Host apps can drop any
+  simulator-detection workarounds and branch on these capability flags
+  directly. See issue #57.
+
 ## 0.1.0 — Barnard v2 BLE protocol (#42)
 
 ### Breaking changes (v1 → v2)

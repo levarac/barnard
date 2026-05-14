@@ -227,7 +227,7 @@ flutter precache --android
 
 - `permission_denied` constraint: call `requestPermissions()` from an app-controlled UX point and retry after the returned status has no `missingPermissions`. If `blockedPermissions` is non-empty, open app settings instead of requesting again.
 - `bluetooth_off` or `bluetooth_not_ready`: ask the user to enable Bluetooth and retry.
-- No iOS detections in simulator: use physical devices. CoreBluetooth Scan / Advertise is not available in the simulator.
+- No iOS detections in simulator: use physical devices. CoreBluetooth Scan / Advertise is not available in the simulator. On iOS Simulator `getPermissionStatus()` / `requestPermissions()` return `canScan: false` and `canAdvertise: false` even when authorization is granted, so host apps should branch on those capability flags rather than on `allGranted` alone.
 - Android app does not show permission dialogs: confirm the app is using the Barnard plugin package and did not remove merged permissions with manifest tools rules.
 - Cross-platform discovery is foreground-only. iOS background advertising may move Service UUIDs to the overflow area, making devices hard to discover.
 
