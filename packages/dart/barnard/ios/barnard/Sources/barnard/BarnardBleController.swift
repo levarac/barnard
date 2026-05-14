@@ -215,6 +215,10 @@ final class BarnardBleController: NSObject {
     let missing = status == "granted" ? [] : [permissionName]
     let blocked = (status == "denied" || status == "restricted") ? [permissionName] : []
     let requestable = missing.filter { !blocked.contains($0) }
+    // iOS Simulator cannot scan or advertise over BLE even when CoreBluetooth
+    // authorization is granted, so capability flags must reflect that gap
+    // independently of authorization state. See issue #57.
+    let canBle = status == "granted" && !Self.isIosSimulator
     return [
       "platform": "ios",
       "permissions": [permissionName: status],
@@ -222,9 +226,17 @@ final class BarnardBleController: NSObject {
       "missingPermissions": missing,
       "requestablePermissions": requestable,
       "blockedPermissions": blocked,
-      "canScan": status == "granted",
-      "canAdvertise": status == "granted",
+      "canScan": canBle,
+      "canAdvertise": canBle,
     ]
+  }
+
+  private static var isIosSimulator: Bool {
+    #if targetEnvironment(simulator)
+    return true
+    #else
+    return false
+    #endif
   }
 
   private func requestPermissions(completion: @escaping ([String: Any]) -> Void) {

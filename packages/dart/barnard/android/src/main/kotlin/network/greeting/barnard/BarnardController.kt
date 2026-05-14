@@ -808,6 +808,17 @@ internal class BarnardController(
         val permissions = required.associateWith { permission ->
             if (hasPermission(permission)) "granted" else "denied"
         }
+        // BLE capability requires both runtime permission AND hardware support.
+        // Android Emulator and BLE-less devices report permission grants but
+        // cannot actually scan or advertise — host apps would otherwise enable
+        // BLE-only UI based on permission state alone. See issue #57.
+        val hasBleHardware = appContext.packageManager
+            .hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+        val a = adapter
+        val hasAdvertiseHardware = hasBleHardware &&
+            a != null &&
+            a.bluetoothLeAdvertiser != null &&
+            a.isMultipleAdvertisementSupported
         return mapOf(
             "platform" to "android",
             "permissions" to permissions,
@@ -815,8 +826,10 @@ internal class BarnardController(
             "missingPermissions" to missing,
             "requestablePermissions" to requestable,
             "blockedPermissions" to blocked,
-            "canScan" to hasScanPermission(),
-            "canAdvertise" to (hasAdvertisePermission() && hasConnectPermission()),
+            "canScan" to (hasScanPermission() && hasBleHardware),
+            "canAdvertise" to (
+                hasAdvertisePermission() && hasConnectPermission() && hasAdvertiseHardware
+            ),
         )
     }
 
