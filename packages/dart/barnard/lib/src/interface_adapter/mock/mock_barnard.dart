@@ -80,10 +80,10 @@ class MockBarnard implements BarnardClient {
         _overrides?.bufferMaxSamples ?? const RssiConfig().bufferMaxSamples;
     _rssiBuffer = RingBuffer<RssiSample>(bufferMaxSamples);
 
-    _currentEventCode = config.eventCode;
-    _currentTek = config.eventCode == null
+    _currentEventCode = _normalEventCode(config.eventCode);
+    _currentTek = _currentEventCode == null
         ? BarnardCrypto.deriveTekForAnonymous(_deviceSecret)
-        : BarnardCrypto.deriveTekForEvent(_deviceSecret, config.eventCode!);
+        : BarnardCrypto.deriveTekForEvent(_deviceSecret, _currentEventCode!);
   }
 
   final int _tickMs;
@@ -111,6 +111,9 @@ class MockBarnard implements BarnardClient {
   int? _lastWindowIndex;
 
   int get _maxAggEntries => max(2000, min(10000, _peers.length * 3));
+
+  static String? _normalEventCode(String? eventCode) =>
+      eventCode == null || eventCode.isEmpty ? null : eventCode;
 
   double get _b003FailureRate =>
       (_overrides?.b003FailureRate ?? 0.1).clamp(0.0, 1.0);

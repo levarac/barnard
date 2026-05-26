@@ -10,29 +10,39 @@ if (localPropertiesFile.exists()) {
 }
 
 def detectFlutterSdkPath = {
-    def output = new ByteArrayOutputStream()
-    def result = exec {
-        commandLine("flutter", "--version", "--machine")
-        standardOutput = output
-        errorOutput = new ByteArrayOutputStream()
-        ignoreExitValue = true
-    }
-    if (result.exitValue != 0) {
+    try {
+        def output = new ByteArrayOutputStream()
+        def result = exec {
+            commandLine("flutter", "--version", "--machine")
+            standardOutput = output
+            errorOutput = new ByteArrayOutputStream()
+            ignoreExitValue = true
+        }
+        if (result.exitValue != 0) {
+            return null
+        }
+
+        def matcher = output.toString("UTF-8") =~ /"flutterRoot"\s*:\s*"([^"]+)"/
+        return matcher.find() ? matcher.group(1).replace("\\/", "/") : null
+    } catch (Exception ignored) {
         return null
     }
-
-    def matcher = output.toString("UTF-8") =~ /"flutterRoot"\s*:\s*"([^"]+)"/
-    return matcher.find() ? matcher.group(1).replace("\\/", "/") : null
 }
 
 def flutterSdkCandidates = [
     project.findProperty("flutter.sdk"),
     System.getenv("FLUTTER_ROOT"),
     localProperties.getProperty("flutter.sdk"),
-    detectFlutterSdkPath(),
 ].findAll { it != null && it.toString().trim() != "" }
 def flutterSdkPath = flutterSdkCandidates.find {
     file("$it/bin/cache/artifacts/engine/android-arm64/flutter.jar").exists()
+}
+if (flutterSdkPath == null) {
+    def detectedFlutterSdkPath = detectFlutterSdkPath()
+    if (detectedFlutterSdkPath != null &&
+        file("$detectedFlutterSdkPath/bin/cache/artifacts/engine/android-arm64/flutter.jar").exists()) {
+        flutterSdkPath = detectedFlutterSdkPath
+    }
 }
 def flutterEmbeddingJar = flutterSdkPath == null ? null : file("$flutterSdkPath/bin/cache/artifacts/engine/android-arm64/flutter.jar")
 

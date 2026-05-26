@@ -59,5 +59,17 @@ void main() {
       expect(barnard.currentEventCode, equals("CONF-2026"));
       expect(barnard.myDisplayId, equals(displayIdFromTek(expectedTek)));
     });
+
+    test("MockBarnard ignores empty configured event code at creation", () {
+      final deviceSecret = Uint8List.fromList(List<int>.filled(32, 7));
+      final barnard = MockBarnard(
+        config: const BarnardConfig(eventCode: ""),
+        deviceSecret: deviceSecret,
+      );
+      final expectedTek = deriveTek(deviceSecret);
+
+      expect(barnard.currentEventCode, isNull);
+      expect(barnard.myDisplayId, equals(displayIdFromTek(expectedTek)));
+    });
   });
 }
