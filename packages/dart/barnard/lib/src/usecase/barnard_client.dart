@@ -43,7 +43,7 @@ abstract class BarnardClient {
   /// This device's own v2 displayId: `SHA256(TEK)[0:4]` as 8 lowercase hex chars.
   String get myDisplayId;
 
-  /// Current ENIN: floor(unix_seconds / 600). Computed now.
+  /// Current ENIN using the configured derivation mode. Computed now.
   int get currentEnin;
 
   Stream<BarnardEvent> get events;

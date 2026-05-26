@@ -9,7 +9,7 @@ class BarnardCapabilities {
     required this.supportsBackground,
     required this.supportsHighRateRssi,
     this.eninMode = EninMode.fixedLength,
-    this.eninSeconds = 600,
+    this.eninSeconds = 120,
     this.beaconChain = BeaconChainConfig.ethereumMainnet,
   });
 

@@ -111,7 +111,7 @@ internal class BarnardController(
     private var debugOriginalName: String? = null
     private val unavailableRssi: Int = 127
     private var eninMode: BarnardCrypto.EninMode = BarnardCrypto.EninMode.FIXED_LENGTH
-    private var eninSeconds: Long = 600L
+    private var eninSeconds: Long = 120L
     private var beaconChain: BarnardCrypto.BeaconChainConfig = BarnardCrypto.BeaconChainConfig()
 
     // MARK: - Event Mode
@@ -401,7 +401,7 @@ internal class BarnardController(
             "beaconSlot" -> BarnardCrypto.EninMode.BEACON_SLOT
             else -> BarnardCrypto.EninMode.FIXED_LENGTH
         }
-        eninSeconds = ((args["eninSeconds"] as? Number)?.toLong() ?: 600L).coerceIn(12L, 3600L)
+        eninSeconds = ((args["eninSeconds"] as? Number)?.toLong() ?: 120L).coerceIn(12L, 3600L)
 
         val chain = args["beaconChain"] as? Map<*, *>
         beaconChain = BarnardCrypto.BeaconChainConfig(

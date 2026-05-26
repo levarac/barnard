@@ -26,10 +26,11 @@ For consumers still on v1, the following field renames apply:
 
 v1 remains untouched at [`../v1/`](../v1/) for existing deployments.
 
-ENIN derivation is an event-scoped protocol parameter. SDK defaults remain
-GAEN-compatible (`fixedLength`, `eninSeconds = 600`). In `beaconSlot` mode,
-consumers must interpret `enin` under the configured `beaconChain`; ENIN values
-from one chain must not be reused under another chain.
+ENIN derivation is an event-scoped protocol parameter. SDK defaults are
+`fixedLength` with `eninSeconds = 120`; set `eninSeconds = 600` explicitly when
+GAEN-compatible 10-minute windows are required. In `beaconSlot` mode, consumers
+must interpret `enin` under the configured `beaconChain`; ENIN values from one
+chain must not be reused under another chain.
 
 ## Non-normative: server-report projection
 

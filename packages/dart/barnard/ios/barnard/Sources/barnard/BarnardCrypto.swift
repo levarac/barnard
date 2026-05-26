@@ -160,13 +160,13 @@ enum BarnardCrypto {
 
   /// Calculate ENIN (EN Interval Number) for a given timestamp.
   ///
-  /// `ENIN = floor(unix_timestamp_seconds / 600)`
+  /// Defaults to `ENIN = floor(unix_timestamp_seconds / 120)`.
   ///
-  /// Each ENIN represents a 10-minute interval.
+  /// Each default ENIN represents a 2-minute interval.
   static func calculateEnin(
     for date: Date = Date(),
     mode: EninMode = .fixedLength,
-    eninSeconds: Int = 600,
+    eninSeconds: Int = 120,
     beaconChain: BeaconChainConfig = .ethereumMainnet
   ) -> UInt32 {
     let unixSeconds = Int(date.timeIntervalSince1970)

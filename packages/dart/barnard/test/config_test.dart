@@ -6,11 +6,11 @@ import "package:test/test.dart";
 
 void main() {
   group("ENIN config", () {
-    test("BarnardConfig defaults to GAEN-compatible fixed-length ENIN", () {
+    test("BarnardConfig defaults to a 120-second fixed-length ENIN", () {
       const config = BarnardConfig();
 
       expect(config.eninMode, equals(EninMode.fixedLength));
-      expect(config.effectiveEninSeconds, equals(600));
+      expect(config.effectiveEninSeconds, equals(120));
       expect(config.beaconChain, equals(BeaconChainConfig.ethereumMainnet));
     });
 

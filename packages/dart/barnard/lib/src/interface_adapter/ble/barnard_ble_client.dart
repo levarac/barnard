@@ -412,7 +412,7 @@ BarnardCapabilities _parseCapabilities(Map<Object?, Object?> map) {
     supportsBackground: map["supportsBackground"] == true,
     supportsHighRateRssi: map["supportsHighRateRssi"] == true,
     eninMode: _parseEninMode(map["eninMode"]),
-    eninSeconds: ((map["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+    eninSeconds: ((map["eninSeconds"] as int?) ?? 120).clamp(12, 3600),
     beaconChain: _parseBeaconChain(map["beaconChain"]),
   );
 }
@@ -424,7 +424,7 @@ BarnardState _parseState(Map<Object?, Object?> map) {
     isScanning: isScanning,
     isAdvertising: isAdvertising,
     eninMode: _parseEninMode(map["eninMode"]),
-    eninSeconds: ((map["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+    eninSeconds: ((map["eninSeconds"] as int?) ?? 120).clamp(12, 3600),
     beaconChain: _parseBeaconChain(map["beaconChain"]),
   );
 }
@@ -467,7 +467,7 @@ BarnardEvent parseBarnardEvent(Map<Object?, Object?> map) {
           isScanning: state["isScanning"] == true,
           isAdvertising: state["isAdvertising"] == true,
           eninMode: _parseEninMode(state["eninMode"]),
-          eninSeconds: ((state["eninSeconds"] as int?) ?? 600).clamp(12, 3600),
+          eninSeconds: ((state["eninSeconds"] as int?) ?? 120).clamp(12, 3600),
           beaconChain: _parseBeaconChain(state["beaconChain"]),
         ),
         reasonCode: map["reasonCode"] as String?,

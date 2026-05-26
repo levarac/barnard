@@ -39,7 +39,9 @@ internal class BarnardPluginTest {
         val call = MethodCall("getCapabilities", null)
         controller.onMethodCall(call, result)
 
-        assertTrue(result.value is Map<*, *>)
+        val value = result.value as Map<*, *>
+        assertEquals("fixedLength", value["eninMode"])
+        assertEquals(120L, value["eninSeconds"])
     }
 
     @Test

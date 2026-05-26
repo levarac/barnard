@@ -126,14 +126,14 @@ object BarnardCrypto {
     /**
      * Calculate ENIN (EN Interval Number) for a given timestamp.
      *
-     * `ENIN = floor(unix_timestamp_seconds / 600)`
+     * Defaults to `ENIN = floor(unix_timestamp_seconds / 120)`.
      *
-     * Each ENIN represents a 10-minute interval.
+     * Each default ENIN represents a 2-minute interval.
      */
     fun calculateEnin(
         timestampMs: Long = System.currentTimeMillis(),
         mode: EninMode = EninMode.FIXED_LENGTH,
-        eninSeconds: Long = 600L,
+        eninSeconds: Long = 120L,
         beaconChain: BeaconChainConfig = BeaconChainConfig(),
     ): UInt {
         val unixSeconds = timestampMs / 1000
