@@ -4,6 +4,7 @@
 package network.greeting.barnard
 
 import android.Manifest
+import android.app.Activity
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -23,23 +24,38 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.PluginRegistry
 import network.greeting.barnard.BarnardCrypto.toHex
 import network.greeting.barnard.BuildConfig
 import java.util.UUID
 
 private const val TAG = "BarnardBLE"
+
+internal fun isRuntimePermissionRequestBlocked(
+    sdkInt: Int,
+    hasPermission: Boolean,
+    wasRequestedBefore: Boolean,
+    shouldShowRequestPermissionRationale: Boolean
+): Boolean {
+    if (sdkInt < 23 || hasPermission) return false
+    if (!wasRequestedBefore) return false
+    return !shouldShowRequestPermissionRationale
+}
 
 /**
  * Barnard v2 BLE controller.
@@ -54,7 +70,12 @@ private const val TAG = "BarnardBLE"
 internal class BarnardController(
     private val appContext: Context,
     messenger: BinaryMessenger,
-) : MethodChannel.MethodCallHandler {
+) : MethodChannel.MethodCallHandler, PluginRegistry.RequestPermissionsResultListener {
+    private companion object {
+        const val permissionRequestCode = 0xB4D
+        const val permissionRequestedKeyPrefix = "permission_requested:"
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val methods = MethodChannel(messenger, "barnard/methods")
@@ -63,6 +84,8 @@ internal class BarnardController(
 
     private var eventSink: EventChannel.EventSink? = null
     private var debugEventSink: EventChannel.EventSink? = null
+    private var activity: Activity? = null
+    private var pendingPermissionResult: MethodChannel.Result? = null
 
     // MARK: - UUIDs
 
@@ -189,10 +212,17 @@ internal class BarnardController(
         }
     }
 
+    fun setActivity(activity: Activity?) {
+        this.activity = activity
+    }
+
     fun dispose() {
         methods.setMethodCallHandler(null)
         stopScan()
         stopAdvertise()
+        pendingPermissionResult?.error("E_DISPOSED", "BarnardController disposed before permission result", null)
+        pendingPermissionResult = null
+        activity = null
         eventSink = null
         debugEventSink = null
     }
@@ -244,6 +274,15 @@ internal class BarnardController(
             "exportCurrentTek" -> {
                 // Explicit privacy egress. SDK never transmits TEK over BLE.
                 result.success(currentTek.toHex())
+            }
+
+            "getPermissionStatus" -> result.success(getPermissionStatus())
+
+            "requestPermissions" -> requestPermissions(result)
+
+            "openAppSettings" -> {
+                openAppSettings()
+                result.success(null)
             }
 
             "startScan" -> {
@@ -440,7 +479,7 @@ internal class BarnardController(
             return
         }
         if (!hasScanPermission()) {
-            emitConstraint("permission_denied", "Missing BLUETOOTH_SCAN permission", requiredAction = "grant_permission")
+            emitConstraint("permission_denied", "Missing ${requiredScanPermission()} permission", requiredAction = "grant_permission")
             return
         }
         val s = adapter?.bluetoothLeScanner ?: run {
@@ -827,19 +866,165 @@ internal class BarnardController(
 
     // MARK: - Permissions
 
+    fun getPermissionStatus(): Map<String, Any> {
+        val required = requiredRuntimePermissions()
+        val missing = required.filter { !hasPermission(it) }
+        val blocked = missing.filter { isPermissionRequestBlocked(it) }
+        val requestable = missing.filterNot { blocked.contains(it) }
+        val permissions = required.associateWith { permission ->
+            if (hasPermission(permission)) "granted" else "denied"
+        }
+        // BLE capability requires both runtime permission AND hardware support.
+        // Android Emulator and BLE-less devices report permission grants but
+        // cannot actually scan or advertise — host apps would otherwise enable
+        // BLE-only UI based on permission state alone. See issue #57.
+        val hasBleHardware = appContext.packageManager
+            .hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+        val a = adapter
+        val hasAdvertiseHardware = hasBleHardware &&
+            a != null &&
+            a.bluetoothLeAdvertiser != null &&
+            a.isMultipleAdvertisementSupported
+        return mapOf(
+            "platform" to "android",
+            "permissions" to permissions,
+            "requiredPermissions" to required,
+            "missingPermissions" to missing,
+            "requestablePermissions" to requestable,
+            "blockedPermissions" to blocked,
+            "canScan" to (hasScanPermission() && hasBleHardware),
+            "canAdvertise" to (
+                hasAdvertisePermission() && hasConnectPermission() && hasAdvertiseHardware
+            ),
+        )
+    }
+
+    private fun requestPermissions(result: MethodChannel.Result) {
+        val missing = requiredRuntimePermissions().filter { !hasPermission(it) }
+        if (missing.isEmpty()) {
+            result.success(getPermissionStatus())
+            return
+        }
+        val requestable = missing.filterNot { isPermissionRequestBlocked(it) }
+        if (requestable.isEmpty()) {
+            result.success(getPermissionStatus())
+            return
+        }
+
+        val currentActivity = activity
+        if (currentActivity == null) {
+            result.error(
+                "E_NO_ACTIVITY",
+                "requestPermissions requires an attached Activity",
+                getPermissionStatus()
+            )
+            return
+        }
+
+        if (pendingPermissionResult != null) {
+            result.error(
+                "E_PERMISSION_REQUEST_IN_PROGRESS",
+                "A Barnard permission request is already in progress",
+                getPermissionStatus()
+            )
+            return
+        }
+
+        pendingPermissionResult = result
+        markPermissionsRequested(requestable)
+        currentActivity.requestPermissions(requestable.toTypedArray(), permissionRequestCode)
+    }
+
+    private fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", appContext.packageName, null)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        (activity ?: appContext).startActivity(intent)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ): Boolean {
+        if (requestCode != permissionRequestCode) return false
+        val result = pendingPermissionResult ?: return false
+        pendingPermissionResult = null
+        result.success(getPermissionStatus())
+        return true
+    }
+
+    private fun requiredRuntimePermissions(): List<String> {
+        return when {
+            Build.VERSION.SDK_INT >= 31 -> listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+            Build.VERSION.SDK_INT >= 23 -> listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            else -> emptyList()
+        }
+    }
+
+    private fun hasPermission(permission: String): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return true
+        return appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun isPermissionRequestBlocked(permission: String): Boolean {
+        if (Build.VERSION.SDK_INT < 23 || hasPermission(permission)) return false
+        val currentActivity = activity ?: return false
+        return isRuntimePermissionRequestBlocked(
+            sdkInt = Build.VERSION.SDK_INT,
+            hasPermission = false,
+            wasRequestedBefore = wasPermissionRequested(permission),
+            shouldShowRequestPermissionRationale =
+                currentActivity.shouldShowRequestPermissionRationale(permission)
+        )
+    }
+
+    private fun markPermissionsRequested(permissions: List<String>) {
+        if (permissions.isEmpty()) return
+        prefs.edit().apply {
+            for (permission in permissions) {
+                putBoolean(permissionRequestedKey(permission), true)
+            }
+        }.apply()
+    }
+
+    private fun wasPermissionRequested(permission: String): Boolean {
+        return prefs.getBoolean(permissionRequestedKey(permission), false)
+    }
+
+    private fun permissionRequestedKey(permission: String): String {
+        return "$permissionRequestedKeyPrefix$permission"
+    }
+
     private fun hasScanPermission(): Boolean {
-        if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        return when {
+            Build.VERSION.SDK_INT >= 31 -> hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+            Build.VERSION.SDK_INT >= 23 -> hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            else -> true
+        }
+    }
+
+    private fun requiredScanPermission(): String {
+        return if (Build.VERSION.SDK_INT >= 31) {
+            Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
     }
 
     private fun hasAdvertisePermission(): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
+        return hasPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
     }
 
     private fun hasConnectPermission(): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        return hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
     }
 
     // MARK: - Advertise Callback

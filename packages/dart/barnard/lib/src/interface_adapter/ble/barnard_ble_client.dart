@@ -5,6 +5,7 @@ import "../../domain/config.dart";
 import "../../domain/crypto.dart";
 import "../../domain/events.dart";
 import "../../domain/hex.dart";
+import "../../domain/permissions.dart";
 import "../../domain/rssi.dart";
 import "../../domain/state.dart";
 import "../../domain/transport.dart";
@@ -151,6 +152,34 @@ class BarnardBleClient implements BarnardClient {
 
   @override
   Stream<BarnardDebugEvent> get debugEvents => _debugEventsController.stream;
+
+  @override
+  Future<BarnardPermissionStatus> getPermissionStatus() async {
+    _ensureNotDisposed();
+    final Map<Object?, Object?> map =
+        (await _methods.invokeMethod<Map<Object?, Object?>>(
+          "getPermissionStatus",
+        )) ??
+        <Object?, Object?>{};
+    return BarnardPermissionStatus.fromMap(map);
+  }
+
+  @override
+  Future<BarnardPermissionStatus> requestPermissions() async {
+    _ensureNotDisposed();
+    final Map<Object?, Object?> map =
+        (await _methods.invokeMethod<Map<Object?, Object?>>(
+          "requestPermissions",
+        )) ??
+        <Object?, Object?>{};
+    return BarnardPermissionStatus.fromMap(map);
+  }
+
+  @override
+  Future<void> openAppSettings() async {
+    _ensureNotDisposed();
+    await _methods.invokeMethod<void>("openAppSettings");
+  }
 
   @override
   Future<void> startScan([ScanConfig? config]) async {

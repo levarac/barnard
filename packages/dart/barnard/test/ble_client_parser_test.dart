@@ -6,6 +6,86 @@ import "package:barnard/src/interface_adapter/ble/barnard_ble_client.dart";
 import "package:flutter_test/flutter_test.dart";
 
 void main() {
+  group("BarnardPermissionStatus", () {
+    test("parses stable permission result fields", () {
+      final BarnardPermissionStatus
+      status = BarnardPermissionStatus.fromMap(<Object?, Object?>{
+        "platform": "android",
+        "permissions": <Object?, Object?>{
+          "android.permission.BLUETOOTH_SCAN": "granted",
+          "android.permission.BLUETOOTH_CONNECT": "denied",
+        },
+        "requiredPermissions": <Object?>[
+          "android.permission.BLUETOOTH_SCAN",
+          "android.permission.BLUETOOTH_CONNECT",
+        ],
+        "missingPermissions": <Object?>["android.permission.BLUETOOTH_CONNECT"],
+        "requestablePermissions": <Object?>[],
+        "blockedPermissions": <Object?>["android.permission.BLUETOOTH_CONNECT"],
+        "canScan": true,
+        "canAdvertise": false,
+      });
+
+      expect(status.platform, equals("android"));
+      expect(
+        status.permissions["android.permission.BLUETOOTH_SCAN"],
+        equals(BarnardPermissionDecision.granted),
+      );
+      expect(
+        status.permissions["android.permission.BLUETOOTH_CONNECT"],
+        equals(BarnardPermissionDecision.denied),
+      );
+      expect(
+        status.requiredPermissions,
+        contains("android.permission.BLUETOOTH_SCAN"),
+      );
+      expect(
+        status.missingPermissions,
+        equals(<String>["android.permission.BLUETOOTH_CONNECT"]),
+      );
+      expect(status.requestablePermissions, isEmpty);
+      expect(
+        status.blockedPermissions,
+        equals(<String>["android.permission.BLUETOOTH_CONNECT"]),
+      );
+      expect(status.canRequest, isFalse);
+      expect(status.canScan, isTrue);
+      expect(status.canAdvertise, isFalse);
+      expect(status.allGranted, isFalse);
+    });
+
+    test(
+      "iOS Simulator reports granted authorization but no BLE capability",
+      () {
+        // iOS Simulator cannot scan/advertise over CoreBluetooth even when
+        // authorization is granted. The iOS plugin therefore overrides
+        // canScan/canAdvertise to false on simulator. Consumers should rely
+        // on these capability flags, not on allGranted alone, when deciding
+        // whether BLE is usable. See issue #57.
+        final BarnardPermissionStatus
+        status = BarnardPermissionStatus.fromMap(<Object?, Object?>{
+          "platform": "ios",
+          "permissions": <Object?, Object?>{"ios.bluetooth": "granted"},
+          "requiredPermissions": <Object?>["ios.bluetooth"],
+          "missingPermissions": <Object?>[],
+          "requestablePermissions": <Object?>[],
+          "blockedPermissions": <Object?>[],
+          "canScan": false,
+          "canAdvertise": false,
+        });
+
+        expect(status.platform, equals("ios"));
+        expect(
+          status.permissions["ios.bluetooth"],
+          equals(BarnardPermissionDecision.granted),
+        );
+        expect(status.allGranted, isTrue);
+        expect(status.canScan, isFalse);
+        expect(status.canAdvertise, isFalse);
+      },
+    );
+  });
+
   group("RSSI helpers", () {
     test("treats CoreBluetooth unavailable RSSI as unusable", () {
       expect(isUsableBleRssi(unavailableBleRssi), isFalse);

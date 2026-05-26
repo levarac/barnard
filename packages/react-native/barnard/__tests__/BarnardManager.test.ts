@@ -4,6 +4,27 @@ jest.mock('react-native', () => {
   const Barnard = {
     getCapabilities: jest.fn().mockResolvedValue({ supportedTransports: ['ble'] }),
     getState: jest.fn().mockResolvedValue({ isScanning: false, isAdvertising: false }),
+    getPermissionStatus: jest.fn().mockResolvedValue({
+      platform: 'mock',
+      permissions: { 'mock.bluetooth': 'granted' },
+      requiredPermissions: ['mock.bluetooth'],
+      missingPermissions: [],
+      requestablePermissions: [],
+      blockedPermissions: [],
+      canScan: true,
+      canAdvertise: true,
+    }),
+    requestPermissions: jest.fn().mockResolvedValue({
+      platform: 'mock',
+      permissions: { 'mock.bluetooth': 'granted' },
+      requiredPermissions: ['mock.bluetooth'],
+      missingPermissions: [],
+      requestablePermissions: [],
+      blockedPermissions: [],
+      canScan: true,
+      canAdvertise: true,
+    }),
+    openAppSettings: jest.fn().mockResolvedValue(undefined),
     getCurrentEventCode: jest.fn().mockResolvedValue(null),
     getMyDisplayId: jest.fn().mockResolvedValue('374708ff'),
     getCurrentRpi: jest.fn().mockResolvedValue('00'.repeat(16)),
@@ -69,6 +90,8 @@ const setup = () => {
       getCurrentRpi: () => Promise<string>;
       getCurrentEnin: () => Promise<number>;
       exportCurrentTek: () => Promise<string>;
+      getPermissionStatus: () => Promise<unknown>;
+      requestPermissions: () => Promise<unknown>;
       joinEvent: (eventCode: string) => Promise<void>;
       onDetection: (callback: (event: unknown) => void) => () => void;
       onRssiUpdate: (callback: (event: unknown) => void) => () => void;
@@ -120,6 +143,34 @@ describe('BarnardManager v2 API', () => {
     const manager = new BarnardManager();
     const tek = await manager.exportCurrentTek();
     expect(tek).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('delegates permission status APIs to native module', async () => {
+    const { BarnardManager, nativeModule } = setup();
+    const manager = new BarnardManager();
+
+    await expect(manager.getPermissionStatus()).resolves.toMatchObject({
+      platform: 'mock',
+      canScan: true,
+      canAdvertise: true,
+    });
+    await expect(manager.requestPermissions()).resolves.toMatchObject({
+      platform: 'mock',
+      canScan: true,
+      canAdvertise: true,
+    });
+
+    expect(nativeModule.getPermissionStatus).toHaveBeenCalledTimes(1);
+    expect(nativeModule.requestPermissions).toHaveBeenCalledTimes(1);
+  });
+
+  it('delegates opening app settings to native module', async () => {
+    const { BarnardManager, nativeModule } = setup();
+    const manager = new BarnardManager();
+
+    await manager.openAppSettings();
+
+    expect(nativeModule.openAppSettings).toHaveBeenCalledTimes(1);
   });
 
   it('forwards joinEvent argument to native module', async () => {

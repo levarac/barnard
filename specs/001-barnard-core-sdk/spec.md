@@ -104,6 +104,7 @@ As a maintainer, I want a core SDK structure that can be distributed as iOS (SPM
 ### Edge Cases
 
 - Repeated `startScan()` calls (idempotent vs error vs restart)
+- Package/plugin registration before the host app is ready to show OS permission dialogs
 - Permission revoked during Scan (state + events)
 - Bluetooth turns OFF mid-session
 - Foreground/background transitions (prototype is foreground-only; must be explicit)
@@ -135,12 +136,17 @@ As a maintainer, I want a core SDK structure that can be distributed as iOS (SPM
 - **FR-019**: RPID `rotationSeconds` MUST be adjustable by upper layers for debugging (with safe bounds)
 - **FR-020**: Prototype `ScanConfig` / `AdvertiseConfig` MUST be minimal and have safe defaults when omitted
 - **FR-021**: Barnard MUST support connection-based data exchange via GATT as an optional fallback (connect/reconnect + minimal Read/Notify/Write)
+- **FR-022**: Barnard MUST NOT instantiate OS BLE managers during package/plugin registration if that can show a permission dialog; the first permission-triggering action MUST be controlled by the host app (`requestPermissions`, `startScan`, `startAdvertise`, or `startAuto`)
+- **FR-023**: Barnard MUST expose normalized permission status/request APIs so host apps can schedule permission prompts without duplicating platform-version-specific BLE permission lists
 
 ### Platform Requirements
 
 - **FR-IOS-001**: iOS host apps MUST provide `NSBluetoothAlwaysUsageDescription` (documented requirement)
 - **FR-IOS-002**: If background Scan/Advertise is ever supported, host apps MUST provide `UIBackgroundModes` (`bluetooth-central` / `bluetooth-peripheral`) (documented requirement)
 - **FR-IOS-003**: iOS implementation SHOULD allow State Restoration (`CBCentralManagerOptionRestoreIdentifierKey` / `CBPeripheralManagerOptionRestoreIdentifierKey`) when needed
+- **FR-IOS-004**: iOS wrappers MUST defer `CBCentralManager` / `CBPeripheralManager` construction until an explicit host-app action to avoid Bluetooth permission prompts during app launch
+- **FR-ANDROID-001**: Android packages MUST ship manifest declarations for BLE Scan, Advertise, Connect, legacy Bluetooth, legacy location, and BLE feature support so host apps receive them through manifest merge
+- **FR-ANDROID-002**: Android 12+ `BLUETOOTH_SCAN` MUST use `neverForLocation` by default so BLE Scan does not require location permission on API 31+
 
 ### Prototype API Sketch (minimal config)
 
@@ -149,6 +155,7 @@ Prototype prioritizes “works with no config”. Config is primarily for debug 
 - `startScan(config?)` / `stopScan()`
 - `startAdvertise(config?)` / `stopAdvertise()`
 - `startAuto(config?)` / `stopAuto()` (first-class)
+- `getPermissionStatus()` / `requestPermissions()`
 - `events` (detection / state / constraint / error)
 - `debugEvents` (push) + `getDebugBuffer()` (pull)
 - `getRssiSamples({ since?, limit?, rpid? })` (pull; time series)
