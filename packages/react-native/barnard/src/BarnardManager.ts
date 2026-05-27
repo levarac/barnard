@@ -80,7 +80,7 @@ export class BarnardManager {
     return BarnardModule.getCurrentRpi();
   }
 
-  /** v2: current ENIN (floor(unix_seconds / 600)). */
+  /** v2: current ENIN (floor(unix_seconds / 120)). */
   async getCurrentEnin(): Promise<number> {
     return BarnardModule.getCurrentEnin();
   }
