@@ -52,8 +52,9 @@ final class BarnardBleController: NSObject {
 
   // MARK: - BLE Managers
 
-  private var centralManager: CBCentralManager!
-  private var peripheralManager: CBPeripheralManager!
+  private var centralManager: CBCentralManager?
+  private var peripheralManager: CBPeripheralManager?
+  private var pendingPermissionCompletions: [([String: Any]) -> Void] = []
 
   // MARK: - GATT Characteristics (Peripheral)
 
@@ -65,8 +66,13 @@ final class BarnardBleController: NSObject {
 
   private var isScanning = false
   private var isAdvertising = false
+  private var shouldStartScanWhenReady = false
+  private var shouldStartAdvertiseWhenReady = false
   private var allowDuplicates = true
   private var formatVersion: UInt8 = 1
+  private var eninMode: BarnardCrypto.EninMode = .fixedLength
+  private var eninSeconds: Int = 120
+  private var beaconChain: BarnardCrypto.BeaconChainConfig = .ethereumMainnet
 
   private var lastDiscoveryNameById: [UUID: String] = [:]
 
@@ -81,12 +87,14 @@ final class BarnardBleController: NSObject {
   private var peripheralsById: [UUID: CBPeripheral] = [:]
   private var lastConnectAttemptAt: [UUID: Date] = [:]
   private var resolutionBackoffUntil: [UUID: Date] = [:]
+  private var pendingBoundaryRetryPeripherals: [UUID: CBPeripheral] = [:]
   private var activePeripheral: CBPeripheral?
 
   private let maxConcurrentConnections = 1
   private let cooldownPerPeerSeconds: TimeInterval = 10
   private let resolutionFailureBackoffSeconds: TimeInterval = 30
   private let resolutionRejectedBackoffSeconds: TimeInterval = 5 * 60
+  private let rpidBoundaryRetryDelaySeconds: TimeInterval = 0.25
   private let maxConnectQueue = 20
   // CoreBluetooth's `connect()` has no built-in deadline. A hung connection
   // (e.g. to a peripheral whose BLE address has since rotated) keeps
@@ -110,6 +118,8 @@ final class BarnardBleController: NSObject {
   private struct PeripheralGattValues {
     var eventCodeHash: Data?
     var rpid: Data?
+    var rpidReadStartedAt: Date?
+    var rpidReadCompletedAt: Date?
     var detectedDisplayId: Data?
   }
 
@@ -126,6 +136,70 @@ final class BarnardBleController: NSObject {
 
   private func shouldServeGattDisplayId() -> Bool {
     BarnardV2Policy.shouldServeGattDisplayId(eventCode: rpid.eventCode)
+  }
+
+  private func configure(_ args: [String: Any]) {
+    eninMode = (args["eninMode"] as? String) == "beaconSlot" ? .beaconSlot : .fixedLength
+    let requestedSeconds = (args["eninSeconds"] as? Int) ?? 120
+    eninSeconds = min(max(requestedSeconds, 12), 3600)
+
+    let chain = args["beaconChain"] as? [String: Any]
+    beaconChain = BarnardCrypto.BeaconChainConfig(
+      chainId: (chain?["chainId"] as? String) ?? "mainnet",
+      genesisUnixSeconds: (chain?["genesisUnixSeconds"] as? Int) ?? 1_606_824_023,
+      slotSeconds: (chain?["slotSeconds"] as? Int) ?? 12
+    )
+
+    if let eventCode = args["eventCode"] as? String,
+      !eventCode.isEmpty,
+      eventCode != rpid.eventCode
+    {
+      resetPeerDiscoveryState(reason: "configure_event")
+      rpid.joinEvent(eventCode)
+      rebuildGattServiceIfNeeded()
+      emitState(reasonCode: "configure_event")
+    }
+
+    knownPeers.removeAll()
+    emitDebug(level: "info", name: "configure", data: [
+      "eninMode": eninModeName(),
+      "eninSeconds": eninSeconds,
+      "beaconChain": beaconChainDict(),
+    ])
+  }
+
+  private func currentEnin(_ date: Date = Date()) -> UInt32 {
+    BarnardCrypto.calculateEnin(
+      for: date,
+      mode: eninMode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+  }
+
+  private func currentPayload(now: Date) -> Data {
+    rpid.currentPayload(
+      formatVersion: formatVersion,
+      now: now,
+      eninMode: eninMode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+  }
+
+  private func eninModeName() -> String {
+    switch eninMode {
+    case .beaconSlot: return "beaconSlot"
+    case .fixedLength: return "fixedLength"
+    }
+  }
+
+  private func beaconChainDict() -> [String: Any] {
+    [
+      "chainId": beaconChain.chainId,
+      "genesisUnixSeconds": beaconChain.effectiveGenesisUnixSeconds,
+      "slotSeconds": beaconChain.effectiveSlotSeconds,
+    ]
   }
 
   // MARK: - Event Sinks
@@ -150,9 +224,6 @@ final class BarnardBleController: NSObject {
     debugHandler.onListen = { [weak self] sink in self?.debugEventSink = sink }
     debugHandler.onCancel = { [weak self] in self?.debugEventSink = nil }
 
-    centralManager = CBCentralManager(delegate: self, queue: nil)
-    peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
-
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(appDidBecomeActive),
@@ -171,6 +242,104 @@ final class BarnardBleController: NSObject {
     NotificationCenter.default.removeObserver(self)
   }
 
+  private func ensureCentralManager() -> CBCentralManager {
+    if let manager = centralManager {
+      return manager
+    }
+    let manager = CBCentralManager(delegate: self, queue: nil)
+    centralManager = manager
+    return manager
+  }
+
+  private func ensurePeripheralManager() -> CBPeripheralManager {
+    if let manager = peripheralManager {
+      return manager
+    }
+    let manager = CBPeripheralManager(delegate: self, queue: nil)
+    peripheralManager = manager
+    return manager
+  }
+
+  private func ensureBleManagers() {
+    _ = ensureCentralManager()
+    _ = ensurePeripheralManager()
+  }
+
+  private func bluetoothPermissionStatus() -> String {
+    switch CBManager.authorization {
+    case .allowedAlways:
+      return "granted"
+    case .denied:
+      return "denied"
+    case .restricted:
+      return "restricted"
+    case .notDetermined:
+      return "notDetermined"
+    @unknown default:
+      return "unknown"
+    }
+  }
+
+  private func permissionStatusPayload() -> [String: Any] {
+    let permissionName = "ios.bluetooth"
+    let status = bluetoothPermissionStatus()
+    let missing = status == "granted" ? [] : [permissionName]
+    let blocked = (status == "denied" || status == "restricted") ? [permissionName] : []
+    let requestable = missing.filter { !blocked.contains($0) }
+    // iOS Simulator cannot scan or advertise over BLE even when CoreBluetooth
+    // authorization is granted, so capability flags must reflect that gap
+    // independently of authorization state. See issue #57.
+    let canBle = status == "granted" && !Self.isIosSimulator
+    return [
+      "platform": "ios",
+      "permissions": [permissionName: status],
+      "requiredPermissions": [permissionName],
+      "missingPermissions": missing,
+      "requestablePermissions": requestable,
+      "blockedPermissions": blocked,
+      "canScan": canBle,
+      "canAdvertise": canBle,
+    ]
+  }
+
+  private static var isIosSimulator: Bool {
+    #if targetEnvironment(simulator)
+    return true
+    #else
+    return false
+    #endif
+  }
+
+  private func requestPermissions(completion: @escaping ([String: Any]) -> Void) {
+    if bluetoothPermissionStatus() != "notDetermined" {
+      completion(permissionStatusPayload())
+      return
+    }
+
+    pendingPermissionCompletions.append(completion)
+    ensureBleManagers()
+    resolvePendingPermissionCompletionsIfPossible()
+  }
+
+  private func resolvePendingPermissionCompletionsIfPossible() {
+    guard !pendingPermissionCompletions.isEmpty else { return }
+    guard bluetoothPermissionStatus() != "notDetermined" else { return }
+
+    let payload = permissionStatusPayload()
+    let completions = pendingPermissionCompletions
+    pendingPermissionCompletions.removeAll()
+    for completion in completions {
+      completion(payload)
+    }
+  }
+
+  private func openAppSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    DispatchQueue.main.async {
+      UIApplication.shared.open(url)
+    }
+  }
+
   // MARK: - Lifecycle
 
   // On background, iOS demotes our advertised service UUID from the AdvData
@@ -184,7 +353,7 @@ final class BarnardBleController: NSObject {
       emitDebug(level: "trace", name: "foreground_resume", data: ["isAdvertising": false])
       return
     }
-    peripheralManager.stopAdvertising()
+    peripheralManager?.stopAdvertising()
     isAdvertising = false
     startAdvertise()
     emitDebug(level: "info", name: "advertise_restart_on_foreground", data: nil)
@@ -207,6 +376,9 @@ final class BarnardBleController: NSObject {
         "supportsGattFallback": true,
         "supportsBackground": false,
         "supportsHighRateRssi": false,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ])
 
     case "getState":
@@ -214,7 +386,15 @@ final class BarnardBleController: NSObject {
         "isScanning": isScanning,
         "isAdvertising": isAdvertising,
         "eventCode": rpid.eventCode as Any,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ])
+
+    case "configure":
+      let args = (call.arguments as? [String: Any]) ?? [:]
+      configure(args)
+      result(nil)
 
     case "getCurrentEventCode":
       result(rpid.eventCode)
@@ -224,16 +404,28 @@ final class BarnardBleController: NSObject {
 
     case "getCurrentRpi":
       let rpik = BarnardCrypto.deriveRpik(from: rpid.getCurrentTek())
-      let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: BarnardCrypto.calculateEnin(for: Date()))
+      let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: currentEnin())
       result(rpi.hexString)
 
     case "getCurrentEnin":
-      result(Int(BarnardCrypto.calculateEnin(for: Date())))
+      result(Int(currentEnin()))
 
     case "exportCurrentTek":
       // Explicit privacy egress. SDK never transmits TEK over BLE; caller
       // decides whether/how to transmit it via another channel.
       result(rpid.getCurrentTek().hexString)
+
+    case "getPermissionStatus":
+      result(permissionStatusPayload())
+
+    case "requestPermissions":
+      requestPermissions { payload in
+        result(payload)
+      }
+
+    case "openAppSettings":
+      openAppSettings()
+      result(nil)
 
     case "startScan":
       let args = (call.arguments as? [String: Any]) ?? [:]
@@ -317,21 +509,35 @@ final class BarnardBleController: NSObject {
   // MARK: - Scan Control
 
   private func startScan() {
-    guard centralManager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(centralManager.state.rawValue)")
+    let manager = ensureCentralManager()
+    if isScanning {
+      shouldStartScanWhenReady = false
       return
     }
-    if isScanning { return }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartScanWhenReady = true
+        emitDebug(level: "info", name: "scan_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartScanWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartScanWhenReady = false
     let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
-    centralManager.scanForPeripherals(withServices: [discoveryServiceUUID], options: options)
+    manager.scanForPeripherals(withServices: [discoveryServiceUUID], options: options)
     isScanning = true
     emitState(reasonCode: "scan_start")
     emitDebug(level: "info", name: "scan_start", data: ["allowDuplicates": allowDuplicates])
   }
 
   private func stopScan() {
+    shouldStartScanWhenReady = false
     if !isScanning { return }
-    centralManager.stopScan()
+    centralManager?.stopScan()
     isScanning = false
     resetPeerDiscoveryState(reason: "scan_stop")
 
@@ -342,7 +548,7 @@ final class BarnardBleController: NSObject {
   private func resetPeerDiscoveryState(reason: String) {
     connectQueue.removeAll()
     if let active = activePeripheral {
-      centralManager.cancelPeripheralConnection(active)
+      centralManager?.cancelPeripheralConnection(active)
     }
     activePeripheral = nil
     cancelConnectWatchdog()
@@ -353,6 +559,7 @@ final class BarnardBleController: NSObject {
     peripheralsById.removeAll()
     lastConnectAttemptAt.removeAll()
     resolutionBackoffUntil.removeAll()
+    pendingBoundaryRetryPeripherals.removeAll()
     peripheralCharacteristics.removeAll()
     peripheralReadValues.removeAll()
     b004ReadRetries.removeAll()
@@ -365,11 +572,24 @@ final class BarnardBleController: NSObject {
   // MARK: - Advertise Control
 
   private func startAdvertise() {
-    guard peripheralManager.state == .poweredOn else {
-      emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(peripheralManager.state.rawValue)")
+    let manager = ensurePeripheralManager()
+    if isAdvertising {
+      shouldStartAdvertiseWhenReady = false
       return
     }
-    if isAdvertising { return }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartAdvertiseWhenReady = true
+        emitDebug(level: "info", name: "advertise_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartAdvertiseWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartAdvertiseWhenReady = false
     ensureGattService()
     var ad: [String: Any] = [
       CBAdvertisementDataServiceUUIDsKey: [discoveryServiceUUID],
@@ -377,7 +597,7 @@ final class BarnardBleController: NSObject {
     #if DEBUG
     ad[CBAdvertisementDataLocalNameKey] = debugLocalName
     #endif
-    peripheralManager.startAdvertising(ad)
+    manager.startAdvertising(ad)
     isAdvertising = true
     emitState(reasonCode: "advertise_start")
     emitDebug(
@@ -392,8 +612,9 @@ final class BarnardBleController: NSObject {
   }
 
   private func stopAdvertise() {
+    shouldStartAdvertiseWhenReady = false
     if !isAdvertising { return }
-    peripheralManager.stopAdvertising()
+    peripheralManager?.stopAdvertising()
     isAdvertising = false
     emitState(reasonCode: "advertise_stop")
     emitDebug(level: "info", name: "advertise_stop", data: nil)
@@ -402,14 +623,15 @@ final class BarnardBleController: NSObject {
   // MARK: - GATT Service Management
 
   private func ensureGattService() {
+    _ = ensurePeripheralManager()
     if rpidCharacteristic != nil { return }
     buildAndAddGattService()
   }
 
   private func rebuildGattServiceIfNeeded() {
-    guard peripheralManager.state == .poweredOn else { return }
+    guard let manager = peripheralManager, manager.state == .poweredOn else { return }
 
-    peripheralManager.removeAllServices()
+    manager.removeAllServices()
     rpidCharacteristic = nil
     displayIdCharacteristic = nil
     eventCodeHashCharacteristic = nil
@@ -420,6 +642,8 @@ final class BarnardBleController: NSObject {
   }
 
   private func buildAndAddGattService() {
+    guard let manager = peripheralManager else { return }
+
     // B002 RPID (Read only)
     let rpidCh = CBMutableCharacteristic(
       type: rpidCharacteristicUUID,
@@ -446,7 +670,7 @@ final class BarnardBleController: NSObject {
 
     let svc = CBMutableService(type: discoveryServiceUUID, primary: true)
     svc.characteristics = [rpidCh, displayIdCh, eventCodeHashCh]
-    peripheralManager.add(svc)
+    manager.add(svc)
 
     rpidCharacteristic = rpidCh
     displayIdCharacteristic = displayIdCh
@@ -500,6 +724,7 @@ final class BarnardBleController: NSObject {
       connectQueue.removeFirst()
       return
     }
+    guard let manager = centralManager else { return }
 
     connectQueue.removeFirst()
     activePeripheral = p
@@ -509,7 +734,7 @@ final class BarnardBleController: NSObject {
     b004ReadRetries[nextId] = 0
 
     p.delegate = self
-    centralManager.connect(p, options: nil)
+    manager.connect(p, options: nil)
     emitDebug(level: "trace", name: "connect_attempt", data: ["id": nextId.uuidString])
     armConnectWatchdog(for: nextId)
   }
@@ -531,7 +756,7 @@ final class BarnardBleController: NSObject {
         recoverable: true,
         extra: ["seconds": self.connectTimeoutSeconds]
       )
-      self.centralManager.cancelPeripheralConnection(pinned)
+      self.centralManager?.cancelPeripheralConnection(pinned)
       self.peripheralCharacteristics.removeValue(forKey: id)
       self.peripheralReadValues.removeValue(forKey: id)
       self.lastDiscoveryNameById.removeValue(forKey: id)
@@ -647,6 +872,7 @@ final class BarnardBleController: NSObject {
       finishConnection(peripheral)
       return
     }
+    peripheralReadValues[id]?.rpidReadStartedAt = Date()
     peripheral.readValue(for: rpidCh)
   }
 
@@ -674,10 +900,25 @@ final class BarnardBleController: NSObject {
 
     if let rpidData = values.rpid {
       let rssi = discoveredRssi[id] ?? 0
-      let ts = discoveredAt[id] ?? Date()
+      let completedAt = values.rpidReadCompletedAt ?? Date()
+      guard let peerEnin = BarnardCrypto.stableReadEnin(
+        startedAt: values.rpidReadStartedAt ?? completedAt,
+        completedAt: completedAt,
+        mode: eninMode,
+        eninSeconds: eninSeconds,
+        beaconChain: beaconChain
+      ) else {
+        emitDebug(level: "warn", name: "gatt_rpid_read_crossed_enin_boundary", data: [
+          "id": id.uuidString,
+          "startedAt": (values.rpidReadStartedAt ?? completedAt).timeIntervalSince1970,
+          "completedAt": completedAt.timeIntervalSince1970,
+        ])
+        retryAfterRpidBoundaryCrossing(peripheral)
+        return
+      }
       let detectedDisplayId = values.detectedDisplayId?.hexString
       emitDetection(
-        timestamp: ts,
+        timestamp: completedAt,
         rssi: rssi,
         payload: rpidData,
         detectedDisplayId: detectedDisplayId,
@@ -685,7 +926,6 @@ final class BarnardBleController: NSObject {
       )
 
       if rpidData.count == 17 {
-        let peerEnin = BarnardCrypto.calculateEnin(for: ts)
         knownPeers[id] = KnownPeer(
           rpid: rpidData,
           enin: peerEnin,
@@ -705,7 +945,24 @@ final class BarnardBleController: NSObject {
     peripheralReadValues.removeValue(forKey: id)
     b004ReadRetries.removeValue(forKey: id)
     lastDiscoveryNameById.removeValue(forKey: id)
-    centralManager.cancelPeripheralConnection(peripheral)
+    centralManager?.cancelPeripheralConnection(peripheral)
+  }
+
+  private func retryAfterRpidBoundaryCrossing(_ peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    lastConnectAttemptAt.removeValue(forKey: id)
+    pendingBoundaryRetryPeripherals[id] = peripheral
+    finishConnection(peripheral)
+  }
+
+  private func schedulePendingBoundaryRetry(for id: UUID) {
+    guard let peripheral = pendingBoundaryRetryPeripherals.removeValue(forKey: id) else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + rpidBoundaryRetryDelaySeconds) { [weak self, weak peripheral] in
+      guard let self = self, let peripheral = peripheral else { return }
+      if self.isScanning {
+        self.enqueueConnect(peripheral)
+      }
+    }
   }
 
   // MARK: - Event Emission
@@ -718,6 +975,9 @@ final class BarnardBleController: NSObject {
         "isScanning": isScanning,
         "isAdvertising": isAdvertising,
         "eventCode": rpid.eventCode as Any,
+        "eninMode": eninModeName(),
+        "eninSeconds": eninSeconds,
+        "beaconChain": beaconChainDict(),
       ],
       "reasonCode": reasonCode as Any,
     ])
@@ -763,8 +1023,8 @@ final class BarnardBleController: NSObject {
 
     // Atomic snapshot: use the observation timestamp for both reporterRpid
     // and enin, so they always agree across ENIN boundaries.
-    let reporterPayload = rpid.currentPayload(formatVersion: formatVersion, now: timestamp)
-    let enin = Int(BarnardCrypto.calculateEnin(for: timestamp))
+    let reporterPayload = currentPayload(now: timestamp)
+    let enin = Int(currentEnin(timestamp))
 
     var event: [String: Any] = [
       "type": "detection",
@@ -794,8 +1054,8 @@ final class BarnardBleController: NSObject {
     guard let peer = knownPeers[peripheralId] else { return }
 
     // Atomic reporter snapshot (same contract as DetectionEvent).
-    let reporterPayload = rpid.currentPayload(formatVersion: formatVersion, now: timestamp)
-    let enin = Int(BarnardCrypto.calculateEnin(for: timestamp))
+    let reporterPayload = currentPayload(now: timestamp)
+    let enin = Int(currentEnin(timestamp))
 
     var event: [String: Any] = [
       "type": "rssi_update",
@@ -889,8 +1149,11 @@ final class BarnardBleController: NSObject {
 
 extension BarnardBleController: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    resolvePendingPermissionCompletionsIfPossible()
     emitDebug(level: "info", name: "central_state", data: ["state": central.state.rawValue])
-    if central.state != .poweredOn, isScanning {
+    if central.state == .poweredOn, shouldStartScanWhenReady {
+      startScan()
+    } else if central.state != .poweredOn, isScanning {
       stopScan()
     }
   }
@@ -927,15 +1190,15 @@ extension BarnardBleController: CBCentralManagerDelegate {
     #endif
 
     if let knownPeer = knownPeers[peripheral.identifier] {
-      let currentEnin = BarnardCrypto.calculateEnin(for: now)
-      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEnin) {
+      let currentEninValue = currentEnin(now)
+      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEninValue) {
         emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
       } else {
         knownPeers.removeValue(forKey: peripheral.identifier)
         emitDebug(level: "trace", name: "known_peer_rpid_expired", data: [
           "id": peripheral.identifier.uuidString,
           "cachedEnin": Int(knownPeer.enin),
-          "currentEnin": Int(currentEnin),
+          "currentEnin": Int(currentEninValue),
         ])
         // Force a fresh resolution. enqueueConnect dedups against in-flight /
         // queued connects, so following advertisements on the same identifier
@@ -995,6 +1258,7 @@ extension BarnardBleController: CBCentralManagerDelegate {
     peripheralCharacteristics.removeValue(forKey: id)
     peripheralReadValues.removeValue(forKey: id)
     activePeripheral = nil
+    schedulePendingBoundaryRetry(for: id)
     pumpConnectQueue()
   }
 }
@@ -1124,6 +1388,7 @@ extension BarnardBleController: CBPeripheralDelegate {
 
     case rpidCharacteristicUUID:
       peripheralReadValues[id]?.rpid = value
+      peripheralReadValues[id]?.rpidReadCompletedAt = Date()
       emitDebug(level: "trace", name: "gatt_read_rpid", data: [
         "id": id.uuidString,
         "bytes": value.count,
@@ -1156,8 +1421,11 @@ extension BarnardBleController: CBPeripheralDelegate {
 
 extension BarnardBleController: CBPeripheralManagerDelegate {
   func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+    resolvePendingPermissionCompletionsIfPossible()
     emitDebug(level: "info", name: "peripheral_state", data: ["state": peripheral.state.rawValue])
-    if peripheral.state != .poweredOn, isAdvertising {
+    if peripheral.state == .poweredOn, shouldStartAdvertiseWhenReady {
+      startAdvertise()
+    } else if peripheral.state != .poweredOn, isAdvertising {
       stopAdvertise()
     }
   }
@@ -1179,7 +1447,7 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
   func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
     switch request.characteristic.uuid {
     case rpidCharacteristicUUID:
-      let payload = rpid.currentPayload(formatVersion: formatVersion, now: Date())
+      let payload = currentPayload(now: Date())
       respondRead(
         peripheral,
         request: request,

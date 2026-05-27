@@ -14,6 +14,25 @@ export interface BarnardCapabilities {
   supportsHighRateRssi: boolean;
 }
 
+export type BarnardPermissionDecision =
+  | 'granted'
+  | 'denied'
+  | 'notDetermined'
+  | 'restricted'
+  | 'unsupported'
+  | 'unknown';
+
+export interface BarnardPermissionStatus {
+  platform: string;
+  permissions: Record<string, BarnardPermissionDecision>;
+  requiredPermissions: string[];
+  missingPermissions: string[];
+  requestablePermissions: string[];
+  blockedPermissions: string[];
+  canScan: boolean;
+  canAdvertise: boolean;
+}
+
 /**
  * Current state of scanning and advertising operations.
  *

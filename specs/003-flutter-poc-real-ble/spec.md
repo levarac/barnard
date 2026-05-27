@@ -70,6 +70,8 @@ Recommended channels:
 MethodChannel calls (conceptual):
 - `getCapabilities() -> BarnardCapabilities`
 - `getState() -> BarnardState`
+- `getPermissionStatus() -> BarnardPermissionStatus`
+- `requestPermissions() -> BarnardPermissionStatus`
 - `startScan(config?) -> void`
 - `stopScan() -> void`
 - `startAdvertise(config?) -> void`
@@ -179,6 +181,7 @@ Both platforms MUST use the same service UUID, characteristic UUID, and 17-byte 
 ### iOS
 
 - Host app MUST provide required Info.plist keys (documented in README for the PoC app).
+- The plugin MUST NOT create `CBCentralManager` or `CBPeripheralManager` during registration. Creating those managers can show the Bluetooth permission dialog, so manager construction is deferred until `requestPermissions()`, `startScan()`, `startAdvertise()`, or `startAuto()`.
 - Advertise constraints MUST be surfaced as ConstraintEvent/ErrorEvent with reason codes (no silent failure).
 
 #### iOS Advertise constraints (CoreBluetooth)
@@ -199,7 +202,10 @@ CoreBluetooth imposes strict limits on what iOS can Advertise and how reliably i
 
 ### Android
 
-- Required permissions MUST be documented and validated (ConstraintEvent/ErrorEvent on missing permissions).
+- Required permissions MUST be declared by the plugin Android manifest where manifest merge can carry them into the host app.
+- Runtime permissions MUST be exposed through `getPermissionStatus()` and `requestPermissions()` so host apps can trigger permission dialogs at a deliberate point in their own UX.
+- Missing permissions MUST still be validated at Scan/Advertise time and surfaced as ConstraintEvent/ErrorEvent.
+- On Android 12+ (`API 31+`), `BLUETOOTH_SCAN` MUST use `android:usesPermissionFlags="neverForLocation"` by default; location runtime permission is only required for legacy Android Scan paths (`API 23..30`).
 - Advertise limitations (device does not support, settings disabled, etc.) MUST be surfaced with reason codes.
 - Scan SHOULD apply a local filter fallback for iOS foreground advertising:
   - Prefer Discovery Service UUID match when available.

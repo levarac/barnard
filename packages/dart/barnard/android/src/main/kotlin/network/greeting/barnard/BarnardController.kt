@@ -4,6 +4,7 @@
 package network.greeting.barnard
 
 import android.Manifest
+import android.app.Activity
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -23,23 +24,38 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.PluginRegistry
 import network.greeting.barnard.BarnardCrypto.toHex
 import network.greeting.barnard.BuildConfig
 import java.util.UUID
 
 private const val TAG = "BarnardBLE"
+
+internal fun isRuntimePermissionRequestBlocked(
+    sdkInt: Int,
+    hasPermission: Boolean,
+    wasRequestedBefore: Boolean,
+    shouldShowRequestPermissionRationale: Boolean
+): Boolean {
+    if (sdkInt < 23 || hasPermission) return false
+    if (!wasRequestedBefore) return false
+    return !shouldShowRequestPermissionRationale
+}
 
 /**
  * Barnard v2 BLE controller.
@@ -54,7 +70,12 @@ private const val TAG = "BarnardBLE"
 internal class BarnardController(
     private val appContext: Context,
     messenger: BinaryMessenger,
-) : MethodChannel.MethodCallHandler {
+) : MethodChannel.MethodCallHandler, PluginRegistry.RequestPermissionsResultListener {
+    private companion object {
+        const val permissionRequestCode = 0xB4D
+        const val permissionRequestedKeyPrefix = "permission_requested:"
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val methods = MethodChannel(messenger, "barnard/methods")
@@ -63,6 +84,8 @@ internal class BarnardController(
 
     private var eventSink: EventChannel.EventSink? = null
     private var debugEventSink: EventChannel.EventSink? = null
+    private var activity: Activity? = null
+    private var pendingPermissionResult: MethodChannel.Result? = null
 
     // MARK: - UUIDs
 
@@ -87,6 +110,9 @@ internal class BarnardController(
     private var formatVersion: Int = 1
     private var debugOriginalName: String? = null
     private val unavailableRssi: Int = 127
+    private var eninMode: BarnardCrypto.EninMode = BarnardCrypto.EninMode.FIXED_LENGTH
+    private var eninSeconds: Long = 120L
+    private var beaconChain: BarnardCrypto.BeaconChainConfig = BarnardCrypto.BeaconChainConfig()
 
     // MARK: - Event Mode
 
@@ -108,6 +134,7 @@ internal class BarnardController(
     private val connectQueue: ArrayDeque<BluetoothDevice> = ArrayDeque()
     private val lastConnectAttemptAtMs: MutableMap<String, Long> = mutableMapOf()
     private val resolutionBackoffUntilMs: MutableMap<String, Long> = mutableMapOf()
+    private val pendingBoundaryRetryDevices: MutableMap<String, BluetoothDevice> = mutableMapOf()
     private var activeGatt: BluetoothGatt? = null
 
     private val maxConnectQueue: Int = 20
@@ -128,6 +155,8 @@ internal class BarnardController(
     private data class GattReadValues(
         var eventCodeHash: ByteArray? = null,
         var rpid: ByteArray? = null,
+        var rpidReadStartedAtMs: Long? = null,
+        var rpidReadCompletedAtMs: Long? = null,
         var detectedDisplayId: ByteArray? = null
     )
 
@@ -186,10 +215,17 @@ internal class BarnardController(
         }
     }
 
+    fun setActivity(activity: Activity?) {
+        this.activity = activity
+    }
+
     fun dispose() {
         methods.setMethodCallHandler(null)
         stopScan()
         stopAdvertise()
+        pendingPermissionResult?.error("E_DISPOSED", "BarnardController disposed before permission result", null)
+        pendingPermissionResult = null
+        activity = null
         eventSink = null
         debugEventSink = null
     }
@@ -203,6 +239,9 @@ internal class BarnardController(
                     "supportsGattFallback" to true,
                     "supportsBackground" to false,
                     "supportsHighRateRssi" to false,
+                    "eninMode" to eninModeName(),
+                    "eninSeconds" to eninSeconds,
+                    "beaconChain" to beaconChainMap(),
                 )
             )
 
@@ -210,9 +249,18 @@ internal class BarnardController(
                 mapOf(
                     "isScanning" to isScanning,
                     "isAdvertising" to isAdvertising,
-                    "eventCode" to eventCode
+                    "eventCode" to eventCode,
+                    "eninMode" to eninModeName(),
+                    "eninSeconds" to eninSeconds,
+                    "beaconChain" to beaconChainMap(),
                 )
             )
+
+            "configure" -> {
+                val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
+                configure(args)
+                result.success(null)
+            }
 
             "getCurrentEventCode" -> result.success(eventCode)
 
@@ -220,15 +268,24 @@ internal class BarnardController(
 
             "getCurrentRpi" -> {
                 val rpik = BarnardCrypto.deriveRpik(currentTek)
-                val rpi = BarnardCrypto.generateRpi(rpik, BarnardCrypto.calculateEnin())
+                val rpi = BarnardCrypto.generateRpi(rpik, currentEnin())
                 result.success(rpi.toHex())
             }
 
-            "getCurrentEnin" -> result.success(BarnardCrypto.calculateEnin().toLong())
+            "getCurrentEnin" -> result.success(currentEnin().toLong())
 
             "exportCurrentTek" -> {
                 // Explicit privacy egress. SDK never transmits TEK over BLE.
                 result.success(currentTek.toHex())
+            }
+
+            "getPermissionStatus" -> result.success(getPermissionStatus())
+
+            "requestPermissions" -> requestPermissions(result)
+
+            "openAppSettings" -> {
+                openAppSettings()
+                result.success(null)
             }
 
             "startScan" -> {
@@ -342,6 +399,54 @@ internal class BarnardController(
     private val isEventMode: Boolean
         get() = eventCode != null
 
+    private fun configure(args: Map<*, *>) {
+        eninMode = when (args["eninMode"] as? String) {
+            "beaconSlot" -> BarnardCrypto.EninMode.BEACON_SLOT
+            else -> BarnardCrypto.EninMode.FIXED_LENGTH
+        }
+        eninSeconds = ((args["eninSeconds"] as? Number)?.toLong() ?: 120L).coerceIn(12L, 3600L)
+
+        val chain = args["beaconChain"] as? Map<*, *>
+        beaconChain = BarnardCrypto.BeaconChainConfig(
+            chainId = chain?.get("chainId") as? String ?: "mainnet",
+            genesisUnixSeconds = (chain?.get("genesisUnixSeconds") as? Number)?.toLong() ?: 1606824023L,
+            slotSeconds = (chain?.get("slotSeconds") as? Number)?.toLong() ?: 12L,
+        )
+
+        (args["eventCode"] as? String)?.let { code ->
+            if (code.isNotEmpty() && code != eventCode) joinEvent(code)
+        }
+
+        knownPeers.clear()
+        emitDebug("info", "configure", mapOf(
+            "eninMode" to eninModeName(),
+            "eninSeconds" to eninSeconds,
+            "beaconChain" to beaconChainMap(),
+        ))
+    }
+
+    private fun currentEnin(timestampMs: Long = System.currentTimeMillis()): UInt {
+        return BarnardCrypto.calculateEnin(
+            timestampMs = timestampMs,
+            mode = eninMode,
+            eninSeconds = eninSeconds,
+            beaconChain = beaconChain,
+        )
+    }
+
+    private fun eninModeName(): String {
+        return when (eninMode) {
+            BarnardCrypto.EninMode.BEACON_SLOT -> "beaconSlot"
+            BarnardCrypto.EninMode.FIXED_LENGTH -> "fixedLength"
+        }
+    }
+
+    private fun beaconChainMap(): Map<String, Any> = mapOf(
+        "chainId" to beaconChain.chainId,
+        "genesisUnixSeconds" to beaconChain.effectiveGenesisUnixSeconds,
+        "slotSeconds" to beaconChain.effectiveSlotSeconds,
+    )
+
     private fun getEventCodeHash(): ByteArray {
         val code = eventCode ?: return ByteArray(0)
         return BarnardCrypto.computeEventCodeHash(code)
@@ -377,7 +482,7 @@ internal class BarnardController(
             return
         }
         if (!hasScanPermission()) {
-            emitConstraint("permission_denied", "Missing BLUETOOTH_SCAN permission", requiredAction = "grant_permission")
+            emitConstraint("permission_denied", "Missing ${requiredScanPermission()} permission", requiredAction = "grant_permission")
             return
         }
         val s = adapter?.bluetoothLeScanner ?: run {
@@ -442,6 +547,7 @@ internal class BarnardController(
         lastDiscoveryNameById.clear()
         lastConnectAttemptAtMs.clear()
         resolutionBackoffUntilMs.clear()
+        pendingBoundaryRetryDevices.clear()
         peripheralReadValues.clear()
         knownPeers.clear()
 
@@ -612,7 +718,7 @@ internal class BarnardController(
      * and RPI from the same timestamp.
      */
     private fun computePayload(nowMs: Long): ByteArray {
-        val enin = BarnardCrypto.calculateEnin(nowMs)
+        val enin = currentEnin(nowMs)
         val rpik = BarnardCrypto.deriveRpik(currentTek)
         val rpi = BarnardCrypto.generateRpi(rpik, enin)
 
@@ -631,7 +737,10 @@ internal class BarnardController(
             "state" to mapOf(
                 "isScanning" to isScanning,
                 "isAdvertising" to isAdvertising,
-                "eventCode" to eventCode
+                "eventCode" to eventCode,
+                "eninMode" to eninModeName(),
+                "eninSeconds" to eninSeconds,
+                "beaconChain" to beaconChainMap(),
             ),
             "reasonCode" to reasonCode,
         )
@@ -682,7 +791,7 @@ internal class BarnardController(
 
         // Atomic reporter snapshot at the observation timestamp.
         val reporterPayload = computePayload(timestampMs)
-        val enin = BarnardCrypto.calculateEnin(timestampMs).toLong()
+        val enin = currentEnin(timestampMs).toLong()
 
         val payload = mutableMapOf<String, Any?>(
             "type" to "detection",
@@ -711,7 +820,7 @@ internal class BarnardController(
 
         // Atomic reporter snapshot (same contract as DetectionEvent).
         val reporterPayload = computePayload(timestampMs)
-        val enin = BarnardCrypto.calculateEnin(timestampMs).toLong()
+        val enin = currentEnin(timestampMs).toLong()
 
         val payload = mutableMapOf<String, Any?>(
             "type" to "rssi_update",
@@ -761,19 +870,165 @@ internal class BarnardController(
 
     // MARK: - Permissions
 
+    fun getPermissionStatus(): Map<String, Any> {
+        val required = requiredRuntimePermissions()
+        val missing = required.filter { !hasPermission(it) }
+        val blocked = missing.filter { isPermissionRequestBlocked(it) }
+        val requestable = missing.filterNot { blocked.contains(it) }
+        val permissions = required.associateWith { permission ->
+            if (hasPermission(permission)) "granted" else "denied"
+        }
+        // BLE capability requires both runtime permission AND hardware support.
+        // Android Emulator and BLE-less devices report permission grants but
+        // cannot actually scan or advertise — host apps would otherwise enable
+        // BLE-only UI based on permission state alone. See issue #57.
+        val hasBleHardware = appContext.packageManager
+            .hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+        val a = adapter
+        val hasAdvertiseHardware = hasBleHardware &&
+            a != null &&
+            a.bluetoothLeAdvertiser != null &&
+            a.isMultipleAdvertisementSupported
+        return mapOf(
+            "platform" to "android",
+            "permissions" to permissions,
+            "requiredPermissions" to required,
+            "missingPermissions" to missing,
+            "requestablePermissions" to requestable,
+            "blockedPermissions" to blocked,
+            "canScan" to (hasScanPermission() && hasBleHardware),
+            "canAdvertise" to (
+                hasAdvertisePermission() && hasConnectPermission() && hasAdvertiseHardware
+            ),
+        )
+    }
+
+    private fun requestPermissions(result: MethodChannel.Result) {
+        val missing = requiredRuntimePermissions().filter { !hasPermission(it) }
+        if (missing.isEmpty()) {
+            result.success(getPermissionStatus())
+            return
+        }
+        val requestable = missing.filterNot { isPermissionRequestBlocked(it) }
+        if (requestable.isEmpty()) {
+            result.success(getPermissionStatus())
+            return
+        }
+
+        val currentActivity = activity
+        if (currentActivity == null) {
+            result.error(
+                "E_NO_ACTIVITY",
+                "requestPermissions requires an attached Activity",
+                getPermissionStatus()
+            )
+            return
+        }
+
+        if (pendingPermissionResult != null) {
+            result.error(
+                "E_PERMISSION_REQUEST_IN_PROGRESS",
+                "A Barnard permission request is already in progress",
+                getPermissionStatus()
+            )
+            return
+        }
+
+        pendingPermissionResult = result
+        markPermissionsRequested(requestable)
+        currentActivity.requestPermissions(requestable.toTypedArray(), permissionRequestCode)
+    }
+
+    private fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", appContext.packageName, null)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        (activity ?: appContext).startActivity(intent)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ): Boolean {
+        if (requestCode != permissionRequestCode) return false
+        val result = pendingPermissionResult ?: return false
+        pendingPermissionResult = null
+        result.success(getPermissionStatus())
+        return true
+    }
+
+    private fun requiredRuntimePermissions(): List<String> {
+        return when {
+            Build.VERSION.SDK_INT >= 31 -> listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+            Build.VERSION.SDK_INT >= 23 -> listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            else -> emptyList()
+        }
+    }
+
+    private fun hasPermission(permission: String): Boolean {
+        if (Build.VERSION.SDK_INT < 23) return true
+        return appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun isPermissionRequestBlocked(permission: String): Boolean {
+        if (Build.VERSION.SDK_INT < 23 || hasPermission(permission)) return false
+        val currentActivity = activity ?: return false
+        return isRuntimePermissionRequestBlocked(
+            sdkInt = Build.VERSION.SDK_INT,
+            hasPermission = false,
+            wasRequestedBefore = wasPermissionRequested(permission),
+            shouldShowRequestPermissionRationale =
+                currentActivity.shouldShowRequestPermissionRationale(permission)
+        )
+    }
+
+    private fun markPermissionsRequested(permissions: List<String>) {
+        if (permissions.isEmpty()) return
+        prefs.edit().apply {
+            for (permission in permissions) {
+                putBoolean(permissionRequestedKey(permission), true)
+            }
+        }.apply()
+    }
+
+    private fun wasPermissionRequested(permission: String): Boolean {
+        return prefs.getBoolean(permissionRequestedKey(permission), false)
+    }
+
+    private fun permissionRequestedKey(permission: String): String {
+        return "$permissionRequestedKeyPrefix$permission"
+    }
+
     private fun hasScanPermission(): Boolean {
-        if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        return when {
+            Build.VERSION.SDK_INT >= 31 -> hasPermission(Manifest.permission.BLUETOOTH_SCAN)
+            Build.VERSION.SDK_INT >= 23 -> hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            else -> true
+        }
+    }
+
+    private fun requiredScanPermission(): String {
+        return if (Build.VERSION.SDK_INT >= 31) {
+            Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
     }
 
     private fun hasAdvertisePermission(): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
+        return hasPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
     }
 
     private fun hasConnectPermission(): Boolean {
         if (Build.VERSION.SDK_INT < 31) return true
-        return appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        return hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
     }
 
     // MARK: - Advertise Callback
@@ -860,7 +1115,7 @@ internal class BarnardController(
 
         val knownPeer = knownPeers[address]
         if (knownPeer != null) {
-            val currentEnin = BarnardCrypto.calculateEnin(nowMs).toLong()
+            val currentEnin = currentEnin(nowMs).toLong()
             if (BarnardV2Policy.KnownPeerWindow(knownPeer.enin).matches(currentEnin)) {
                 emitRssiUpdate(address, result.rssi, nowMs)
             } else {
@@ -1035,6 +1290,25 @@ internal class BarnardController(
         gatt.disconnect()
     }
 
+    private fun retryAfterRpidBoundaryCrossing(gatt: BluetoothGatt, address: String) {
+        val device = gatt.device
+        lastConnectAttemptAtMs.remove(address)
+        if (device != null) {
+            pendingBoundaryRetryDevices[address] = device
+        }
+        finishConnection(gatt)
+    }
+
+    private fun schedulePendingBoundaryRetry(address: String) {
+        val device = pendingBoundaryRetryDevices.remove(address) ?: return
+        mainHandler.postDelayed(
+            {
+                if (isScanning) enqueueConnect(device)
+            },
+            BarnardCrypto.rpidBoundaryRetryDelayMs
+        )
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -1074,6 +1348,7 @@ internal class BarnardController(
                 lastDiscoveryNameById.remove(address)
                 gatt.close()
                 activeGatt = null
+                schedulePendingBoundaryRetry(address)
                 pumpConnectQueue()
             }
         }
@@ -1194,6 +1469,7 @@ internal class BarnardController(
                     }
                     val rpidCh = svc.getCharacteristic(rpidCharUuid)
                     if (rpidCh != null && hasConnectPermission()) {
+                        peripheralReadValues[address]?.rpidReadStartedAtMs = System.currentTimeMillis()
                         gatt.readCharacteristic(rpidCh)
                     } else {
                         markGattResolutionFailed(
@@ -1207,6 +1483,7 @@ internal class BarnardController(
 
                 rpidCharUuid -> {
                     peripheralReadValues[address]?.rpid = value
+                    peripheralReadValues[address]?.rpidReadCompletedAtMs = System.currentTimeMillis()
                     emitDebug("trace", "gatt_read_rpid", mapOf(
                         "address" to address,
                         "bytes" to value.size
@@ -1249,16 +1526,31 @@ internal class BarnardController(
             val rpidData = values?.rpid
             if (rpidData != null) {
                 val rssi = discoveredRssi[address] ?: 0
-                val ts = discoveredAt[address] ?: System.currentTimeMillis()
+                val completedAtMs = values.rpidReadCompletedAtMs ?: System.currentTimeMillis()
+                val stablePeerEnin = BarnardCrypto.stableReadEnin(
+                    startedAtMs = values.rpidReadStartedAtMs ?: completedAtMs,
+                    completedAtMs = completedAtMs,
+                    mode = eninMode,
+                    eninSeconds = eninSeconds,
+                    beaconChain = beaconChain,
+                )
+                if (stablePeerEnin == null) {
+                    emitDebug("warn", "gatt_rpid_read_crossed_enin_boundary", mapOf(
+                        "address" to address,
+                        "startedAtMs" to values.rpidReadStartedAtMs,
+                        "completedAtMs" to completedAtMs,
+                    ))
+                    retryAfterRpidBoundaryCrossing(gatt, address)
+                    return
+                }
                 val detectedDisplayIdHex = values.detectedDisplayId?.toHex()
-                emitDetection(ts, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
+                emitDetection(completedAtMs, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
                 resolutionBackoffUntilMs.remove(address)
 
                 if (rpidData.size == 17) {
-                    val peerEnin = BarnardCrypto.calculateEnin(ts).toLong()
                     knownPeers[address] = KnownPeer(
                         rpidData,
-                        peerEnin,
+                        stablePeerEnin.toLong(),
                         detectedDisplayIdHex,
                         lastDiscoveryNameById[address]
                     )

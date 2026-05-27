@@ -10,6 +10,8 @@ export { BarnardManager } from './BarnardManager';
 export type {
   TransportKind,
   BarnardCapabilities,
+  BarnardPermissionDecision,
+  BarnardPermissionStatus,
   BarnardState,
   ScanConfig,
   AdvertiseConfig,

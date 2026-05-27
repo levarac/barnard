@@ -28,6 +28,8 @@ import 'dart:typed_data';
 
 import 'package:pointycastle/export.dart';
 
+import 'config.dart';
+
 /// HKDF-SHA256 key derivation function (RFC 5869).
 ///
 /// - [ikm]: Input keying material
@@ -167,11 +169,26 @@ Uint8List generateRpi(Uint8List rpik, int enin) {
 
 /// Calculate ENIN (EN Interval Number) for a given timestamp.
 ///
-/// `ENIN = floor(unix_timestamp_seconds / 600)`
+/// Defaults to `floor(unix_timestamp_seconds / 120)`.
 ///
-/// Each ENIN represents a 10-minute interval.
-int calculateEnin(DateTime timestamp) {
-  return timestamp.millisecondsSinceEpoch ~/ 1000 ~/ 600;
+/// With [EninMode.beaconSlot], the returned ENIN is the Beacon Chain slot
+/// number for [beaconChain].
+int calculateEnin(
+  DateTime timestamp, {
+  EninMode mode = EninMode.fixedLength,
+  int eninSeconds = 120,
+  BeaconChainConfig beaconChain = BeaconChainConfig.ethereumMainnet,
+}) {
+  final int unixSeconds = timestamp.millisecondsSinceEpoch ~/ 1000;
+  switch (mode) {
+    case EninMode.fixedLength:
+      final int effectiveSeconds = eninSeconds.clamp(12, 3600);
+      return unixSeconds ~/ effectiveSeconds;
+    case EninMode.beaconSlot:
+      final int elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds;
+      if (elapsed <= 0) return 0;
+      return elapsed ~/ beaconChain.effectiveSlotSeconds;
+  }
 }
 
 /// Calculate EventCodeHash from EventCode.
@@ -242,8 +259,17 @@ abstract class BarnardCrypto {
   }
 
   /// Calculate current ENIN.
-  static int currentEnin() {
-    return calculateEnin(DateTime.now());
+  static int currentEnin({
+    EninMode mode = EninMode.fixedLength,
+    int eninSeconds = 120,
+    BeaconChainConfig beaconChain = BeaconChainConfig.ethereumMainnet,
+  }) {
+    return calculateEnin(
+      DateTime.now(),
+      mode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain,
+    );
   }
 
   /// Get v2 displayId from TEK: `SHA256(TEK)[0:4]` as 8 lowercase hex chars.

@@ -8,9 +8,18 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.facebook.react.modules.core.PermissionAwareActivity
+import com.facebook.react.modules.core.PermissionListener
 
-class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+class BarnardModule(reactContext: ReactApplicationContext) :
+    ReactContextBaseJavaModule(reactContext),
+    PermissionListener {
+    private companion object {
+        const val permissionRequestCode = 0xB4D
+    }
+
     private var controller: BarnardController? = null
+    private var pendingPermissionPromise: Promise? = null
 
     init {
         setupController(reactContext)
@@ -72,6 +81,98 @@ class BarnardModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
         } catch (e: Exception) {
             promise.reject("E_GET_STATE", e.message, e)
         }
+    }
+
+    @ReactMethod
+    fun getPermissionStatus(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            promise.resolve(ctrl.getPermissionStatus(currentActivity))
+        } catch (e: Exception) {
+            promise.reject("E_GET_PERMISSION_STATUS", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun requestPermissions(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            val missing = ctrl.requiredRuntimePermissions().filter { !ctrl.hasPermission(it) }
+            if (missing.isEmpty()) {
+                promise.resolve(ctrl.getPermissionStatus(currentActivity))
+                return
+            }
+            val activeActivity = currentActivity
+            val requestable = missing.filterNot { ctrl.isPermissionRequestBlocked(it, activeActivity) }
+            if (requestable.isEmpty()) {
+                promise.resolve(ctrl.getPermissionStatus(activeActivity))
+                return
+            }
+
+            val permissionActivity = activeActivity as? PermissionAwareActivity
+            if (permissionActivity == null) {
+                promise.reject(
+                    "E_NO_ACTIVITY",
+                    "requestPermissions requires a PermissionAwareActivity"
+                )
+                return
+            }
+            if (pendingPermissionPromise != null) {
+                promise.reject(
+                    "E_PERMISSION_REQUEST_IN_PROGRESS",
+                    "A Barnard permission request is already in progress"
+                )
+                return
+            }
+
+            pendingPermissionPromise = promise
+            ctrl.markPermissionsRequested(requestable)
+            permissionActivity.requestPermissions(
+                requestable.toTypedArray(),
+                permissionRequestCode,
+                this
+            )
+        } catch (e: Exception) {
+            pendingPermissionPromise = null
+            promise.reject("E_REQUEST_PERMISSIONS", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun openAppSettings(promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            ctrl.openAppSettings()
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("E_OPEN_APP_SETTINGS", e.message, e)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ): Boolean {
+        if (requestCode != permissionRequestCode) return false
+        val promise = pendingPermissionPromise ?: return false
+        pendingPermissionPromise = null
+        val ctrl = controller
+        if (ctrl == null) {
+            promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+        } else {
+            promise.resolve(ctrl.getPermissionStatus(currentActivity))
+        }
+        return true
     }
 
     // MARK: - v2 API

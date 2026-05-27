@@ -1,6 +1,51 @@
 group = "network.greeting.barnard"
 version = "1.0-SNAPSHOT"
 
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withInputStream { stream ->
+        localProperties.load(stream)
+    }
+}
+
+def detectFlutterSdkPath = {
+    try {
+        def output = new ByteArrayOutputStream()
+        def result = exec {
+            commandLine("flutter", "--version", "--machine")
+            standardOutput = output
+            errorOutput = new ByteArrayOutputStream()
+            ignoreExitValue = true
+        }
+        if (result.exitValue != 0) {
+            return null
+        }
+
+        def matcher = output.toString("UTF-8") =~ /"flutterRoot"\s*:\s*"([^"]+)"/
+        return matcher.find() ? matcher.group(1).replace("\\/", "/") : null
+    } catch (Exception ignored) {
+        return null
+    }
+}
+
+def flutterSdkCandidates = [
+    project.findProperty("flutter.sdk"),
+    System.getenv("FLUTTER_ROOT"),
+    localProperties.getProperty("flutter.sdk"),
+].findAll { it != null && it.toString().trim() != "" }
+def flutterSdkPath = flutterSdkCandidates.find {
+    file("$it/bin/cache/artifacts/engine/android-arm64/flutter.jar").exists()
+}
+if (flutterSdkPath == null) {
+    def detectedFlutterSdkPath = detectFlutterSdkPath()
+    if (detectedFlutterSdkPath != null &&
+        file("$detectedFlutterSdkPath/bin/cache/artifacts/engine/android-arm64/flutter.jar").exists()) {
+        flutterSdkPath = detectedFlutterSdkPath
+    }
+}
+def flutterEmbeddingJar = flutterSdkPath == null ? null : file("$flutterSdkPath/bin/cache/artifacts/engine/android-arm64/flutter.jar")
+
 buildscript {
     ext.kotlin_version = "2.2.20"
     repositories {
@@ -52,14 +97,22 @@ android {
     }
 
     dependencies {
+        if (flutterEmbeddingJar == null || !flutterEmbeddingJar.exists()) {
+            throw new GradleException("Flutter Android embedding not found. Run `flutter precache --android`, set FLUTTER_ROOT, or pass -Pflutter.sdk=/path/to/flutter.")
+        }
+
+        compileOnly(files(flutterEmbeddingJar))
+        testImplementation(files(flutterEmbeddingJar))
         testImplementation("org.jetbrains.kotlin:kotlin-test")
-        testImplementation("org.mockito:mockito-core:5.0.0")
+        testImplementation("junit:junit:4.13.2")
+        testImplementation("androidx.test:core:1.5.0")
+        testImplementation("org.robolectric:robolectric:4.11.1")
     }
 
     testOptions {
-        unitTests.all {
-            useJUnitPlatform()
+        unitTests.includeAndroidResources = true
 
+        unitTests.all {
             testLogging {
                events "passed", "skipped", "failed", "standardOut", "standardError"
                outputs.upToDateWhen {false}

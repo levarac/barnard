@@ -7,9 +7,21 @@ import "package:barnard/barnard.dart";
 import "package:barnard/barnard_ble.dart";
 import "package:flutter/material.dart";
 import "package:flutter/services.dart" show Clipboard, ClipboardData;
-import "package:permission_handler/permission_handler.dart";
 
 void main() => runApp(const MyApp());
+
+const Key barnardPermissionStripKey = ValueKey<String>(
+  "barnard_permission_strip",
+);
+const Key barnardAllowBluetoothButtonKey = ValueKey<String>(
+  "barnard_allow_bluetooth_button",
+);
+const Key barnardStartAutoButtonKey = ValueKey<String>(
+  "barnard_start_auto_button",
+);
+const Key barnardControlMenuButtonKey = ValueKey<String>(
+  "barnard_control_menu_button",
+);
 
 bool shouldJoinEventForInput(String? currentEventCode, String input) {
   final String code = input.trim();
@@ -46,6 +58,67 @@ ScanResolutionState scanResolutionForDebugEvent(
 bool isDebugPeerLocalName(String? name) =>
     name != null && RegExp(r"^BND-[0-9A-F]{4}$").hasMatch(name);
 
+bool shouldRefreshPermissionsForLifecycle(AppLifecycleState state) {
+  return state == AppLifecycleState.resumed;
+}
+
+/// Whether Barnard reports the device as capable of BLE Scan + Advertise
+/// right now. Combines authorization state with hardware capability flags so
+/// the UI does not enable Start on iOS Simulator / Android Emulator / BLE-less
+/// devices, where authorization can be granted but Scan / Advertise are not
+/// actually available. See issue #57.
+bool canStartBleFromStatus(BarnardPermissionStatus? status) {
+  if (status == null) return false;
+  return status.allGranted && status.canScan && status.canAdvertise;
+}
+
+bool canStartScanFromStatus(BarnardPermissionStatus? status) {
+  if (status == null) return false;
+  return status.allGranted && status.canScan;
+}
+
+bool canStartAdvertiseFromStatus(BarnardPermissionStatus? status) {
+  if (status == null) return false;
+  return status.allGranted && status.canAdvertise;
+}
+
+/// High-level UI state for the BLE permission strip. Captures the three cases
+/// the host app must distinguish:
+/// * permission missing / blocked,
+/// * permission granted but device lacks BLE capability (simulator / emulator
+///   / BLE-less hardware),
+/// * permission granted and device is capable.
+enum BlePermissionStripState { checking, missing, blocked, unsupported, ready }
+
+BlePermissionStripState blePermissionStripStateFor(
+  BarnardPermissionStatus? status,
+) {
+  if (status == null) return BlePermissionStripState.checking;
+  if (status.hasBlockedPermissions) return BlePermissionStripState.blocked;
+  if (!status.allGranted) return BlePermissionStripState.missing;
+  if (!status.canScan || !status.canAdvertise) {
+    return BlePermissionStripState.unsupported;
+  }
+  return BlePermissionStripState.ready;
+}
+
+String blePermissionStripLabel(BarnardPermissionStatus? status) {
+  switch (blePermissionStripStateFor(status)) {
+    case BlePermissionStripState.checking:
+      return "Bluetooth: Checking";
+    case BlePermissionStripState.blocked:
+      return "Bluetooth: Open Settings";
+    case BlePermissionStripState.missing:
+      final String missing = status!.missingPermissions.join(", ");
+      if (missing.isEmpty) return "Bluetooth: Not allowed";
+      return "Bluetooth: ${missing.replaceAll("ios.bluetooth", "Not determined")}";
+    case BlePermissionStripState.unsupported:
+      return "Bluetooth: Not available on this device";
+    case BlePermissionStripState.ready:
+      return "Bluetooth: Allowed";
+  }
+}
+
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
@@ -53,7 +126,7 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
   BarnardBleClient? _client;
@@ -65,6 +138,7 @@ class _MyAppState extends State<MyApp> {
   );
 
   BarnardState _state = BarnardState.idle;
+  BarnardPermissionStatus? _permissionStatus;
   final List<BarnardEvent> _events = <BarnardEvent>[];
   final List<BarnardDebugEvent> _debugEvents = <BarnardDebugEvent>[];
   final Map<String, _SeenEntry> _seenById = <String, _SeenEntry>{};
@@ -112,6 +186,7 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _init();
     _uiTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
@@ -121,6 +196,7 @@ class _MyAppState extends State<MyApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _eventsSub?.cancel();
     _debugSub?.cancel();
     _client?.dispose();
@@ -129,10 +205,17 @@ class _MyAppState extends State<MyApp> {
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!shouldRefreshPermissionsForLifecycle(state)) return;
+    unawaited(_refreshPermissions());
+  }
+
   Future<void> _init() async {
-    await _ensurePermissions();
     await _smokeLog.reset();
     final BarnardBleClient client = await BarnardBleClient.create();
+    final BarnardPermissionStatus permissionStatus = await client
+        .getPermissionStatus();
 
     _eventsSub = client.events.listen((BarnardEvent e) {
       unawaited(_smokeLog.write(_formatEventForSmokeLog(e)));
@@ -218,6 +301,7 @@ class _MyAppState extends State<MyApp> {
     setState(() {
       _client = client;
       _state = client.state;
+      _permissionStatus = permissionStatus;
       if (client.currentEventCode != null &&
           client.currentEventCode!.isNotEmpty) {
         _eventCodeController.text = client.currentEventCode!;
@@ -225,14 +309,64 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
-  Future<void> _ensurePermissions() async {
-    if (!Platform.isAndroid) return;
-    await <Permission>[
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.bluetoothAdvertise,
-    ].request();
+  Future<void> _refreshPermissions() async {
+    final BarnardBleClient? client = _client;
+    if (client == null) return;
+    final BarnardPermissionStatus status = await client.getPermissionStatus();
+    if (!mounted) return;
+    setState(() => _permissionStatus = status);
   }
+
+  Future<bool> _ensurePermissionsForStart(BarnardBleClient client) async {
+    BarnardPermissionStatus status = await client.getPermissionStatus();
+    if (mounted) setState(() => _permissionStatus = status);
+
+    if (!status.allGranted) {
+      if (status.hasBlockedPermissions) {
+        _showMessage("Enable Nearby devices in app settings");
+        return false;
+      }
+      status = await client.requestPermissions();
+      if (mounted) setState(() => _permissionStatus = status);
+      if (status.hasBlockedPermissions) {
+        _showMessage("Enable Nearby devices in app settings");
+        return false;
+      }
+      if (!status.allGranted) {
+        _showMessage("Bluetooth permission is required");
+        return false;
+      }
+    }
+
+    if (!canStartBleFromStatus(status)) {
+      _showMessage("BLE Scan / Advertise is not available on this device");
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _requestPermissionsNow() => _run((c) async {
+    final BarnardPermissionStatus status = await c.getPermissionStatus();
+    if (mounted) setState(() => _permissionStatus = status);
+    if (status.hasBlockedPermissions) {
+      await c.openAppSettings();
+      return;
+    }
+
+    final BarnardPermissionStatus requested = await c.requestPermissions();
+    if (mounted) setState(() => _permissionStatus = requested);
+    if (requested.hasBlockedPermissions) {
+      _showMessage("Enable Nearby devices in app settings");
+      return;
+    }
+    if (!requested.allGranted) {
+      _showMessage("Bluetooth permission is required");
+      return;
+    }
+    if (!canStartBleFromStatus(requested)) {
+      _showMessage("BLE Scan / Advertise is not available on this device");
+    }
+  });
 
   String _formatEventForSmokeLog(BarnardEvent e) {
     if (e is DetectionEvent) {
@@ -330,6 +464,7 @@ class _MyAppState extends State<MyApp> {
     if (_state.isScanning) {
       await c.stopScan();
     } else {
+      if (!await _ensurePermissionsForStart(c)) return;
       await _ensureEventJoined(c);
       await c.startScan(const ScanConfig(allowDuplicates: true));
     }
@@ -339,6 +474,7 @@ class _MyAppState extends State<MyApp> {
     if (_state.isAdvertising) {
       await c.stopAdvertise();
     } else {
+      if (!await _ensurePermissionsForStart(c)) return;
       await _ensureEventJoined(c);
       await c.startAdvertise(const AdvertiseConfig());
     }
@@ -348,6 +484,7 @@ class _MyAppState extends State<MyApp> {
     if (_state.isScanning || _state.isAdvertising) {
       await c.stopAuto();
     } else {
+      if (!await _ensurePermissionsForStart(c)) return;
       await _ensureEventJoined(c);
       await c.startAuto(const AutoConfig());
     }
@@ -451,11 +588,13 @@ class _MyAppState extends State<MyApp> {
                     _ControlPanel(
                       eventCodeController: _eventCodeController,
                       state: _state,
+                      permissionStatus: _permissionStatus,
                       busy: _busy,
                       onToggleScan: _toggleScan,
                       onToggleAdvertise: _toggleAdvertise,
                       onToggleAuto: _toggleAuto,
                       onExportTek: _exportTek,
+                      onRequestPermissions: _requestPermissionsNow,
                     ),
                     const Divider(height: 1),
                     Expanded(
@@ -513,6 +652,7 @@ class _MyAppState extends State<MyApp> {
                           ),
                           _DiagnosticsTab(
                             state: _state,
+                            permissionStatus: _permissionStatus,
                             selfInfo: _selfInfo,
                             seen: _seenById.values.toList()
                               ..sort(
@@ -817,20 +957,24 @@ class _ControlPanel extends StatelessWidget {
   const _ControlPanel({
     required this.eventCodeController,
     required this.state,
+    required this.permissionStatus,
     required this.busy,
     required this.onToggleScan,
     required this.onToggleAdvertise,
     required this.onToggleAuto,
     required this.onExportTek,
+    required this.onRequestPermissions,
   });
 
   final TextEditingController eventCodeController;
   final BarnardState state;
+  final BarnardPermissionStatus? permissionStatus;
   final bool busy;
   final VoidCallback onToggleScan;
   final VoidCallback onToggleAdvertise;
   final VoidCallback onToggleAuto;
   final VoidCallback onExportTek;
+  final VoidCallback onRequestPermissions;
 
   @override
   Widget build(BuildContext context) {
@@ -863,13 +1007,106 @@ class _ControlPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
+          _PermissionStrip(
+            status: permissionStatus,
+            busy: busy,
+            onRequestPermissions: onRequestPermissions,
+          ),
+          const SizedBox(height: 8),
           _PrimaryActionButton(
             state: state,
             busy: busy,
+            canStartScan: canStartScanFromStatus(permissionStatus),
+            canStartAdvertise: canStartAdvertiseFromStatus(permissionStatus),
             onToggleAuto: onToggleAuto,
             onToggleScan: onToggleScan,
             onToggleAdvertise: onToggleAdvertise,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PermissionStrip extends StatelessWidget {
+  const _PermissionStrip({
+    required this.status,
+    required this.busy,
+    required this.onRequestPermissions,
+  });
+
+  final BarnardPermissionStatus? status;
+  final bool busy;
+  final VoidCallback onRequestPermissions;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme cs = Theme.of(context).colorScheme;
+    final BlePermissionStripState stripState = blePermissionStripStateFor(
+      status,
+    );
+    final String label = blePermissionStripLabel(status);
+
+    final Color bg;
+    final Color fg;
+    final IconData icon;
+    switch (stripState) {
+      case BlePermissionStripState.ready:
+        bg = cs.secondaryContainer;
+        fg = cs.onSecondaryContainer;
+        icon = Icons.bluetooth_connected;
+      case BlePermissionStripState.unsupported:
+        bg = cs.surfaceContainerHighest;
+        fg = cs.onSurfaceVariant;
+        icon = Icons.info_outline;
+      case BlePermissionStripState.checking:
+      case BlePermissionStripState.missing:
+      case BlePermissionStripState.blocked:
+        bg = cs.errorContainer;
+        fg = cs.onErrorContainer;
+        icon = Icons.bluetooth_disabled;
+    }
+
+    return Container(
+      key: barnardPermissionStripKey,
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(icon, size: 18, color: fg),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: fg,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          if (stripState == BlePermissionStripState.missing ||
+              stripState == BlePermissionStripState.blocked)
+            TextButton.icon(
+              key: barnardAllowBluetoothButtonKey,
+              onPressed: busy ? null : onRequestPermissions,
+              icon: Icon(
+                stripState == BlePermissionStripState.blocked
+                    ? Icons.settings
+                    : Icons.verified_user,
+                size: 16,
+              ),
+              label: Text(
+                stripState == BlePermissionStripState.blocked
+                    ? "Settings"
+                    : "Allow",
+              ),
+            ),
         ],
       ),
     );
@@ -883,6 +1120,8 @@ class _PrimaryActionButton extends StatelessWidget {
   const _PrimaryActionButton({
     required this.state,
     required this.busy,
+    required this.canStartScan,
+    required this.canStartAdvertise,
     required this.onToggleAuto,
     required this.onToggleScan,
     required this.onToggleAdvertise,
@@ -890,6 +1129,8 @@ class _PrimaryActionButton extends StatelessWidget {
 
   final BarnardState state;
   final bool busy;
+  final bool canStartScan;
+  final bool canStartAdvertise;
   final VoidCallback onToggleAuto;
   final VoidCallback onToggleScan;
   final VoidCallback onToggleAdvertise;
@@ -898,9 +1139,20 @@ class _PrimaryActionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme cs = Theme.of(context).colorScheme;
     final bool autoRunning = state.isScanning || state.isAdvertising;
-    final Color bg = autoRunning ? cs.error : cs.primary;
-    final Color fg = autoRunning ? cs.onError : cs.onPrimary;
-    final VoidCallback? primaryOnTap = busy ? null : onToggleAuto;
+    // Both Scan and Advertise must be available to start Auto. Already-running
+    // sessions remain stoppable so the user can recover from a permission /
+    // capability change that landed after Start.
+    final bool autoEnabled =
+        autoRunning || (canStartScan && canStartAdvertise);
+    final Color bg = autoRunning
+        ? cs.error
+        : (autoEnabled ? cs.primary : cs.surfaceContainerHighest);
+    final Color fg = autoRunning
+        ? cs.onError
+        : (autoEnabled ? cs.onPrimary : cs.onSurfaceVariant);
+    final VoidCallback? primaryOnTap = (busy || !autoEnabled)
+        ? null
+        : onToggleAuto;
     return SizedBox(
       height: 44,
       child: Row(
@@ -914,6 +1166,7 @@ class _PrimaryActionButton extends StatelessWidget {
                 bottomLeft: Radius.circular(22),
               ),
               child: InkWell(
+                key: barnardStartAutoButtonKey,
                 onTap: primaryOnTap,
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(22),
@@ -967,6 +1220,7 @@ class _PrimaryActionButton extends StatelessWidget {
               bottomRight: Radius.circular(22),
             ),
             child: PopupMenuButton<_ControlMenuAction>(
+              key: barnardControlMenuButtonKey,
               tooltip: "Scan / Advertise only",
               enabled: !busy,
               onSelected: (action) {
@@ -982,6 +1236,7 @@ class _PrimaryActionButton extends StatelessWidget {
               itemBuilder: (context) => <PopupMenuEntry<_ControlMenuAction>>[
                 PopupMenuItem<_ControlMenuAction>(
                   value: _ControlMenuAction.toggleScan,
+                  enabled: state.isScanning || canStartScan,
                   child: _MenuRow(
                     icon: state.isScanning ? Icons.stop : Icons.radar,
                     text: state.isScanning ? "Stop Scan" : "Start Scan only",
@@ -989,6 +1244,7 @@ class _PrimaryActionButton extends StatelessWidget {
                 ),
                 PopupMenuItem<_ControlMenuAction>(
                   value: _ControlMenuAction.toggleAdvertise,
+                  enabled: state.isAdvertising || canStartAdvertise,
                   child: _MenuRow(
                     icon: state.isAdvertising ? Icons.stop : Icons.cell_tower,
                     text: state.isAdvertising
@@ -1398,6 +1654,7 @@ class _DebugTab extends StatelessWidget {
 class _DiagnosticsTab extends StatelessWidget {
   const _DiagnosticsTab({
     required this.state,
+    required this.permissionStatus,
     required this.selfInfo,
     required this.seen,
     required this.staleAfter,
@@ -1411,6 +1668,7 @@ class _DiagnosticsTab extends StatelessWidget {
   });
 
   final BarnardState state;
+  final BarnardPermissionStatus? permissionStatus;
   final _SelfAdvertiseInfo selfInfo;
   final List<_SeenEntry> seen;
   final Duration staleAfter;
@@ -1433,6 +1691,52 @@ class _DiagnosticsTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: <Widget>[
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                _sectionHeader(context, "BLE permissions"),
+                const SizedBox(height: 8),
+                _kv("Platform", permissionStatus?.platform ?? "—"),
+                _kv(
+                  "All granted",
+                  permissionStatus == null
+                      ? "—"
+                      : (permissionStatus!.allGranted ? "yes" : "no"),
+                ),
+                _kv(
+                  "canScan",
+                  permissionStatus == null
+                      ? "—"
+                      : (permissionStatus!.canScan ? "yes" : "no"),
+                ),
+                _kv(
+                  "canAdvertise",
+                  permissionStatus == null
+                      ? "—"
+                      : (permissionStatus!.canAdvertise ? "yes" : "no"),
+                ),
+                if (permissionStatus != null &&
+                    permissionStatus!.missingPermissions.isNotEmpty)
+                  _kv(
+                    "Missing",
+                    permissionStatus!.missingPermissions.join(", "),
+                    softWrap: true,
+                  ),
+                if (permissionStatus != null &&
+                    permissionStatus!.blockedPermissions.isNotEmpty)
+                  _kv(
+                    "Blocked",
+                    permissionStatus!.blockedPermissions.join(", "),
+                    softWrap: true,
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(12),

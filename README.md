@@ -10,18 +10,37 @@ It focuses on **Scan/Advertise** and delivering a stable event model (main + deb
 - `schema/` — language-agnostic **JSON Schemas** (source of truth for event/config/capabilities shapes)
 - `packages/`
   - `packages/dart/barnard/` — Flutter plugin package (public API + mock + real BLE Transport)
+  - `packages/react-native/barnard/` — React Native package (TypeScript API + native BLE Transport)
 - `examples/`
   - `examples/dart/barnard_demo/` — demo using the mock implementation
   - `examples/flutter/barnard_poc/` — Flutter PoC app (real BLE via GATT-first RPID read)
-- `.github/workflows/` — CI (Flutter analyze/test + demos)
+  - `examples/react-native/barnard_demo/` — React Native demo app
+- `.github/workflows/` — CI (Flutter analyze/test, Android plugin unit tests, and demos)
 
-## Dart (Flutter) quick start
+## Package READMEs
+
+Start with the package README for the platform you are integrating:
+
+- [Flutter/Dart package](packages/dart/barnard/README.md)
+- [React Native package](packages/react-native/barnard/README.md)
+
+Those documents cover installation, iOS `Info.plist` setup, Android manifest merge behavior, runtime permission APIs, and minimal Scan / Advertise usage.
+
+## Flutter quick start
 
 From `packages/dart/barnard`:
 
 ```bash
 flutter pub get
 flutter test
+```
+
+Run the Flutter plugin Android unit tests:
+
+```bash
+cd packages/dart/barnard/android
+flutter precache --android
+./gradlew testDebugUnitTest
 ```
 
 Run the demo:
@@ -40,7 +59,22 @@ flutter pub get
 flutter run
 ```
 
+## React Native quick start
+
+From `packages/react-native/barnard`:
+
+```bash
+npm install
+npm test
+```
+
+Run the React Native demo from `examples/react-native/barnard_demo` after installing its app dependencies and native platform dependencies.
+
 ## Principles
 
 - Detection is based on **receiver-observed facts**: `rpid + rssi + timestamp`
-- Cross-language consistency is driven by **JSON Schema** under `schema/barnard/v1`
+- Cross-language consistency is driven by **JSON Schema** under `schema/barnard/v2`
+- On-wire BLE payloads must not contain device-unique persistent identifiers
+- Host apps control OS permission dialog timing through Barnard permission APIs
+- Host apps can detect blocked runtime permissions and send users to app settings instead of retrying dialogs the OS will not show
+- Android uses `neverForLocation` for Barnard's default BLE Scan permission; host apps that use BLE Scan results themselves for physical location can override that merged declaration

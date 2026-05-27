@@ -1,6 +1,7 @@
 import { NativeModules, NativeEventEmitter } from 'react-native';
 import type {
   BarnardCapabilities,
+  BarnardPermissionStatus,
   BarnardState,
   ScanConfig,
   AdvertiseConfig,
@@ -24,6 +25,9 @@ const LINKING_ERROR =
 interface BarnardNativeModule {
   getCapabilities(): Promise<BarnardCapabilities>;
   getState(): Promise<BarnardState>;
+  getPermissionStatus(): Promise<BarnardPermissionStatus>;
+  requestPermissions(): Promise<BarnardPermissionStatus>;
+  openAppSettings(): Promise<void>;
 
   // v2 API
   getCurrentEventCode(): Promise<string | null>;
