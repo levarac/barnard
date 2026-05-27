@@ -134,6 +134,7 @@ internal class BarnardController(
     private val connectQueue: ArrayDeque<BluetoothDevice> = ArrayDeque()
     private val lastConnectAttemptAtMs: MutableMap<String, Long> = mutableMapOf()
     private val resolutionBackoffUntilMs: MutableMap<String, Long> = mutableMapOf()
+    private val pendingBoundaryRetryDevices: MutableMap<String, BluetoothDevice> = mutableMapOf()
     private var activeGatt: BluetoothGatt? = null
 
     private val maxConnectQueue: Int = 20
@@ -154,6 +155,8 @@ internal class BarnardController(
     private data class GattReadValues(
         var eventCodeHash: ByteArray? = null,
         var rpid: ByteArray? = null,
+        var rpidReadStartedAtMs: Long? = null,
+        var rpidReadCompletedAtMs: Long? = null,
         var detectedDisplayId: ByteArray? = null
     )
 
@@ -544,6 +547,7 @@ internal class BarnardController(
         lastDiscoveryNameById.clear()
         lastConnectAttemptAtMs.clear()
         resolutionBackoffUntilMs.clear()
+        pendingBoundaryRetryDevices.clear()
         peripheralReadValues.clear()
         knownPeers.clear()
 
@@ -1286,6 +1290,25 @@ internal class BarnardController(
         gatt.disconnect()
     }
 
+    private fun retryAfterRpidBoundaryCrossing(gatt: BluetoothGatt, address: String) {
+        val device = gatt.device
+        lastConnectAttemptAtMs.remove(address)
+        if (device != null) {
+            pendingBoundaryRetryDevices[address] = device
+        }
+        finishConnection(gatt)
+    }
+
+    private fun schedulePendingBoundaryRetry(address: String) {
+        val device = pendingBoundaryRetryDevices.remove(address) ?: return
+        mainHandler.postDelayed(
+            {
+                if (isScanning) enqueueConnect(device)
+            },
+            BarnardCrypto.rpidBoundaryRetryDelayMs
+        )
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -1325,6 +1348,7 @@ internal class BarnardController(
                 lastDiscoveryNameById.remove(address)
                 gatt.close()
                 activeGatt = null
+                schedulePendingBoundaryRetry(address)
                 pumpConnectQueue()
             }
         }
@@ -1445,6 +1469,7 @@ internal class BarnardController(
                     }
                     val rpidCh = svc.getCharacteristic(rpidCharUuid)
                     if (rpidCh != null && hasConnectPermission()) {
+                        peripheralReadValues[address]?.rpidReadStartedAtMs = System.currentTimeMillis()
                         gatt.readCharacteristic(rpidCh)
                     } else {
                         markGattResolutionFailed(
@@ -1458,6 +1483,7 @@ internal class BarnardController(
 
                 rpidCharUuid -> {
                     peripheralReadValues[address]?.rpid = value
+                    peripheralReadValues[address]?.rpidReadCompletedAtMs = System.currentTimeMillis()
                     emitDebug("trace", "gatt_read_rpid", mapOf(
                         "address" to address,
                         "bytes" to value.size
@@ -1500,16 +1526,31 @@ internal class BarnardController(
             val rpidData = values?.rpid
             if (rpidData != null) {
                 val rssi = discoveredRssi[address] ?: 0
-                val ts = discoveredAt[address] ?: System.currentTimeMillis()
+                val completedAtMs = values.rpidReadCompletedAtMs ?: System.currentTimeMillis()
+                val stablePeerEnin = BarnardCrypto.stableReadEnin(
+                    startedAtMs = values.rpidReadStartedAtMs ?: completedAtMs,
+                    completedAtMs = completedAtMs,
+                    mode = eninMode,
+                    eninSeconds = eninSeconds,
+                    beaconChain = beaconChain,
+                )
+                if (stablePeerEnin == null) {
+                    emitDebug("warn", "gatt_rpid_read_crossed_enin_boundary", mapOf(
+                        "address" to address,
+                        "startedAtMs" to values.rpidReadStartedAtMs,
+                        "completedAtMs" to completedAtMs,
+                    ))
+                    retryAfterRpidBoundaryCrossing(gatt, address)
+                    return
+                }
                 val detectedDisplayIdHex = values.detectedDisplayId?.toHex()
-                emitDetection(ts, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
+                emitDetection(completedAtMs, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
                 resolutionBackoffUntilMs.remove(address)
 
                 if (rpidData.size == 17) {
-                    val peerEnin = currentEnin().toLong()
                     knownPeers[address] = KnownPeer(
                         rpidData,
-                        peerEnin,
+                        stablePeerEnin.toLong(),
                         detectedDisplayIdHex,
                         lastDiscoveryNameById[address]
                     )

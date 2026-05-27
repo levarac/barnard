@@ -61,6 +61,33 @@ internal class BarnardPluginTest {
     }
 
     @Test
+    fun rpidReadWindowEnin_returnsNullWhenReadCrossesBoundary() {
+        val crossedWindow = BarnardCrypto.stableReadEnin(
+            startedAtMs = 239_999L,
+            completedAtMs = 240_000L,
+            eninSeconds = 120L
+        )
+
+        assertEquals(null, crossedWindow)
+    }
+
+    @Test
+    fun rpidReadWindowEnin_returnsCompletionEninWithinBoundary() {
+        val sameWindow = BarnardCrypto.stableReadEnin(
+            startedAtMs = 240_001L,
+            completedAtMs = 359_999L,
+            eninSeconds = 120L
+        )
+
+        assertEquals(2U, sameWindow)
+    }
+
+    @Test
+    fun rpidBoundaryRetryDelay_isShorterThanMinimumEninWindow() {
+        assertTrue(BarnardCrypto.rpidBoundaryRetryDelayMs < 12_000L)
+    }
+
+    @Test
     @Config(sdk = [31])
     fun onMethodCall_getPermissionStatus_returnsStableShape() {
         val messenger = RecordingBinaryMessenger()

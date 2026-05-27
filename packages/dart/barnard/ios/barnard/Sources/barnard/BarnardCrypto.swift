@@ -181,6 +181,31 @@ enum BarnardCrypto {
     }
   }
 
+  /// Returns the completion-time ENIN only when a GATT RPID read stayed inside
+  /// one ENIN window. If the read straddled a boundary, the Central cannot
+  /// assign the peer RPID to a single observation timestamp.
+  static func stableReadEnin(
+    startedAt: Date,
+    completedAt: Date,
+    mode: EninMode = .fixedLength,
+    eninSeconds: Int = 120,
+    beaconChain: BeaconChainConfig = .ethereumMainnet
+  ) -> UInt32? {
+    let startedEnin = calculateEnin(
+      for: startedAt,
+      mode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+    let completedEnin = calculateEnin(
+      for: completedAt,
+      mode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+    return startedEnin == completedEnin ? completedEnin : nil
+  }
+
   // MARK: - EventCodeHash
 
   /// Calculate EventCodeHash from EventCode.

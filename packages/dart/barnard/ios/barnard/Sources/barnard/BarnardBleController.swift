@@ -87,12 +87,14 @@ final class BarnardBleController: NSObject {
   private var peripheralsById: [UUID: CBPeripheral] = [:]
   private var lastConnectAttemptAt: [UUID: Date] = [:]
   private var resolutionBackoffUntil: [UUID: Date] = [:]
+  private var pendingBoundaryRetryPeripherals: [UUID: CBPeripheral] = [:]
   private var activePeripheral: CBPeripheral?
 
   private let maxConcurrentConnections = 1
   private let cooldownPerPeerSeconds: TimeInterval = 10
   private let resolutionFailureBackoffSeconds: TimeInterval = 30
   private let resolutionRejectedBackoffSeconds: TimeInterval = 5 * 60
+  private let rpidBoundaryRetryDelaySeconds: TimeInterval = 0.25
   private let maxConnectQueue = 20
   // CoreBluetooth's `connect()` has no built-in deadline. A hung connection
   // (e.g. to a peripheral whose BLE address has since rotated) keeps
@@ -116,6 +118,8 @@ final class BarnardBleController: NSObject {
   private struct PeripheralGattValues {
     var eventCodeHash: Data?
     var rpid: Data?
+    var rpidReadStartedAt: Date?
+    var rpidReadCompletedAt: Date?
     var detectedDisplayId: Data?
   }
 
@@ -555,6 +559,7 @@ final class BarnardBleController: NSObject {
     peripheralsById.removeAll()
     lastConnectAttemptAt.removeAll()
     resolutionBackoffUntil.removeAll()
+    pendingBoundaryRetryPeripherals.removeAll()
     peripheralCharacteristics.removeAll()
     peripheralReadValues.removeAll()
     b004ReadRetries.removeAll()
@@ -867,6 +872,7 @@ final class BarnardBleController: NSObject {
       finishConnection(peripheral)
       return
     }
+    peripheralReadValues[id]?.rpidReadStartedAt = Date()
     peripheral.readValue(for: rpidCh)
   }
 
@@ -894,10 +900,25 @@ final class BarnardBleController: NSObject {
 
     if let rpidData = values.rpid {
       let rssi = discoveredRssi[id] ?? 0
-      let ts = discoveredAt[id] ?? Date()
+      let completedAt = values.rpidReadCompletedAt ?? Date()
+      guard let peerEnin = BarnardCrypto.stableReadEnin(
+        startedAt: values.rpidReadStartedAt ?? completedAt,
+        completedAt: completedAt,
+        mode: eninMode,
+        eninSeconds: eninSeconds,
+        beaconChain: beaconChain
+      ) else {
+        emitDebug(level: "warn", name: "gatt_rpid_read_crossed_enin_boundary", data: [
+          "id": id.uuidString,
+          "startedAt": (values.rpidReadStartedAt ?? completedAt).timeIntervalSince1970,
+          "completedAt": completedAt.timeIntervalSince1970,
+        ])
+        retryAfterRpidBoundaryCrossing(peripheral)
+        return
+      }
       let detectedDisplayId = values.detectedDisplayId?.hexString
       emitDetection(
-        timestamp: ts,
+        timestamp: completedAt,
         rssi: rssi,
         payload: rpidData,
         detectedDisplayId: detectedDisplayId,
@@ -905,7 +926,6 @@ final class BarnardBleController: NSObject {
       )
 
       if rpidData.count == 17 {
-        let peerEnin = currentEnin()
         knownPeers[id] = KnownPeer(
           rpid: rpidData,
           enin: peerEnin,
@@ -926,6 +946,23 @@ final class BarnardBleController: NSObject {
     b004ReadRetries.removeValue(forKey: id)
     lastDiscoveryNameById.removeValue(forKey: id)
     centralManager?.cancelPeripheralConnection(peripheral)
+  }
+
+  private func retryAfterRpidBoundaryCrossing(_ peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    lastConnectAttemptAt.removeValue(forKey: id)
+    pendingBoundaryRetryPeripherals[id] = peripheral
+    finishConnection(peripheral)
+  }
+
+  private func schedulePendingBoundaryRetry(for id: UUID) {
+    guard let peripheral = pendingBoundaryRetryPeripherals.removeValue(forKey: id) else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + rpidBoundaryRetryDelaySeconds) { [weak self, weak peripheral] in
+      guard let self = self, let peripheral = peripheral else { return }
+      if self.isScanning {
+        self.enqueueConnect(peripheral)
+      }
+    }
   }
 
   // MARK: - Event Emission
@@ -1221,6 +1258,7 @@ extension BarnardBleController: CBCentralManagerDelegate {
     peripheralCharacteristics.removeValue(forKey: id)
     peripheralReadValues.removeValue(forKey: id)
     activePeripheral = nil
+    schedulePendingBoundaryRetry(for: id)
     pumpConnectQueue()
   }
 }
@@ -1350,6 +1388,7 @@ extension BarnardBleController: CBPeripheralDelegate {
 
     case rpidCharacteristicUUID:
       peripheralReadValues[id]?.rpid = value
+      peripheralReadValues[id]?.rpidReadCompletedAt = Date()
       emitDebug(level: "trace", name: "gatt_read_rpid", data: [
         "id": id.uuidString,
         "bytes": value.count,

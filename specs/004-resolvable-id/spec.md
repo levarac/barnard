@@ -127,6 +127,15 @@ A debug event with name `gatt_b003_read_failed` (error path) or `gatt_b003_missi
 
 If B004 fails or B002 itself fails, no detection is emitted.
 
+The `DetectionEvent.timestamp` is the time at which the central can assign the
+peer RPID to a single ENIN. For BLE GATT resolution, the central records the
+B002 RPID read start and completion times. If both times resolve to the same
+ENIN, the event timestamp is the B002 completion time and both `reporterRpid`
+and `enin` are derived from that timestamp. If the B002 read crosses an ENIN
+boundary, the central emits no detection for that exchange and schedules a
+short retry without applying the normal per-peer connection cooldown, because
+the peer RPID cannot be attributed to one observation window without ambiguity.
+
 ## 6. `DetectionEvent` (v2)
 
 ```

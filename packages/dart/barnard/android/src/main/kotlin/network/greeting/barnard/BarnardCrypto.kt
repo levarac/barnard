@@ -32,6 +32,8 @@ import javax.crypto.spec.SecretKeySpec
 object BarnardCrypto {
     enum class EninMode { FIXED_LENGTH, BEACON_SLOT }
 
+    const val rpidBoundaryRetryDelayMs: Long = 250L
+
     data class BeaconChainConfig(
         val chainId: String = "mainnet",
         val genesisUnixSeconds: Long = 1606824023L,
@@ -147,6 +149,23 @@ object BarnardCrypto {
                 if (elapsed <= 0L) 0U else (elapsed / beaconChain.effectiveSlotSeconds).toUInt()
             }
         }
+    }
+
+    /**
+     * Returns the completion-time ENIN only when a GATT RPID read stayed inside
+     * one ENIN window. If the read straddled a boundary, the peer RPID cannot
+     * be assigned to a single observation timestamp by the Central.
+     */
+    fun stableReadEnin(
+        startedAtMs: Long,
+        completedAtMs: Long,
+        mode: EninMode = EninMode.FIXED_LENGTH,
+        eninSeconds: Long = 120L,
+        beaconChain: BeaconChainConfig = BeaconChainConfig(),
+    ): UInt? {
+        val startedEnin = calculateEnin(startedAtMs, mode, eninSeconds, beaconChain)
+        val completedEnin = calculateEnin(completedAtMs, mode, eninSeconds, beaconChain)
+        return if (startedEnin == completedEnin) completedEnin else null
     }
 
     // MARK: - EventCodeHash
