@@ -62,4 +62,16 @@ class BarnardCryptoTest {
             BarnardCrypto.displayIdString(tek1) == BarnardCrypto.displayIdString(tek2)
         )
     }
+
+    @Test
+    fun calculateEnin_defaultsTo120SecondWindow() {
+        assertEquals(1U, BarnardCrypto.calculateEnin(timestampMs = 120_000L))
+        assertEquals(2U, BarnardCrypto.calculateEnin(timestampMs = 240_000L))
+    }
+
+    @Test
+    fun calculateEnin_clampsFixedWindowSeconds() {
+        assertEquals(10U, BarnardCrypto.calculateEnin(timestampMs = 120_000L, eninSeconds = 1L))
+        assertEquals(1U, BarnardCrypto.calculateEnin(timestampMs = 3_600_000L, eninSeconds = 7_200L))
+    }
 }

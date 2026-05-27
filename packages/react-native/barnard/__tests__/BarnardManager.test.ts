@@ -92,6 +92,7 @@ const setup = () => {
       exportCurrentTek: () => Promise<string>;
       getPermissionStatus: () => Promise<unknown>;
       requestPermissions: () => Promise<unknown>;
+      openAppSettings: () => Promise<void>;
       joinEvent: (eventCode: string) => Promise<void>;
       onDetection: (callback: (event: unknown) => void) => () => void;
       onRssiUpdate: (callback: (event: unknown) => void) => () => void;

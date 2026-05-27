@@ -71,8 +71,9 @@ object BarnardCrypto {
         }
     }
 
-    fun calculateEnin(timestampMs: Long = System.currentTimeMillis()): UInt {
-        return ((timestampMs / 1000) / 600).toUInt()
+    fun calculateEnin(timestampMs: Long = System.currentTimeMillis(), eninSeconds: Long = 120L): UInt {
+        val effectiveSeconds = eninSeconds.coerceIn(12L, 3600L)
+        return ((timestampMs / 1000) / effectiveSeconds).toUInt()
     }
 
     fun computeEventCodeHash(eventCode: String): ByteArray {
