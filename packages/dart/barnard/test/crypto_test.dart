@@ -175,7 +175,7 @@ void main() {
   });
 
   group("ENIN calculation", () {
-    test("calculateEnin defaults to a 120-second fixed-length window", () {
+    test("calculateEnin defaults to a 300-second fixed-length window", () {
       // UNIX timestamp 1736947200 = 2026-01-15 12:00:00 UTC
       final timestamp = DateTime.fromMillisecondsSinceEpoch(
         1736947200 * 1000,
@@ -184,17 +184,17 @@ void main() {
 
       final enin = calculateEnin(timestamp);
 
-      // ENIN = 1736947200 / 120 = 14474560
-      expect(enin, equals(14474560));
+      // ENIN = 1736947200 / 300 = 5789824
+      expect(enin, equals(5789824));
     });
 
-    test("calculateEnin changes every 2 minutes by default", () {
+    test("calculateEnin changes every 5 minutes by default", () {
       final timestamp1 = DateTime.fromMillisecondsSinceEpoch(
         1736947200 * 1000,
         isUtc: true,
       );
       final timestamp2 = DateTime.fromMillisecondsSinceEpoch(
-        (1736947200 + 120) * 1000,
+        (1736947200 + 300) * 1000,
         isUtc: true,
       );
 
@@ -204,13 +204,13 @@ void main() {
       expect(enin2, equals(enin1 + 1));
     });
 
-    test("calculateEnin is stable within the default 2-minute window", () {
+    test("calculateEnin is stable within the default 5-minute window", () {
       final timestamp1 = DateTime.fromMillisecondsSinceEpoch(
         1736947200 * 1000,
         isUtc: true,
       );
       final timestamp2 = DateTime.fromMillisecondsSinceEpoch(
-        (1736947200 + 119) * 1000,
+        (1736947200 + 299) * 1000,
         isUtc: true,
       );
 

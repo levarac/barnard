@@ -5,7 +5,7 @@ class BarnardConfig {
     this.transport = TransportKind.ble,
     this.eventCode,
     this.eninMode = EninMode.fixedLength,
-    this.eninSeconds = 120,
+    this.eninSeconds = 300,
     this.beaconChain = BeaconChainConfig.ethereumMainnet,
     this.rpid = const RpidConfig(),
     this.rssi = const RssiConfig(),
@@ -22,7 +22,7 @@ class BarnardConfig {
   /// ENIN derivation mode. Defaults to fixed-length windows.
   final EninMode eninMode;
 
-  /// Fixed-length ENIN window in seconds. Defaults to 120 and is clamped to
+  /// Fixed-length ENIN window in seconds. Defaults to 300 and is clamped to
   /// 12..3600.
   final int eninSeconds;
 

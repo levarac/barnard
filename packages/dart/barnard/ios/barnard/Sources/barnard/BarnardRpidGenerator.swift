@@ -107,7 +107,7 @@ final class BarnardRpidGenerator {
     formatVersion: UInt8 = 1,
     now: Date = Date(),
     eninMode: BarnardCrypto.EninMode = .fixedLength,
-    eninSeconds: Int = 120,
+    eninSeconds: Int = 300,
     beaconChain: BarnardCrypto.BeaconChainConfig = .ethereumMainnet
   ) -> Data {
     let enin = BarnardCrypto.calculateEnin(

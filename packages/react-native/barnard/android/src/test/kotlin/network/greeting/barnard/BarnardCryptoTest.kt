@@ -64,9 +64,9 @@ class BarnardCryptoTest {
     }
 
     @Test
-    fun calculateEnin_defaultsTo120SecondWindow() {
-        assertEquals(1U, BarnardCrypto.calculateEnin(timestampMs = 120_000L))
-        assertEquals(2U, BarnardCrypto.calculateEnin(timestampMs = 240_000L))
+    fun calculateEnin_defaultsTo300SecondWindow() {
+        assertEquals(1U, BarnardCrypto.calculateEnin(timestampMs = 300_000L))
+        assertEquals(2U, BarnardCrypto.calculateEnin(timestampMs = 600_000L))
     }
 
     @Test

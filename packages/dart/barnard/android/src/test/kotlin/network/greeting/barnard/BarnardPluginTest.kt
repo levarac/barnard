@@ -41,7 +41,7 @@ internal class BarnardPluginTest {
 
         val value = result.value as Map<*, *>
         assertEquals("fixedLength", value["eninMode"])
-        assertEquals(120L, value["eninSeconds"])
+        assertEquals(300L, value["eninSeconds"])
     }
 
     @Test

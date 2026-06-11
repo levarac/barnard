@@ -75,7 +75,7 @@ manager.onDetection((e) => {
   // failed. The detection is still emitted on failure.
   const peer = e.detectedDisplayId ?? '(no B003)';
   // e.rpid is 34-char hex (17 B wire form).
-  // e.enin is a number (floor(unix_seconds / 120)).
+  // e.enin is a number (floor(unix_seconds / 300)).
   // e.reporterRpid is 34-char hex for this device's own RPID at the
   // observation timestamp.
   // e.resolvedTek is GONE — TEK never travels on the wire in v2.

@@ -30,7 +30,7 @@ The rest of the v1 design (GAEN-compatible HKDF/AES chain, RPID rotation, fixed 
 | RPIK | Rolling Proximity Identifier Key. 16 bytes. `HKDF(TEK, "EN-RPIK", 16)`. |
 | RPI | Rolling Proximity Identifier. 16 bytes. `AES-128-ECB(RPIK, paddedData(enin))`. Rotates per ENIN. |
 | RPID (wire form) | `[formatVersion(1) + RPI(16)] = 17 bytes`. Served by B002 and emitted as `rpid` / `reporterRpid` fields. |
-| ENIN | Exposure Notification Interval Number. Default is `floor(unix_seconds / 120)`. In Beacon Slot mode the ENIN is the Beacon Chain slot number. |
+| ENIN | Exposure Notification Interval Number. Default is `floor(unix_seconds / 300)`. In Beacon Slot mode the ENIN is the Beacon Chain slot number. |
 | displayId (v2) | `SHA256(TEK)[0:4] = 4 bytes`, 8 lowercase hex chars. Served by B003. |
 | EventCodeHash | `SHA256(EventCode)[0:8] = 8 bytes`. Served by B004. Empty when no event is joined. |
 | formatVersion | Protocol version byte, currently `1`. |
@@ -62,7 +62,7 @@ Barnard supports two ENIN derivation modes. Peers in the same event MUST use the
 ENIN = floor(unix_timestamp_seconds / eninSeconds)
 ```
 
-- Default: `eninMode = fixedLength`, `eninSeconds = 120`.
+- Default: `eninMode = fixedLength`, `eninSeconds = 300`.
 - `eninSeconds` is clamped to `12..3600`.
 - Set `eninSeconds = 600` explicitly when GAEN-compatible 10-minute windows are required.
 - ENIN is only a Barnard-internal counter in this mode.
@@ -187,7 +187,7 @@ class BarnardConfig {
     this.transport = TransportKind.ble,
     this.eventCode,
     this.eninMode = EninMode.fixedLength,
-    this.eninSeconds = 120,
+    this.eninSeconds = 300,
     this.beaconChain = BeaconChainConfig.ethereumMainnet,
     // ...existing fields
   });
@@ -298,7 +298,7 @@ Strict validation: malformed or wrong-length hex at the Dart parser boundary rai
 | On-device peer TEK extraction by hostile app | Plugin exposed exchanged TEK store. | No TEK store. `exportCurrentTek()` returns **own** TEK only. |
 | displayId collision at scale | 3 bytes → ~50% at ~4.8k users. | 4 bytes → ~0.05% at 2k, ~11% at 25k. Acceptable for same-event disambiguation at realistic scale. |
 | Cross-event linkability | TEK pinned to (DeviceSecret, EventCode). Leaving one event and joining another regenerates TEK. | Unchanged. TEK egress is explicit per `exportCurrentTek()` call. |
-| RPI replay outside ENIN window | RPI is valid only for one ENIN (10 min). | ENIN length is event-scoped configuration; default is 120 seconds. Beacon Slot mode uses the configured chain slot cadence. |
+| RPI replay outside ENIN window | RPI is valid only for one ENIN. | ENIN length is event-scoped configuration; default is 300 seconds. Beacon Slot mode uses the configured chain slot cadence. |
 
 ## 10. Non-normative: server-report projection example
 

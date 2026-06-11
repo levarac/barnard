@@ -31,7 +31,7 @@ void main() {
 
     test("currentEnin returns a positive int close to wall clock", () {
       final BarnardClient barnard = MockBarnard();
-      final int expected = DateTime.now().millisecondsSinceEpoch ~/ 1000 ~/ 120;
+      final int expected = DateTime.now().millisecondsSinceEpoch ~/ 1000 ~/ 300;
       expect(barnard.currentEnin, isPositive);
       expect((barnard.currentEnin - expected).abs(), lessThanOrEqualTo(1));
     });

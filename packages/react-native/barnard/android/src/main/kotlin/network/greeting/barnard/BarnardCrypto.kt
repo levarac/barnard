@@ -71,7 +71,7 @@ object BarnardCrypto {
         }
     }
 
-    fun calculateEnin(timestampMs: Long = System.currentTimeMillis(), eninSeconds: Long = 120L): UInt {
+    fun calculateEnin(timestampMs: Long = System.currentTimeMillis(), eninSeconds: Long = 300L): UInt {
         val effectiveSeconds = eninSeconds.coerceIn(12L, 3600L)
         return ((timestampMs / 1000) / effectiveSeconds).toUInt()
     }

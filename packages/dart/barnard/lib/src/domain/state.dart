@@ -5,7 +5,7 @@ class BarnardState {
     required this.isScanning,
     required this.isAdvertising,
     this.eninMode = EninMode.fixedLength,
-    this.eninSeconds = 120,
+    this.eninSeconds = 300,
     this.beaconChain = BeaconChainConfig.ethereumMainnet,
   });
 

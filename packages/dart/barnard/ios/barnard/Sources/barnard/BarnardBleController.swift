@@ -71,7 +71,7 @@ final class BarnardBleController: NSObject {
   private var allowDuplicates = true
   private var formatVersion: UInt8 = 1
   private var eninMode: BarnardCrypto.EninMode = .fixedLength
-  private var eninSeconds: Int = 120
+  private var eninSeconds: Int = 300
   private var beaconChain: BarnardCrypto.BeaconChainConfig = .ethereumMainnet
 
   private var lastDiscoveryNameById: [UUID: String] = [:]
@@ -140,7 +140,7 @@ final class BarnardBleController: NSObject {
 
   private func configure(_ args: [String: Any]) {
     eninMode = (args["eninMode"] as? String) == "beaconSlot" ? .beaconSlot : .fixedLength
-    let requestedSeconds = (args["eninSeconds"] as? Int) ?? 120
+    let requestedSeconds = (args["eninSeconds"] as? Int) ?? 300
     eninSeconds = min(max(requestedSeconds, 12), 3600)
 
     let chain = args["beaconChain"] as? [String: Any]

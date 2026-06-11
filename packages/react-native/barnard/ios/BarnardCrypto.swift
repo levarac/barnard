@@ -116,7 +116,7 @@ enum BarnardCrypto {
 
   // MARK: - ENIN Calculation
 
-  static func calculateEnin(for date: Date = Date(), eninSeconds: Int = 120) -> UInt32 {
+  static func calculateEnin(for date: Date = Date(), eninSeconds: Int = 300) -> UInt32 {
     let effectiveSeconds = min(max(eninSeconds, 12), 3600)
     return UInt32(Int(date.timeIntervalSince1970) / effectiveSeconds)
   }

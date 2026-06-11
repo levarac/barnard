@@ -169,14 +169,14 @@ Uint8List generateRpi(Uint8List rpik, int enin) {
 
 /// Calculate ENIN (EN Interval Number) for a given timestamp.
 ///
-/// Defaults to `floor(unix_timestamp_seconds / 120)`.
+/// Defaults to `floor(unix_timestamp_seconds / 300)`.
 ///
 /// With [EninMode.beaconSlot], the returned ENIN is the Beacon Chain slot
 /// number for [beaconChain].
 int calculateEnin(
   DateTime timestamp, {
   EninMode mode = EninMode.fixedLength,
-  int eninSeconds = 120,
+  int eninSeconds = 300,
   BeaconChainConfig beaconChain = BeaconChainConfig.ethereumMainnet,
 }) {
   final int unixSeconds = timestamp.millisecondsSinceEpoch ~/ 1000;
@@ -261,7 +261,7 @@ abstract class BarnardCrypto {
   /// Calculate current ENIN.
   static int currentEnin({
     EninMode mode = EninMode.fixedLength,
-    int eninSeconds = 120,
+    int eninSeconds = 300,
     BeaconChainConfig beaconChain = BeaconChainConfig.ethereumMainnet,
   }) {
     return calculateEnin(
