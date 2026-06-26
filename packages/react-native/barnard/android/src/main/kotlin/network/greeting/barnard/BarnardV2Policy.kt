@@ -8,4 +8,8 @@ internal object BarnardV2Policy {
     data class KnownPeerWindow(val enin: Long) {
         fun matches(currentEnin: Long): Boolean = enin == currentEnin
     }
+
+    fun shouldEmitRssiUpdate(cachedPeerEnin: Long, currentEnin: Long): Boolean {
+        return KnownPeerWindow(cachedPeerEnin).matches(currentEnin)
+    }
 }

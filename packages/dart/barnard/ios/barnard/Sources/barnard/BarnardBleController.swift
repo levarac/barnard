@@ -1073,7 +1073,7 @@ extension BarnardBleController: CBCentralManagerDelegate {
 
     if let knownPeer = knownPeers[peripheral.identifier] {
       let currentEnin = BarnardCrypto.calculateEnin(for: now)
-      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEnin) {
+      if BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin: knownPeer.enin, currentEnin: currentEnin) {
         emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
       } else {
         knownPeers.removeValue(forKey: peripheral.identifier)
