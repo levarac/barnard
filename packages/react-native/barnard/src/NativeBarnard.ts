@@ -7,6 +7,7 @@ import type {
   AdvertiseConfig,
   AutoConfig,
   AutoStartResult,
+  BarnardConfig,
 } from './types';
 
 const LINKING_ERROR =
@@ -28,6 +29,7 @@ interface BarnardNativeModule {
   getPermissionStatus(): Promise<BarnardPermissionStatus>;
   requestPermissions(): Promise<BarnardPermissionStatus>;
   openAppSettings(): Promise<void>;
+  configure(config: BarnardConfig): Promise<void>;
 
   // v2 API
   getCurrentEventCode(): Promise<string | null>;

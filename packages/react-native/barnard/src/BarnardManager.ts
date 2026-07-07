@@ -8,6 +8,7 @@ import type {
   AdvertiseConfig,
   AutoConfig,
   AutoStartResult,
+  BarnardConfig,
   DetectionEvent,
   RssiUpdateEvent,
   StateEvent,
@@ -65,6 +66,17 @@ export class BarnardManager {
     return BarnardModule.openAppSettings();
   }
 
+  /**
+   * Configure ENIN derivation for all native RPID operations.
+   *
+   * Defaults are fixed-length 300-second ENINs. Pass
+   * `{ eninMode: 'fixedLength', eninSeconds: 600 }` to opt back into
+   * GAEN-compatible 10-minute windows.
+   */
+  async configure(config: BarnardConfig): Promise<void> {
+    return BarnardModule.configure(config);
+  }
+
   /** v2: currently joined event code, or null. */
   async getCurrentEventCode(): Promise<string | null> {
     return BarnardModule.getCurrentEventCode();
@@ -80,7 +92,7 @@ export class BarnardManager {
     return BarnardModule.getCurrentRpi();
   }
 
-  /** v2: current ENIN (floor(unix_seconds / 600)). */
+  /** v2: current ENIN (floor(unix_seconds / 300)). */
   async getCurrentEnin(): Promise<number> {
     return BarnardModule.getCurrentEnin();
   }

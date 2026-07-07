@@ -89,6 +89,10 @@ import { BarnardManager } from 'barnard';
 
 const barnard = new BarnardManager();
 
+// Optional: use 10-minute GAEN-compatible ENIN windows instead of the
+// default 300-second windows.
+await barnard.configure({ eninMode: 'fixedLength', eninSeconds: 600 });
+
 const capabilities = await barnard.getCapabilities();
 console.log('Supported transports:', capabilities.supportedTransports);
 

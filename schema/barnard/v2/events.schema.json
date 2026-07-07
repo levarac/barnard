@@ -32,7 +32,7 @@
         "enin": {
           "type": "integer",
           "minimum": 0,
-          "description": "ENIN at the observation timestamp (floor(unix_seconds / 600))."
+          "description": "ENIN at the observation timestamp. In fixedLength mode this is floor(unix_seconds / eninSeconds); in beaconSlot mode this is the Beacon Chain slot number."
         },
         "rssi": { "type": "integer" },
         "rssiSummary": {
@@ -79,7 +79,7 @@
         "enin": {
           "type": "integer",
           "minimum": 0,
-          "description": "ENIN (floor(unix_s / 600)) at the observation timestamp; atomic with reporterRpid."
+          "description": "ENIN at the observation timestamp; atomic with reporterRpid. In beaconSlot mode this is the Beacon Chain slot number."
         },
         "rssi": { "type": "integer" },
         "detectedDisplayId": {
@@ -115,7 +115,14 @@
           "properties": {
             "isScanning": { "type": "boolean" },
             "isAdvertising": { "type": "boolean" },
-            "eventCode": { "type": ["string", "null"] }
+            "eventCode": { "type": ["string", "null"] },
+            "eninMode": { "$ref": "common.schema.json#/$defs/EninMode" },
+            "eninSeconds": {
+              "type": "integer",
+              "minimum": 12,
+              "maximum": 3600
+            },
+            "beaconChain": { "$ref": "common.schema.json#/$defs/BeaconChainConfig" }
           },
           "required": ["isScanning", "isAdvertising"]
         },

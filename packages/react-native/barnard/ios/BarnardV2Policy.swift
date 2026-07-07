@@ -20,6 +20,29 @@ enum BarnardV2Policy {
     func matches(_ currentEnin: UInt32) -> Bool { enin == currentEnin }
   }
 
+  struct BoundaryRetryBudget {
+    let maxRetries: Int
+    private var counts: [UUID: Int] = [:]
+
+    init(maxRetries: Int = 3) {
+      self.maxRetries = maxRetries
+    }
+
+    mutating func consume(_ id: UUID) -> Bool {
+      let next = (counts[id] ?? 0) + 1
+      counts[id] = next
+      return next <= maxRetries
+    }
+
+    mutating func clear(_ id: UUID) {
+      counts.removeValue(forKey: id)
+    }
+
+    mutating func clearAll() {
+      counts.removeAll()
+    }
+  }
+
   /// RSSI updates may reuse a cached peer RPID only while the cache belongs to
   /// the current ENIN. After rotation, Central must re-resolve B002/B003 first.
   static func shouldEmitRssiUpdate(

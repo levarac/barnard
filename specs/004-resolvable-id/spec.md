@@ -30,7 +30,7 @@ The rest of the v1 design (GAEN-compatible HKDF/AES chain, RPID rotation, fixed 
 | RPIK | Rolling Proximity Identifier Key. 16 bytes. `HKDF(TEK, "EN-RPIK", 16)`. |
 | RPI | Rolling Proximity Identifier. 16 bytes. `AES-128-ECB(RPIK, paddedData(enin))`. Rotates per ENIN. |
 | RPID (wire form) | `[formatVersion(1) + RPI(16)] = 17 bytes`. Served by B002 and emitted as `rpid` / `reporterRpid` fields. |
-| ENIN | Exposure Notification Interval Number. `floor(unix_seconds / 600)`. One ENIN per 10-minute window. |
+| ENIN | Exposure Notification Interval Number. Default is `floor(unix_seconds / 300)`. In Beacon Slot mode the ENIN is the Beacon Chain slot number. |
 | displayId (v2) | `SHA256(TEK)[0:4] = 4 bytes`, 8 lowercase hex chars. Served by B003. |
 | EventCodeHash | `SHA256(EventCode)[0:8] = 8 bytes`. Served by B004. Empty when no event is joined. |
 | formatVersion | Protocol version byte, currently `1`. |
@@ -51,6 +51,34 @@ displayId = SHA256(TEK)[0:4]       // 4 bytes, 8 hex chars
 ```
 
 HKDF salt is 32 zero bytes (RFC 5869 §2.2). AES-ECB is appropriate here because the plaintext is a single 16-byte block per ENIN and uniqueness comes from the ENIN counter, not IV nonces (GAEN v1.2 convention).
+
+### 4.1 ENIN derivation modes
+
+Barnard supports two ENIN derivation modes. Peers in the same event MUST use the same `(eninMode, eninSeconds, beaconChain)` parameters; otherwise they derive different RPIs and detections can fail to resolve.
+
+#### `fixedLength`
+
+```
+ENIN = floor(unix_timestamp_seconds / eninSeconds)
+```
+
+- Default: `eninMode = fixedLength`, `eninSeconds = 300`.
+- `eninSeconds` is clamped to `12..3600`.
+- Set `eninSeconds = 600` explicitly when GAEN-compatible 10-minute windows are required.
+- ENIN is only a Barnard-internal counter in this mode.
+
+#### `beaconSlot`
+
+```
+ENIN = floor((unix_timestamp_seconds - beaconChain.genesisUnixSeconds) / beaconChain.slotSeconds)
+```
+
+- Default Beacon Chain preset: Ethereum mainnet, `genesisUnixSeconds = 1606824023`, `slotSeconds = 12`.
+- Pre-genesis timestamps clamp to ENIN `0`.
+- In this mode, the ENIN integer is semantically the Beacon Chain slot number.
+- Attestation consumers MUST NOT interpret ENIN values from one chain under another chain's timing parameters.
+
+Beacon Slot mode is recommended for attendance-proof flows that commit observations onchain because the ENIN can be verified against the beacon slot's canonical time axis. The on-wire RPID and event shapes do not add device-unique persistent identifiers; the existing RPID payload remains `[formatVersion + RPI]`.
 
 ## 5. GATT service
 
@@ -99,6 +127,15 @@ A debug event with name `gatt_b003_read_failed` (error path) or `gatt_b003_missi
 
 If B004 fails or B002 itself fails, no detection is emitted.
 
+The `DetectionEvent.timestamp` is the time at which the central can assign the
+peer RPID to a single ENIN. For BLE GATT resolution, the central records the
+B002 RPID read start and completion times. If both times resolve to the same
+ENIN, the event timestamp is the B002 completion time and both `reporterRpid`
+and `enin` are derived from that timestamp. If the B002 read crosses an ENIN
+boundary, the central emits no detection for that exchange and schedules a
+short retry without applying the normal per-peer connection cooldown, because
+the peer RPID cannot be attributed to one observation window without ambiguity.
+
 ### 5.3 Central GATT self-recovery
 
 Central implementations MUST bound each active GATT exchange. If the platform
@@ -124,7 +161,7 @@ all later Scan results from reaching GATT resolution.
   "rpid":          "01<32 hex>",           // 17 B wire form of the detected peer
   "reporterRpid":  "01<32 hex>",           // 17 B wire form of this device at `timestamp`
   "detectedDisplayId": "9abcdef0" | null,  // 8 hex chars or null (B003 read failed)
-  "enin": 2948599,                          // floor(unix_s / 600) at `timestamp`
+  "enin": 2948599,                          // derived from configured ENIN mode at `timestamp`
   "rssi": -62,
   "rssiSummary": null | { count, min, max, mean },
   "payloadRaw":    "01<32 hex>",           // same 17 B as rpid, for consumers that want raw
@@ -146,7 +183,7 @@ Emitted on every BLE scan hit for a peer that has already completed v2 GATT exch
   "timestamp": "2026-04-20T10:00:02.341Z",
   "rpid":          "01<32 hex>",           // 17 B wire form of the detected peer (cached)
   "reporterRpid":  "01<32 hex>",           // 17 B wire form of this device at `timestamp`
-  "enin": 2948599,                          // floor(unix_s / 600) at `timestamp`
+  "enin": 2948599,                          // derived from configured ENIN mode at `timestamp`
   "rssi": -58,
   "detectedDisplayId": "9abcdef0" | null   // 8 hex chars or null (cached from prior GATT)
 }
@@ -161,6 +198,37 @@ perform a fresh GATT resolution before emitting further RSSI updates for that
 peer.
 
 ## 7. SDK public API
+
+### 7.0 Configuration
+
+```dart
+class BarnardConfig {
+  const BarnardConfig({
+    this.transport = TransportKind.ble,
+    this.eventCode,
+    this.eninMode = EninMode.fixedLength,
+    this.eninSeconds = 300,
+    this.beaconChain = BeaconChainConfig.ethereumMainnet,
+    // ...existing fields
+  });
+}
+
+enum EninMode { fixedLength, beaconSlot }
+
+class BeaconChainConfig {
+  const BeaconChainConfig({
+    required this.chainId,
+    required this.genesisUnixSeconds,
+    required this.slotSeconds,
+  });
+
+  static const ethereumMainnet = BeaconChainConfig(
+    chainId: "mainnet",
+    genesisUnixSeconds: 1606824023,
+    slotSeconds: 12,
+  );
+}
+```
 
 ### 7.1 Dart (`BarnardClient`)
 
@@ -250,7 +318,7 @@ Strict validation: malformed or wrong-length hex at the Dart parser boundary rai
 | On-device peer TEK extraction by hostile app | Plugin exposed exchanged TEK store. | No TEK store. `exportCurrentTek()` returns **own** TEK only. |
 | displayId collision at scale | 3 bytes → ~50% at ~4.8k users. | 4 bytes → ~0.05% at 2k, ~11% at 25k. Acceptable for same-event disambiguation at realistic scale. |
 | Cross-event linkability | TEK pinned to (DeviceSecret, EventCode). Leaving one event and joining another regenerates TEK. | Unchanged. TEK egress is explicit per `exportCurrentTek()` call. |
-| RPI replay outside ENIN window | RPI is valid only for one ENIN (10 min). | Unchanged. |
+| RPI replay outside ENIN window | RPI is valid only for one ENIN. | ENIN length is event-scoped configuration; default is 300 seconds. Beacon Slot mode uses the configured chain slot cadence. |
 
 ## 10. Non-normative: server-report projection example
 
@@ -283,6 +351,7 @@ This is **not** part of the Barnard schema. Consumers customise the projection a
 - B003 serves event-scoped 4-byte `SHA256(TEK)[0:4]`, Read-only; anonymous B003 reads fail.
 - `DetectionEvent.enin`, `reporterRpid`, `detectedDisplayId` (nullable).
 - `BarnardClient.myDisplayId`, `currentEnin`, `getCurrentRpi()`, `exportCurrentTek()`.
+- Configurable ENIN derivation via `BarnardConfig.eninMode`, `eninSeconds`, and `beaconChain`.
 - Lowercase-hex at the bridge boundary (was base64 in v1).
 - Atomic reporter RPID + ENIN snapshot.
 - Known-peer RSSI caches are ENIN-scoped; when the ENIN changes, the SDK re-reads B002/B003 before emitting more `rssi_update` events for that peer.

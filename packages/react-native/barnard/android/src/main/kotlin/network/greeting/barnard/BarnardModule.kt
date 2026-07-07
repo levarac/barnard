@@ -158,6 +158,56 @@ class BarnardModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun configure(config: ReadableMap?, promise: Promise) {
+        try {
+            val ctrl = controller ?: run {
+                promise.reject("E_NOT_INITIALIZED", "Controller not initialized")
+                return
+            }
+            val mode = when (if (config?.hasKey("eninMode") == true) config.getString("eninMode") else null) {
+                "beaconSlot" -> BarnardCrypto.EninMode.BEACON_SLOT
+                else -> BarnardCrypto.EninMode.FIXED_LENGTH
+            }
+            val eninSeconds = if (config?.hasKey("eninSeconds") == true) {
+                config.getDouble("eninSeconds").toLong()
+            } else {
+                300L
+            }
+            val beaconMap = if (config?.hasKey("beaconChain") == true) {
+                config.getMap("beaconChain")
+            } else {
+                null
+            }
+            val beaconChain = BarnardCrypto.BeaconChainConfig(
+                chainId = if (beaconMap?.hasKey("chainId") == true) {
+                    beaconMap.getString("chainId") ?: "mainnet"
+                } else {
+                    "mainnet"
+                },
+                genesisUnixSeconds = if (beaconMap?.hasKey("genesisUnixSeconds") == true) {
+                    beaconMap.getDouble("genesisUnixSeconds").toLong()
+                } else {
+                    1606824023L
+                },
+                slotSeconds = if (beaconMap?.hasKey("slotSeconds") == true) {
+                    beaconMap.getDouble("slotSeconds").toLong()
+                } else {
+                    12L
+                },
+            )
+            val eventCode = if (config?.hasKey("eventCode") == true) {
+                config.getString("eventCode")
+            } else {
+                null
+            }
+            ctrl.configure(mode, eninSeconds, beaconChain, eventCode)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("E_CONFIGURE", e.message, e)
+        }
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,

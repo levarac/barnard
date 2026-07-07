@@ -21,10 +21,16 @@ For consumers still on v1, the following field renames apply:
 | `resolvedTek` (base64) | *(removed — TEK never on wire)* |
 | `rpid` (base64, 16 B) | `rpid` (lowercase hex, 17 B wire form) |
 | — | `reporterRpid` (new, 17 B hex) |
-| — | `enin` (new, integer) |
+| — | `enin` (new, integer; fixed-length counter by default, Beacon Chain slot number in `beaconSlot` mode) |
 | `payloadRaw` (base64) | `payloadRaw` (hex) |
 
 v1 remains untouched at [`../v1/`](../v1/) for existing deployments.
+
+ENIN derivation is an event-scoped protocol parameter. SDK defaults are
+`fixedLength` with `eninSeconds = 300`; set `eninSeconds = 600` explicitly when
+GAEN-compatible 10-minute windows are required. In `beaconSlot` mode, consumers
+must interpret `enin` under the configured `beaconChain`; ENIN values from one
+chain must not be reused under another chain.
 
 ## Non-normative: server-report projection
 

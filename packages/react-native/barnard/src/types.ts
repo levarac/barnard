@@ -12,6 +12,25 @@ export interface BarnardCapabilities {
   supportsGattFallback: boolean;
   supportsBackground: boolean;
   supportsHighRateRssi: boolean;
+  eninMode?: EninMode;
+  eninSeconds?: number;
+  beaconChain?: BeaconChainConfig;
+}
+
+export type EninMode = 'fixedLength' | 'beaconSlot';
+
+export interface BeaconChainConfig {
+  chainId: string;
+  genesisUnixSeconds: number;
+  slotSeconds: number;
+}
+
+export interface BarnardConfig {
+  eventCode?: string;
+  eninMode?: EninMode;
+  /** Fixed-length ENIN window in seconds. Defaults to 300; use 600 for GAEN-compatible timing. */
+  eninSeconds?: number;
+  beaconChain?: Partial<BeaconChainConfig>;
 }
 
 export type BarnardPermissionDecision =
@@ -45,6 +64,9 @@ export interface BarnardState {
 
   /** Active event code when joined; omitted or null otherwise. */
   eventCode?: string | null;
+  eninMode?: EninMode;
+  eninSeconds?: number;
+  beaconChain?: BeaconChainConfig;
 }
 
 /**

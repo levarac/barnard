@@ -101,6 +101,9 @@ internal class BarnardController(
     private var formatVersion: Int = 1
     private var debugOriginalName: String? = null
     private val unavailableRssi: Int = 127
+    private var eninMode: BarnardCrypto.EninMode = BarnardCrypto.EninMode.FIXED_LENGTH
+    private var eninSeconds: Long = 300L
+    private var beaconChain: BarnardCrypto.BeaconChainConfig = BarnardCrypto.BeaconChainConfig()
 
     // MARK: - Event Mode
 
@@ -118,6 +121,8 @@ internal class BarnardController(
     private val connectQueue: ArrayDeque<BluetoothDevice> = ArrayDeque()
     private val lastConnectAttemptAtMs: MutableMap<String, Long> = mutableMapOf()
     private val resolutionBackoffUntilMs: MutableMap<String, Long> = mutableMapOf()
+    private val pendingBoundaryRetryDevices: MutableMap<String, BluetoothDevice> = mutableMapOf()
+    private val boundaryRetryBudget = BarnardV2Policy.BoundaryRetryBudget()
     private var activeGatt: BluetoothGatt? = null
 
     private val maxConnectQueue: Int = 20
@@ -135,6 +140,8 @@ internal class BarnardController(
     private data class GattReadValues(
         var eventCodeHash: ByteArray? = null,
         var rpid: ByteArray? = null,
+        var rpidReadStartedAtMs: Long? = null,
+        var rpidReadCompletedAtMs: Long? = null,
         var detectedDisplayId: ByteArray? = null
     )
 
@@ -191,6 +198,9 @@ internal class BarnardController(
             putBoolean("supportsGattFallback", true)
             putBoolean("supportsBackground", false)
             putBoolean("supportsHighRateRssi", false)
+            putString("eninMode", eninModeName())
+            putInt("eninSeconds", eninSeconds.toInt())
+            putMap("beaconChain", toWritableMap(beaconChainMap()))
         }
     }
 
@@ -203,6 +213,9 @@ internal class BarnardController(
             } else {
                 putNull("eventCode")
             }
+            putString("eninMode", eninModeName())
+            putInt("eninSeconds", eninSeconds.toInt())
+            putMap("beaconChain", toWritableMap(beaconChainMap()))
         }
     }
 
@@ -219,12 +232,35 @@ internal class BarnardController(
     /** v2 API: 32-char lowercase hex for the inner 16-byte RPI. */
     fun getCurrentRpi(): String {
         val rpik = BarnardCrypto.deriveRpik(currentTek)
-        val rpi = BarnardCrypto.generateRpi(rpik, BarnardCrypto.calculateEnin())
+        val rpi = BarnardCrypto.generateRpi(rpik, currentEnin())
         return rpi.toHex()
     }
 
     /** v2 API: current ENIN as Long. */
-    fun getCurrentEnin(): Long = BarnardCrypto.calculateEnin().toLong()
+    fun getCurrentEnin(): Long = currentEnin().toLong()
+
+    fun configure(
+        eninMode: BarnardCrypto.EninMode,
+        eninSeconds: Long,
+        beaconChain: BarnardCrypto.BeaconChainConfig,
+        eventCode: String?
+    ) {
+        this.eninMode = eninMode
+        this.eninSeconds = eninSeconds.coerceIn(12L, 3600L)
+        this.beaconChain = beaconChain
+
+        if (!eventCode.isNullOrEmpty() && eventCode != this.eventCode) {
+            joinEvent(eventCode)
+        }
+
+        knownPeers.clear()
+        boundaryRetryBudget.clearAll()
+        emitDebug("info", "configure", mapOf(
+            "eninMode" to eninModeName(),
+            "eninSeconds" to this.eninSeconds,
+            "beaconChain" to beaconChainMap(),
+        ))
+    }
 
     /**
      * v2 API: raw TEK as 32-char lowercase hex. Explicit privacy egress;
@@ -387,6 +423,8 @@ internal class BarnardController(
         lastDiscoveryNameById.clear()
         lastConnectAttemptAtMs.clear()
         resolutionBackoffUntilMs.clear()
+        pendingBoundaryRetryDevices.clear()
+        boundaryRetryBudget.clearAll()
         peripheralReadValues.clear()
         knownPeers.clear()
 
@@ -552,7 +590,7 @@ internal class BarnardController(
     // MARK: - RPID Payload Generation
 
     private fun computePayload(nowMs: Long): ByteArray {
-        val enin = BarnardCrypto.calculateEnin(nowMs)
+        val enin = currentEnin(nowMs)
         val rpik = BarnardCrypto.deriveRpik(currentTek)
         val rpi = BarnardCrypto.generateRpi(rpik, enin)
 
@@ -622,7 +660,7 @@ internal class BarnardController(
         // ENIN fits comfortably in Int32 for the next ~40 000 years, so
         // prefer `putInt` to match the schema's `type: integer` contract
         // and the wire shape of the Flutter-native bridge.
-        val enin = BarnardCrypto.calculateEnin(timestampMs).toInt()
+        val enin = currentEnin(timestampMs).toInt()
 
         val payload = Arguments.createMap().apply {
             putString("type", "detection")
@@ -646,7 +684,7 @@ internal class BarnardController(
         val peer = knownPeers[address] ?: return
         // Atomic reporter snapshot (same contract as DetectionEvent).
         val reporterPayload = computePayload(timestampMs)
-        val enin = BarnardCrypto.calculateEnin(timestampMs).toInt()
+        val enin = currentEnin(timestampMs).toInt()
         // Parity with RN iOS + Flutter iOS + Flutter Android: omit
         // detectedDisplayId when it is null, rather than emitting an
         // explicit null field. TS type accepts either, but wire parity
@@ -689,6 +727,28 @@ internal class BarnardController(
         emitDebug("warn", "format_version_clamped", mapOf("requested" to raw, "applied" to 1))
         return 1
     }
+
+    private fun currentEnin(timestampMs: Long = System.currentTimeMillis()): UInt {
+        return BarnardCrypto.calculateEnin(
+            timestampMs = timestampMs,
+            mode = eninMode,
+            eninSeconds = eninSeconds,
+            beaconChain = beaconChain,
+        )
+    }
+
+    private fun eninModeName(): String {
+        return when (eninMode) {
+            BarnardCrypto.EninMode.BEACON_SLOT -> "beaconSlot"
+            BarnardCrypto.EninMode.FIXED_LENGTH -> "fixedLength"
+        }
+    }
+
+    private fun beaconChainMap(): Map<String, Any> = mapOf(
+        "chainId" to beaconChain.chainId,
+        "genesisUnixSeconds" to beaconChain.effectiveGenesisUnixSeconds,
+        "slotSeconds" to beaconChain.effectiveSlotSeconds,
+    )
 
     private fun toWritableMap(src: Map<String, Any?>): WritableMap {
         val map = Arguments.createMap()
@@ -922,15 +982,15 @@ internal class BarnardController(
 
         val knownPeer = knownPeers[address]
         if (knownPeer != null) {
-            val currentEnin = BarnardCrypto.calculateEnin(nowMs).toLong()
-            if (BarnardV2Policy.shouldEmitRssiUpdate(knownPeer.enin, currentEnin)) {
+            val nowEnin = currentEnin(nowMs).toLong()
+            if (BarnardV2Policy.shouldEmitRssiUpdate(knownPeer.enin, nowEnin)) {
                 emitRssiUpdate(address, result.rssi, nowMs)
             } else {
                 knownPeers.remove(address)
                 emitDebug("trace", "known_peer_rpid_expired", mapOf(
                     "address" to address,
                     "cachedEnin" to knownPeer.enin,
-                    "currentEnin" to currentEnin,
+                    "currentEnin" to nowEnin,
                 ))
                 // Force a fresh resolution. enqueueConnect dedups against in-flight /
                 // queued connects, so following advertisements on the same address
@@ -1086,6 +1146,36 @@ internal class BarnardController(
         )
     }
 
+    @SuppressLint("MissingPermission")
+    private fun retryAfterRpidBoundaryCrossing(gatt: BluetoothGatt, address: String) {
+        if (!boundaryRetryBudget.consume(address)) {
+            markGattResolutionFailed(
+                address = address,
+                reason = "rpid_boundary_retry_exhausted",
+                recoverable = true,
+                extra = mapOf("maxRetries" to boundaryRetryBudget.maxRetries)
+            )
+            finishConnection(gatt)
+            return
+        }
+        val device = gatt.device
+        lastConnectAttemptAtMs.remove(address)
+        if (device != null) {
+            pendingBoundaryRetryDevices[address] = device
+        }
+        finishConnection(gatt)
+    }
+
+    private fun schedulePendingBoundaryRetry(address: String) {
+        val device = pendingBoundaryRetryDevices.remove(address) ?: return
+        mainHandler.postDelayed(
+            {
+                if (isScanning) enqueueConnect(device)
+            },
+            BarnardCrypto.rpidBoundaryRetryDelayMs
+        )
+    }
+
     // MARK: - GATT Client (v2)
 
     @SuppressLint("MissingPermission")
@@ -1135,6 +1225,7 @@ internal class BarnardController(
                 lastDiscoveryNameById.remove(address)
                 gatt.close()
                 activeGatt = null
+                schedulePendingBoundaryRetry(address)
                 pumpConnectQueue()
             }
         }
@@ -1251,6 +1342,7 @@ internal class BarnardController(
                     }
                     val rpidCh = svc.getCharacteristic(rpidCharUuid)
                     if (rpidCh != null && hasConnectPermission()) {
+                        peripheralReadValues[address]?.rpidReadStartedAtMs = System.currentTimeMillis()
                         gatt.readCharacteristic(rpidCh)
                     } else {
                         markGattResolutionFailed(
@@ -1264,6 +1356,7 @@ internal class BarnardController(
 
                 rpidCharUuid -> {
                     peripheralReadValues[address]?.rpid = value
+                    peripheralReadValues[address]?.rpidReadCompletedAtMs = System.currentTimeMillis()
                     emitDebug("trace", "gatt_read_rpid", mapOf(
                         "address" to address,
                         "bytes" to value.size
@@ -1303,18 +1396,35 @@ internal class BarnardController(
             val rpidData = values?.rpid
             if (rpidData != null) {
                 val rssi = discoveredRssi[address] ?: 0
-                val ts = discoveredAt[address] ?: System.currentTimeMillis()
+                val completedAtMs = values.rpidReadCompletedAtMs ?: System.currentTimeMillis()
+                val stablePeerEnin = BarnardCrypto.stableReadEnin(
+                    startedAtMs = values.rpidReadStartedAtMs ?: completedAtMs,
+                    completedAtMs = completedAtMs,
+                    mode = eninMode,
+                    eninSeconds = eninSeconds,
+                    beaconChain = beaconChain,
+                )
+                if (stablePeerEnin == null) {
+                    emitDebug("warn", "gatt_rpid_read_crossed_enin_boundary", mapOf(
+                        "address" to address,
+                        "startedAtMs" to values.rpidReadStartedAtMs,
+                        "completedAtMs" to completedAtMs,
+                    ))
+                    retryAfterRpidBoundaryCrossing(gatt, address)
+                    return
+                }
                 val detectedDisplayIdHex = values.detectedDisplayId?.toHex()
-                emitDetection(ts, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
+                emitDetection(completedAtMs, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
                 resolutionBackoffUntilMs.remove(address)
+                boundaryRetryBudget.clear(address)
 
                 if (rpidData.size == 17) {
-                    val peerEnin = BarnardCrypto.calculateEnin(ts).toLong()
-                    knownPeers[address] = KnownPeer(rpidData, peerEnin, detectedDisplayIdHex)
+                    knownPeers[address] = KnownPeer(rpidData, stablePeerEnin.toLong(), detectedDisplayIdHex)
                 }
             }
 
             finishConnection(gatt)
+            schedulePendingBoundaryRetry(address)
         }
     }
 

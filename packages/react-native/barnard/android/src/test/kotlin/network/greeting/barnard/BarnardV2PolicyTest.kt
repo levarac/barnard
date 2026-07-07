@@ -21,6 +21,20 @@ internal class BarnardV2PolicyTest {
     }
 
     @Test
+    fun boundaryRetryBudget_capsRetriesPerPeer() {
+        val budget = BarnardV2Policy.BoundaryRetryBudget(maxRetries = 3)
+
+        assertTrue(budget.consume("AA:BB"))
+        assertTrue(budget.consume("AA:BB"))
+        assertTrue(budget.consume("AA:BB"))
+        assertFalse(budget.consume("AA:BB"))
+        assertTrue(budget.consume("CC:DD"))
+
+        budget.clear("AA:BB")
+        assertTrue(budget.consume("AA:BB"))
+    }
+
+    @Test
     fun shouldEmitRssiUpdate_rejectsCachedPeerAfterEninRotation() {
         assertTrue(BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin = 1234, currentEnin = 1234))
         assertFalse(BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin = 1234, currentEnin = 1235))

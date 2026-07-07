@@ -25,6 +25,7 @@ jest.mock('react-native', () => {
       canAdvertise: true,
     }),
     openAppSettings: jest.fn().mockResolvedValue(undefined),
+    configure: jest.fn().mockResolvedValue(undefined),
     getCurrentEventCode: jest.fn().mockResolvedValue(null),
     getMyDisplayId: jest.fn().mockResolvedValue('374708ff'),
     getCurrentRpi: jest.fn().mockResolvedValue('00'.repeat(16)),
@@ -93,6 +94,7 @@ const setup = () => {
       getPermissionStatus: () => Promise<unknown>;
       requestPermissions: () => Promise<unknown>;
       openAppSettings: () => Promise<void>;
+      configure: (config: unknown) => Promise<void>;
       joinEvent: (eventCode: string) => Promise<void>;
       onDetection: (callback: (event: unknown) => void) => () => void;
       onRssiUpdate: (callback: (event: unknown) => void) => () => void;
@@ -172,6 +174,19 @@ describe('BarnardManager v2 API', () => {
     await manager.openAppSettings();
 
     expect(nativeModule.openAppSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards fixed-length 600-second ENIN config to native module', async () => {
+    const { BarnardManager, nativeModule } = setup();
+    const manager = new BarnardManager();
+
+    await manager.configure({ eninMode: 'fixedLength', eninSeconds: 600 });
+
+    expect(nativeModule.configure).toHaveBeenCalledWith({
+      eninMode: 'fixedLength',
+      eninSeconds: 600,
+    });
+    expect(nativeModule.configure).toHaveBeenCalledTimes(1);
   });
 
   it('forwards joinEvent argument to native module', async () => {

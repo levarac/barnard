@@ -62,4 +62,49 @@ class BarnardCryptoTest {
             BarnardCrypto.displayIdString(tek1) == BarnardCrypto.displayIdString(tek2)
         )
     }
+
+    @Test
+    fun calculateEnin_defaultsTo300SecondWindow() {
+        assertEquals(1U, BarnardCrypto.calculateEnin(timestampMs = 300_000L))
+        assertEquals(2U, BarnardCrypto.calculateEnin(timestampMs = 600_000L))
+    }
+
+    @Test
+    fun calculateEnin_clampsFixedWindowSeconds() {
+        assertEquals(10U, BarnardCrypto.calculateEnin(timestampMs = 120_000L, eninSeconds = 1L))
+        assertEquals(1U, BarnardCrypto.calculateEnin(timestampMs = 3_600_000L, eninSeconds = 7_200L))
+    }
+
+    @Test
+    fun calculateEnin_acceptsGaenCompatible600SecondWindow() {
+        assertEquals(1U, BarnardCrypto.calculateEnin(timestampMs = 600_000L, eninSeconds = 600L))
+        assertEquals(2U, BarnardCrypto.calculateEnin(timestampMs = 1_200_000L, eninSeconds = 600L))
+    }
+
+    @Test
+    fun stableReadEnin_returnsNullWhenReadCrossesBoundary() {
+        val crossedWindow = BarnardCrypto.stableReadEnin(
+            startedAtMs = 599_999L,
+            completedAtMs = 600_000L,
+            eninSeconds = 600L
+        )
+
+        assertEquals(null, crossedWindow)
+    }
+
+    @Test
+    fun stableReadEnin_returnsCompletionEninWithinBoundary() {
+        val sameWindow = BarnardCrypto.stableReadEnin(
+            startedAtMs = 600_001L,
+            completedAtMs = 1_199_999L,
+            eninSeconds = 600L
+        )
+
+        assertEquals(1U, sameWindow)
+    }
+
+    @Test
+    fun rpidBoundaryRetryDelay_isShorterThanMinimumEninWindow() {
+        assertTrue(BarnardCrypto.rpidBoundaryRetryDelayMs < 12_000L)
+    }
 }

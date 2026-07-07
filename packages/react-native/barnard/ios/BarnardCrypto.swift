@@ -22,6 +22,33 @@ import Foundation
 ///                      RPI = AES128-ECB(RPIK, PaddedData)
 /// ```
 enum BarnardCrypto {
+  enum EninMode {
+    case fixedLength
+    case beaconSlot
+  }
+
+  static let rpidBoundaryRetryDelaySeconds: TimeInterval = 0.25
+
+  struct BeaconChainConfig {
+    let chainId: String
+    let genesisUnixSeconds: Int
+    let slotSeconds: Int
+
+    static let ethereumMainnet = BeaconChainConfig(
+      chainId: "mainnet",
+      genesisUnixSeconds: 1_606_824_023,
+      slotSeconds: 12
+    )
+
+    var effectiveGenesisUnixSeconds: Int {
+      max(0, genesisUnixSeconds)
+    }
+
+    var effectiveSlotSeconds: Int {
+      max(1, slotSeconds)
+    }
+  }
+
   // MARK: - TEK Derivation
 
   static func deriveTekForEvent(deviceSecret: Data, eventCode: String) -> Data {
@@ -116,8 +143,43 @@ enum BarnardCrypto {
 
   // MARK: - ENIN Calculation
 
-  static func calculateEnin(for date: Date = Date()) -> UInt32 {
-    UInt32(Int(date.timeIntervalSince1970) / 600)
+  static func calculateEnin(
+    for date: Date = Date(),
+    mode: EninMode = .fixedLength,
+    eninSeconds: Int = 300,
+    beaconChain: BeaconChainConfig = .ethereumMainnet
+  ) -> UInt32 {
+    let unixSeconds = Int(date.timeIntervalSince1970)
+    switch mode {
+    case .fixedLength:
+      let effectiveSeconds = min(max(eninSeconds, 12), 3600)
+      return UInt32(unixSeconds / effectiveSeconds)
+    case .beaconSlot:
+      let elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds
+      return elapsed <= 0 ? 0 : UInt32(elapsed / beaconChain.effectiveSlotSeconds)
+    }
+  }
+
+  static func stableReadEnin(
+    startedAt: Date,
+    completedAt: Date,
+    mode: EninMode = .fixedLength,
+    eninSeconds: Int = 300,
+    beaconChain: BeaconChainConfig = .ethereumMainnet
+  ) -> UInt32? {
+    let startedEnin = calculateEnin(
+      for: startedAt,
+      mode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+    let completedEnin = calculateEnin(
+      for: completedAt,
+      mode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+    return startedEnin == completedEnin ? completedEnin : nil
   }
 
   // MARK: - EventCodeHash

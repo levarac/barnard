@@ -7,11 +7,11 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.nio.ByteBuffer
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.Assert.assertEquals
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
@@ -39,7 +39,52 @@ internal class BarnardPluginTest {
         val call = MethodCall("getCapabilities", null)
         controller.onMethodCall(call, result)
 
-        assertTrue(result.value is Map<*, *>)
+        val value = result.value as Map<*, *>
+        assertEquals("fixedLength", value["eninMode"])
+        assertEquals(300L, value["eninSeconds"])
+    }
+
+    @Test
+    fun onMethodCall_configure_appliesEventCode() {
+        val messenger = RecordingBinaryMessenger()
+        val configureResult = RecordingResult()
+        val eventCodeResult = RecordingResult()
+
+        val controller = BarnardController(context, messenger)
+        controller.onMethodCall(
+            MethodCall("configure", mapOf("eventCode" to "CONF-2026")),
+            configureResult
+        )
+        controller.onMethodCall(MethodCall("getCurrentEventCode", null), eventCodeResult)
+
+        assertEquals("CONF-2026", eventCodeResult.value)
+    }
+
+    @Test
+    fun rpidReadWindowEnin_returnsNullWhenReadCrossesBoundary() {
+        val crossedWindow = BarnardCrypto.stableReadEnin(
+            startedAtMs = 239_999L,
+            completedAtMs = 240_000L,
+            eninSeconds = 120L
+        )
+
+        assertEquals(null, crossedWindow)
+    }
+
+    @Test
+    fun rpidReadWindowEnin_returnsCompletionEninWithinBoundary() {
+        val sameWindow = BarnardCrypto.stableReadEnin(
+            startedAtMs = 240_001L,
+            completedAtMs = 359_999L,
+            eninSeconds = 120L
+        )
+
+        assertEquals(2U, sameWindow)
+    }
+
+    @Test
+    fun rpidBoundaryRetryDelay_isShorterThanMinimumEninWindow() {
+        assertTrue(BarnardCrypto.rpidBoundaryRetryDelayMs < 12_000L)
     }
 
     @Test
