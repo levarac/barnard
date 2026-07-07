@@ -413,6 +413,11 @@ final class BarnardBleController: NSObject {
     case "exportCurrentTek":
       // Explicit privacy egress. SDK never transmits TEK over BLE; caller
       // decides whether/how to transmit it via another channel.
+      //
+      // Deprecated (barnard#63): exposing the raw TEK lets anyone derive
+      // every RPID and the displayId for it. Use
+      // BarnardIdentityController's "proveRpidOwnership" instead. Kept
+      // (not removed) for backward compatibility.
       result(rpid.getCurrentTek().hexString)
 
     case "getPermissionStatus":

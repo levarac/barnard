@@ -100,6 +100,12 @@ export class BarnardManager {
   /**
    * v2: raw 16-byte TEK as 32-char lowercase hex. Explicit privacy egress;
    * the SDK never transmits TEK over BLE.
+   *
+   * @deprecated barnard#63: exposing the raw TEK lets anyone derive every
+   * RPID and the displayId for it. Use `BarnardIdentity.proveRpidOwnership`
+   * instead, which proves ownership of a single claimed RPID without
+   * disclosing the TEK/RPIK. Retained (not removed) for backward
+   * compatibility with existing callers.
    */
   async exportCurrentTek(): Promise<string> {
     return BarnardModule.exportCurrentTek();

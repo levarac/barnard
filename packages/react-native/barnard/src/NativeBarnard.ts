@@ -36,6 +36,11 @@ interface BarnardNativeModule {
   getMyDisplayId(): Promise<string>;
   getCurrentRpi(): Promise<string>;
   getCurrentEnin(): Promise<number>;
+  /**
+   * @deprecated barnard#63: exposing the raw TEK lets anyone derive every
+   * RPID and the displayId for it. Use `BarnardIdentity.proveRpidOwnership`
+   * instead. Retained (not removed) for backward compatibility.
+   */
   exportCurrentTek(): Promise<string>;
 
   startScan(config?: ScanConfig): Promise<void>;

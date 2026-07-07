@@ -281,6 +281,12 @@ class BarnardModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    /**
+     * @deprecated barnard#63: exposing the raw TEK lets anyone derive every
+     * RPID and the displayId for it. Use BarnardIdentityModule.proveRpidOwnership
+     * instead. Retained (not removed) for backward compatibility.
+     */
+    @Deprecated("Use BarnardIdentityModule.proveRpidOwnership instead (barnard#63)")
     @ReactMethod
     fun exportCurrentTek(promise: Promise) {
         try {

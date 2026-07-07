@@ -40,6 +40,52 @@ class BarnardIdentity: NSObject {
     ])
   }
 
+  @objc(proveRpidOwnership:enin:eventIdHashHex:challengeHex:resolve:reject:)
+  func proveRpidOwnership(
+    _ eventCode: String,
+    enin: NSNumber,
+    eventIdHashHex: String,
+    challengeHex: String?,
+    resolve: RCTPromiseResolveBlock,
+    reject: RCTPromiseRejectBlock
+  ) {
+    let proof = BarnardSigning.proveRpidOwnership(
+      deviceSecret: getOrCreateDeviceSecret(),
+      eventCode: eventCode,
+      eventIdHash: hexToBytes(eventIdHashHex),
+      enin: enin.uint64Value,
+      challenge: challengeHex.map { hexToBytes($0) }
+    )
+    resolve([
+      "rpi": proof.rpi.hexString,
+      "signingPublicKey": proof.signingPublicKey.hexString,
+      "r": proof.sig.r.hexString,
+      "s": proof.sig.s.hexString,
+      "v": proof.sig.v,
+    ])
+  }
+
+  @objc(proveKeyBinding:displayIdHex:resolve:reject:)
+  func proveKeyBinding(
+    _ eventCode: String,
+    displayIdHex: String,
+    resolve: RCTPromiseResolveBlock,
+    reject: RCTPromiseRejectBlock
+  ) {
+    let eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
+    let sig = BarnardSigning.signKeyBinding(
+      deviceSecret: getOrCreateDeviceSecret(),
+      eventCode: eventCode,
+      eventCodeHash: eventCodeHash,
+      displayId: hexToBytes(displayIdHex)
+    )
+    resolve([
+      "r": sig.r.hexString,
+      "s": sig.s.hexString,
+      "v": sig.v,
+    ])
+  }
+
   private func hexToBytes(_ hex: String) -> Data {
     var clean = hex
     if clean.count % 2 != 0 { clean = "0" + clean }
