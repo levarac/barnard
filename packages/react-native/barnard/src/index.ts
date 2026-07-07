@@ -6,6 +6,7 @@
  */
 
 export { BarnardManager } from './BarnardManager';
+export { BarnardIdentity } from './BarnardIdentity';
 
 export type {
   TransportKind,
@@ -32,4 +33,5 @@ export type {
   DebugLevel,
   DebugEvent,
   BarnardEvent,
+  BarnardSignature,
 } from './types';

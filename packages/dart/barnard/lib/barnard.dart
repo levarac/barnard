@@ -6,8 +6,11 @@ export "src/domain/events.dart";
 export "src/domain/hex.dart";
 export "src/domain/permissions.dart";
 export "src/domain/rssi.dart";
+export "src/domain/secp256k1.dart";
+export "src/domain/signing.dart";
 export "src/domain/state.dart";
 export "src/domain/transport.dart";
 
 // usecase (public interface)
 export "src/usecase/barnard_client.dart";
+export "src/usecase/barnard_identity.dart";

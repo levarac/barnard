@@ -6,10 +6,12 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin
 
 class BarnardPlugin : FlutterPlugin, ActivityAware {
     private var controller: BarnardController? = null
+    private var identityController: BarnardIdentityController? = null
     private var activityBinding: ActivityPluginBinding? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         controller = BarnardController(binding.applicationContext, binding.binaryMessenger)
+        identityController = BarnardIdentityController(binding.applicationContext, binding.binaryMessenger)
         activityBinding?.let { attachControllerToActivity(it) }
     }
 
@@ -17,6 +19,8 @@ class BarnardPlugin : FlutterPlugin, ActivityAware {
         activityBinding?.let { detachControllerFromActivity(it) }
         controller?.dispose()
         controller = null
+        identityController?.dispose()
+        identityController = null
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {

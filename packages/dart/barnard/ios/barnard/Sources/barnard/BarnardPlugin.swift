@@ -3,6 +3,7 @@ import Foundation
 
 public final class BarnardPlugin: NSObject, FlutterPlugin {
   private let controller = BarnardBleController()
+  private let identityController = BarnardIdentityController()
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = BarnardPlugin()
@@ -15,6 +16,9 @@ public final class BarnardPlugin: NSObject, FlutterPlugin {
 
     let debugEvents = FlutterEventChannel(name: "barnard/debugEvents", binaryMessenger: registrar.messenger())
     debugEvents.setStreamHandler(instance.controller.debugEventsStreamHandler)
+
+    let identity = FlutterMethodChannel(name: "barnard/identity", binaryMessenger: registrar.messenger())
+    registrar.addMethodCallDelegate(instance.identityController, channel: identity)
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {

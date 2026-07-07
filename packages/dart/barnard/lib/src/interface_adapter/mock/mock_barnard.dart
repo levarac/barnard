@@ -274,6 +274,11 @@ class MockBarnard implements BarnardClient {
     return Uint8List.fromList(_currentTek);
   }
 
+  /// This mock's `DeviceSecret`, for pairing a [MockBarnardIdentity] with
+  /// the same root secret (test/demo convenience only — a real
+  /// `DeviceSecret` never leaves the SDK this way).
+  Uint8List get deviceSecretForTesting => Uint8List.fromList(_deviceSecret);
+
   @override
   List<BarnardDebugEvent> getDebugBuffer({int? limit}) =>
       _debugBuffer.toList(limit: limit);

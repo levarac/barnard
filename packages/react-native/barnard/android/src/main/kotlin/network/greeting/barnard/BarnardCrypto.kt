@@ -140,7 +140,7 @@ object BarnardCrypto {
     /** Lowercase-hex encoder for the RN bridge boundary. */
     fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
-    private fun hkdfSha256(ikm: ByteArray, info: ByteArray, outputLength: Int): ByteArray {
+    internal fun hkdfSha256(ikm: ByteArray, info: ByteArray, outputLength: Int): ByteArray {
         val salt = ByteArray(32)
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(salt, "HmacSHA256"))

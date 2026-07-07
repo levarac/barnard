@@ -218,3 +218,17 @@ export type BarnardEvent =
   | ConstraintEvent
   | ErrorEvent
   | DebugEvent;
+
+/**
+ * A recoverable ECDSA (secp256k1) signature: `(r, s, v)`.
+ *
+ * `v` is the recovery id (`0` or `1`) that lets a verifier recover the
+ * signing public key from `(r, s)` and the message hash alone
+ * ("ecrecover"-compatible). `r` and `s` are 64-char lowercase hex (32
+ * bytes each).
+ */
+export interface BarnardSignature {
+  r: string;
+  s: string;
+  v: number;
+}
