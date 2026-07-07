@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class BarnardPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(BarnardModule(reactContext))
+        return listOf(BarnardModule(reactContext), BarnardIdentityModule(reactContext))
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {

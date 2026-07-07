@@ -210,7 +210,7 @@ object BarnardCrypto {
     /**
      * HKDF-SHA256 key derivation (simplified: no salt, extract-then-expand).
      */
-    private fun hkdfSha256(ikm: ByteArray, info: ByteArray, outputLength: Int): ByteArray {
+    internal fun hkdfSha256(ikm: ByteArray, info: ByteArray, outputLength: Int): ByteArray {
         // Extract: PRK = HMAC-SHA256(salt=zeros, IKM)
         val salt = ByteArray(32) // All zeros
         val mac = Mac.getInstance("HmacSHA256")
