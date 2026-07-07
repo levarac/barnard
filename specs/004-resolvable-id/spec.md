@@ -99,6 +99,20 @@ A debug event with name `gatt_b003_read_failed` (error path) or `gatt_b003_missi
 
 If B004 fails or B002 itself fails, no detection is emitted.
 
+### 5.3 Central GATT self-recovery
+
+Central implementations MUST bound each active GATT exchange. If the platform
+does not provide a connection / service-discovery / characteristic-read
+deadline, the SDK must arm its own watchdog while `activePeripheral` is pinned.
+The watchdog stays active until the connection is released through GATT
+completion, failure, explicit reset, or disconnect. On timeout, the Central
+marks the resolution attempt as failed, cancels the peripheral connection,
+clears per-connection GATT state, releases the active slot, and resumes the
+connect queue.
+
+This prevents one stalled iOS CoreBluetooth exchange from permanently blocking
+all later Scan results from reaching GATT resolution.
+
 ## 6. `DetectionEvent` (v2)
 
 ```
