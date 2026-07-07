@@ -191,6 +191,10 @@ class Barnard: RCTEventEmitter {
     resolve(controller.getCurrentEnin())
   }
 
+  /// - Deprecated: barnard#63: exposing the raw TEK lets anyone derive
+  ///   every RPID and the displayId for it. Use
+  ///   `BarnardIdentity.proveRpidOwnership` instead. Retained (not
+  ///   removed) for backward compatibility.
   @objc
   func exportCurrentTek(
     _ resolve: @escaping RCTPromiseResolveBlock,

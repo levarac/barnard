@@ -57,6 +57,56 @@ class BarnardIdentityModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun proveRpidOwnership(
+        eventCode: String,
+        enin: Double,
+        eventIdHashHex: String,
+        challengeHex: String?,
+        promise: Promise,
+    ) {
+        try {
+            val proof = BarnardSigning.proveRpidOwnership(
+                getOrCreateDeviceSecret(),
+                eventCode,
+                hexToBytes(eventIdHashHex),
+                enin.toLong(),
+                challengeHex?.let { hexToBytes(it) },
+            )
+
+            val map: WritableMap = com.facebook.react.bridge.Arguments.createMap()
+            map.putString("rpi", proof.rpi.toHex())
+            map.putString("signingPublicKey", proof.signingPublicKey.toHex())
+            map.putString("r", proof.sig.r.toHex())
+            map.putString("s", proof.sig.s.toHex())
+            map.putInt("v", proof.sig.v)
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("E_PROVE_RPID_OWNERSHIP", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun proveKeyBinding(eventCode: String, displayIdHex: String, promise: Promise) {
+        try {
+            val eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
+            val sig = BarnardSigning.signKeyBinding(
+                getOrCreateDeviceSecret(),
+                eventCode,
+                eventCodeHash,
+                hexToBytes(displayIdHex),
+            )
+
+            val map: WritableMap = com.facebook.react.bridge.Arguments.createMap()
+            map.putString("r", sig.r.toHex())
+            map.putString("s", sig.s.toHex())
+            map.putInt("v", sig.v)
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("E_PROVE_KEY_BINDING", e.message, e)
+        }
+    }
+
     private fun hexToBytes(hex: String): ByteArray {
         val clean = if (hex.length % 2 == 0) hex else "0$hex"
         return ByteArray(clean.length / 2) { i ->

@@ -11,6 +11,18 @@ RCT_EXTERN_METHOD(sign:(NSString *)eventCode
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(proveRpidOwnership:(NSString *)eventCode
+                  enin:(nonnull NSNumber *)enin
+                  eventIdHashHex:(NSString *)eventIdHashHex
+                  challengeHex:(NSString *)challengeHex
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(proveKeyBinding:(NSString *)eventCode
+                  displayIdHex:(NSString *)displayIdHex
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
 + (BOOL)requiresMainQueueSetup
 {
   return NO;

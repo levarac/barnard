@@ -87,6 +87,13 @@ abstract class BarnardClient {
   /// The SDK never transmits TEK over BLE. Calling this exposes the TEK
   /// to the host-app caller, which then decides whether/how to transmit
   /// it elsewhere (e.g. to a server). The SDK makes no such decision.
+  ///
+  /// @Deprecated barnard#63: exposing the raw TEK lets anyone derive every
+  /// RPID and the displayId for it. Use `BarnardIdentity.proveRpidOwnership`
+  /// instead, which proves ownership of a single claimed RPID without
+  /// disclosing the TEK/RPIK. Retained (not removed) for backward
+  /// compatibility with existing callers.
+  @Deprecated("Use BarnardIdentity.proveRpidOwnership instead (barnard#63)")
   Future<Uint8List> exportCurrentTek();
 
   // Pull APIs

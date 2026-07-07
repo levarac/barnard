@@ -32,6 +32,12 @@ import javax.crypto.spec.SecretKeySpec
 internal object BarnardSigning {
     const val signingKeyInfo = "barnard-sign"
 
+    /** Domain-separation tag for [buildRpidProofMessage] (barnard#63). */
+    const val rpidProofDomainTag = "barnard-rpid-proof:v1"
+
+    /** Domain-separation tag for [buildKeyBindingMessage] (barnard#63). */
+    const val keyBindingDomainTag = "barnard-key-binding:v1"
+
     // MARK: - secp256k1 curve parameters
 
     private val P = BigInteger(
@@ -155,6 +161,70 @@ internal object BarnardSigning {
 
     private fun sha256(bytes: ByteArray): ByteArray =
         java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+
+    // MARK: - RPID ownership proof / key binding (barnard#63)
+
+    /**
+     * Canonical, fixed-order/length-prefixed encoding of an RPID ownership
+     * proof claim:
+     * `"barnard-rpid-proof:v1" ‖ eventIdHash(32) ‖ enin(8, BE) ‖ rpi(16) ‖ len(challenge) as u16 BE ‖ challenge`.
+     */
+    fun buildRpidProofMessage(eventIdHash: ByteArray, enin: Long, rpi: ByteArray, challenge: ByteArray?): ByteArray {
+        require(eventIdHash.size == 32) { "eventIdHash must be 32 bytes" }
+        require(rpi.size == 16) { "rpi must be 16 bytes" }
+        val challengeBytes = challenge ?: ByteArray(0)
+        require(challengeBytes.size <= 0xffff) { "challenge too long" }
+
+        val eninBytes = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.BIG_ENDIAN).putLong(enin).array()
+        val lenBytes = java.nio.ByteBuffer.allocate(2).order(java.nio.ByteOrder.BIG_ENDIAN)
+            .putShort(challengeBytes.size.toShort()).array()
+
+        return rpidProofDomainTag.toByteArray(Charsets.UTF_8) + eventIdHash + eninBytes + rpi + lenBytes + challengeBytes
+    }
+
+    /** Canonical encoding of a signing-key-to-device-identity binding claim. */
+    fun buildKeyBindingMessage(eventCodeHash: ByteArray, displayId: ByteArray): ByteArray {
+        return keyBindingDomainTag.toByteArray(Charsets.UTF_8) + eventCodeHash + displayId
+    }
+
+    data class RpidOwnershipProof(
+        val rpi: ByteArray,
+        val enin: Long,
+        val eventIdHash: ByteArray,
+        val signingPublicKey: ByteArray,
+        val sig: RecoverableSignature,
+    )
+
+    /**
+     * Compute the RPID ownership proof for [enin] within [eventCode], per
+     * barnard#63. Derives the TEK/RPIK/RPI internally from [deviceSecret]
+     * (via [BarnardCrypto]) — only the resulting `rpi` (not the TEK/RPIK)
+     * appears in the output.
+     */
+    fun proveRpidOwnership(
+        deviceSecret: ByteArray,
+        eventCode: String,
+        eventIdHash: ByteArray,
+        enin: Long,
+        challenge: ByteArray?,
+    ): RpidOwnershipProof {
+        val tek = BarnardCrypto.deriveTekForEvent(deviceSecret, eventCode)
+        val rpik = BarnardCrypto.deriveRpik(tek)
+        val rpi = BarnardCrypto.generateRpi(rpik, enin.toUInt())
+
+        val message = buildRpidProofMessage(eventIdHash, enin, rpi, challenge)
+        val keyPair = deriveSigningKeyPair(deviceSecret, eventCode)
+        val sig = signRecoverable(keyPair.privateKey, sha256(message))
+
+        return RpidOwnershipProof(rpi, enin, eventIdHash, keyPair.publicKeyCompressed, sig)
+    }
+
+    /** Sign the key-binding claim per barnard#63 acceptance criterion 3. */
+    fun signKeyBinding(deviceSecret: ByteArray, eventCode: String, eventCodeHash: ByteArray, displayId: ByteArray): RecoverableSignature {
+        val message = buildKeyBindingMessage(eventCodeHash, displayId)
+        val keyPair = deriveSigningKeyPair(deviceSecret, eventCode)
+        return signRecoverable(keyPair.privateKey, sha256(message))
+    }
 
     // MARK: - Recoverable ECDSA (RFC 6979 deterministic k)
 

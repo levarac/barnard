@@ -277,6 +277,11 @@ internal class BarnardController(
 
             "exportCurrentTek" -> {
                 // Explicit privacy egress. SDK never transmits TEK over BLE.
+                //
+                // Deprecated (barnard#63): exposing the raw TEK lets anyone
+                // derive every RPID and the displayId for it. Use
+                // BarnardIdentityController's "proveRpidOwnership" instead.
+                // Kept (not removed) for backward compatibility.
                 result.success(currentTek.toHex())
             }
 

@@ -4,6 +4,7 @@
 import "dart:math";
 import "dart:typed_data";
 
+import "../../domain/crypto.dart";
 import "../../domain/secp256k1.dart";
 import "../../domain/signing.dart";
 import "../../usecase/barnard_identity.dart";
@@ -36,6 +37,50 @@ class MockBarnardIdentity implements BarnardIdentity {
       deviceSecret: _deviceSecret,
       eventCode: eventCode,
       message: bytes,
+    );
+    return BarnardSignature(r: sig.r, s: sig.s, v: sig.v);
+  }
+
+  @override
+  Future<RpidOwnershipProof> proveRpidOwnership({
+    required String eventCode,
+    required int enin,
+    required Uint8List eventIdHash,
+    Uint8List? challenge,
+  }) async {
+    final tek = BarnardCrypto.deriveTekForEvent(_deviceSecret, eventCode);
+    final rpik = BarnardCrypto.deriveRpikFromTek(tek);
+    final rpi = BarnardCrypto.generateRpiFromRpik(rpik, enin);
+
+    final sig = signRpidOwnershipProof(
+      deviceSecret: _deviceSecret,
+      eventCode: eventCode,
+      eventIdHash: eventIdHash,
+      enin: enin,
+      rpi: rpi,
+      challenge: challenge,
+    );
+
+    return RpidOwnershipProof(
+      rpi: rpi,
+      enin: enin,
+      eventIdHash: eventIdHash,
+      signingPublicKey: deriveSigningKeyPair(_deviceSecret, eventCode).publicKeyCompressed,
+      sig: BarnardSignature(r: sig.r, s: sig.s, v: sig.v),
+    );
+  }
+
+  @override
+  Future<BarnardSignature> proveKeyBinding({
+    required String eventCode,
+    required Uint8List displayId,
+  }) async {
+    final eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode);
+    final sig = signKeyBinding(
+      deviceSecret: _deviceSecret,
+      eventCode: eventCode,
+      eventCodeHash: eventCodeHash,
+      displayId: displayId,
     );
     return BarnardSignature(r: sig.r, s: sig.s, v: sig.v);
   }

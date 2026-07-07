@@ -232,3 +232,19 @@ export interface BarnardSignature {
   s: string;
   v: number;
 }
+
+/**
+ * A verifier-checkable proof that the caller owns a given RPID, without
+ * disclosing the TEK/RPIK it was derived from (barnard#63).
+ */
+export interface RpidOwnershipProof {
+  /** 32-char lowercase hex: 16-byte inner RPI (same value `getCurrentRpi` returns for this `enin`). */
+  rpi: string;
+  /** ENIN this RPI was generated for. */
+  enin: number;
+  /** 64-char lowercase hex: 32 bytes, binds the claim to a single event. */
+  eventIdHash: string;
+  /** 66-char lowercase hex: SEC1-compressed signing public key (33 bytes). */
+  signingPublicKey: string;
+  sig: BarnardSignature;
+}

@@ -1,5 +1,5 @@
 import { BarnardIdentityModule } from './NativeBarnardIdentity';
-import type { BarnardSignature } from './types';
+import type { BarnardSignature, RpidOwnershipProof } from './types';
 
 /**
  * Barnard's per-event device signing identity (barnard#65).
@@ -44,5 +44,47 @@ export class BarnardIdentity {
    */
   async sign(eventCode: string, bytesHex: string): Promise<BarnardSignature> {
     return BarnardIdentityModule.sign(eventCode, bytesHex);
+  }
+
+  /**
+   * Prove ownership of the RPID generated for `enin` within `eventCode`,
+   * bound to `eventIdHashHex` and (optionally) a verifier-supplied
+   * `challengeHex` for replay resistance, without disclosing the
+   * TEK/RPIK or any other ENIN's RPI (barnard#63).
+   *
+   * `eventIdHashHex` must be 64 hex chars (32 bytes); `challengeHex`, if
+   * given, is arbitrary hex.
+   */
+  async proveRpidOwnership(
+    eventCode: string,
+    enin: number,
+    eventIdHashHex: string,
+    challengeHex?: string
+  ): Promise<RpidOwnershipProof> {
+    const native = await BarnardIdentityModule.proveRpidOwnership(
+      eventCode,
+      enin,
+      eventIdHashHex,
+      challengeHex ?? null
+    );
+    return {
+      rpi: native.rpi,
+      enin,
+      eventIdHash: eventIdHashHex,
+      signingPublicKey: native.signingPublicKey,
+      sig: { r: native.r, s: native.s, v: native.v },
+    };
+  }
+
+  /**
+   * Bind `signingPublicKey` to `displayIdHex` for `eventCode`: a
+   * self-signed statement a verifier can check to establish
+   * "signingPublicKey ↔ device" at join time, before any
+   * `proveRpidOwnership` call (barnard#63 acceptance criterion 3).
+   *
+   * `displayIdHex` must be 8 hex chars (4 bytes), matching `getMyDisplayId()`.
+   */
+  async proveKeyBinding(eventCode: string, displayIdHex: string): Promise<BarnardSignature> {
+    return BarnardIdentityModule.proveKeyBinding(eventCode, displayIdHex);
   }
 }

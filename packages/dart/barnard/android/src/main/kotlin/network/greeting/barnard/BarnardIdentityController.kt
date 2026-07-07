@@ -71,6 +71,58 @@ internal class BarnardIdentityController(
                 )
             }
 
+            "proveRpidOwnership" -> {
+                val args = call.arguments as? Map<*, *>
+                val eventCode = args?.get("eventCode") as? String
+                val enin = (args?.get("enin") as? Number)?.toLong()
+                val eventIdHashHex = args?.get("eventIdHash") as? String
+                val challengeHex = args?.get("challenge") as? String
+                if (eventCode == null || enin == null || eventIdHashHex == null) {
+                    result.error("E_ARGS", "eventCode, enin and eventIdHash are required", null)
+                    return
+                }
+                val proof = BarnardSigning.proveRpidOwnership(
+                    getOrCreateDeviceSecret(),
+                    eventCode,
+                    hexToBytes(eventIdHashHex),
+                    enin,
+                    challengeHex?.let { hexToBytes(it) },
+                )
+                result.success(
+                    mapOf(
+                        "rpi" to proof.rpi.toHex(),
+                        "signingPublicKey" to proof.signingPublicKey.toHex(),
+                        "r" to proof.sig.r.toHex(),
+                        "s" to proof.sig.s.toHex(),
+                        "v" to proof.sig.v,
+                    )
+                )
+            }
+
+            "proveKeyBinding" -> {
+                val args = call.arguments as? Map<*, *>
+                val eventCode = args?.get("eventCode") as? String
+                val displayIdHex = args?.get("displayId") as? String
+                if (eventCode == null || displayIdHex == null) {
+                    result.error("E_ARGS", "eventCode and displayId are required", null)
+                    return
+                }
+                val eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
+                val sig = BarnardSigning.signKeyBinding(
+                    getOrCreateDeviceSecret(),
+                    eventCode,
+                    eventCodeHash,
+                    hexToBytes(displayIdHex),
+                )
+                result.success(
+                    mapOf(
+                        "r" to sig.r.toHex(),
+                        "s" to sig.s.toHex(),
+                        "v" to sig.v,
+                    )
+                )
+            }
+
             else -> result.notImplemented()
         }
     }

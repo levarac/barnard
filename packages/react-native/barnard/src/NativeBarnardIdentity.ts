@@ -1,6 +1,20 @@
 import { NativeModules } from 'react-native';
 import type { BarnardSignature } from './types';
 
+/**
+ * Raw native return shape for `proveRpidOwnership`: the native side does
+ * not echo back the caller-supplied `enin`/`eventIdHash` (it only computes
+ * `rpi`/`signingPublicKey`/the signature); `BarnardIdentity.proveRpidOwnership`
+ * reassembles the full `RpidOwnershipProof` from the call arguments.
+ */
+export interface NativeRpidOwnershipProof {
+  rpi: string;
+  signingPublicKey: string;
+  r: string;
+  s: string;
+  v: number;
+}
+
 const LINKING_ERROR =
   "The package 'barnard' doesn't seem to be linked. Make sure: \n\n" +
   '- You rebuilt the app after installing the package\n' +
@@ -17,6 +31,15 @@ interface BarnardIdentityNativeModule {
   signingPublicKey(eventCode: string): Promise<string>;
   /** `bytesHex` is signed after being SHA-256 hashed natively. */
   sign(eventCode: string, bytesHex: string): Promise<BarnardSignature>;
+  /** `eventIdHashHex` is 64 hex chars (32 bytes); `challengeHex` is optional. */
+  proveRpidOwnership(
+    eventCode: string,
+    enin: number,
+    eventIdHashHex: string,
+    challengeHex?: string | null
+  ): Promise<NativeRpidOwnershipProof>;
+  /** `displayIdHex` is 8 hex chars (4 bytes), matching `getMyDisplayId()`. */
+  proveKeyBinding(eventCode: string, displayIdHex: string): Promise<BarnardSignature>;
 }
 
 const BarnardIdentityModule = NativeModules.BarnardIdentity

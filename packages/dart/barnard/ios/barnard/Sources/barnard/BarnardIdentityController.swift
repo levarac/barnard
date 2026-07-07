@@ -50,6 +50,52 @@ final class BarnardIdentityController: NSObject, FlutterPlugin {
         "v": sig.v,
       ])
 
+    case "proveRpidOwnership":
+      guard let args = call.arguments as? [String: Any],
+        let eventCode = args["eventCode"] as? String,
+        let eninNumber = args["enin"] as? NSNumber,
+        let eventIdHashHex = args["eventIdHash"] as? String
+      else {
+        result(FlutterError(code: "E_ARGS", message: "eventCode, enin and eventIdHash are required", details: nil))
+        return
+      }
+      let challengeHex = args["challenge"] as? String
+      let proof = BarnardSigning.proveRpidOwnership(
+        deviceSecret: getOrCreateDeviceSecret(),
+        eventCode: eventCode,
+        eventIdHash: hexToBytes(eventIdHashHex),
+        enin: eninNumber.uint64Value,
+        challenge: challengeHex.map { hexToBytes($0) }
+      )
+      result([
+        "rpi": proof.rpi.hexString,
+        "signingPublicKey": proof.signingPublicKey.hexString,
+        "r": proof.sig.r.hexString,
+        "s": proof.sig.s.hexString,
+        "v": proof.sig.v,
+      ])
+
+    case "proveKeyBinding":
+      guard let args = call.arguments as? [String: Any],
+        let eventCode = args["eventCode"] as? String,
+        let displayIdHex = args["displayId"] as? String
+      else {
+        result(FlutterError(code: "E_ARGS", message: "eventCode and displayId are required", details: nil))
+        return
+      }
+      let eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
+      let sig = BarnardSigning.signKeyBinding(
+        deviceSecret: getOrCreateDeviceSecret(),
+        eventCode: eventCode,
+        eventCodeHash: eventCodeHash,
+        displayId: hexToBytes(displayIdHex)
+      )
+      result([
+        "r": sig.r.hexString,
+        "s": sig.s.hexString,
+        "v": sig.v,
+      ])
+
     default:
       result(FlutterMethodNotImplemented)
     }

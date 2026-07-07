@@ -31,6 +31,12 @@ import Foundation
 enum BarnardSigning {
   static let signingKeyInfo = "barnard-sign"
 
+  /// Domain-separation tag for `buildRpidProofMessage` (barnard#63).
+  static let rpidProofDomainTag = "barnard-rpid-proof:v1"
+
+  /// Domain-separation tag for `buildKeyBindingMessage` (barnard#63).
+  static let keyBindingDomainTag = "barnard-key-binding:v1"
+
   struct SigningKeyPair {
     let privateKey: Secp256k1.UInt256
     let publicKeyCompressed: Data
@@ -135,6 +141,82 @@ enum BarnardSigning {
     let point = Secp256k1.pointAdd(term1, term2)
     if point.isInfinity { return nil }
     return Secp256k1.compress(point)
+  }
+
+  // MARK: - RPID ownership proof / key binding (barnard#63)
+
+  struct RpidOwnershipProof {
+    let rpi: Data
+    let enin: UInt64
+    let eventIdHash: Data
+    let signingPublicKey: Data
+    let sig: RecoverableSignature
+  }
+
+  /// Canonical, fixed-order/length-prefixed encoding of an RPID ownership
+  /// proof claim:
+  /// `"barnard-rpid-proof:v1" ‖ eventIdHash(32) ‖ enin(8, BE) ‖ rpi(16) ‖ len(challenge) as u16 BE ‖ challenge`.
+  static func buildRpidProofMessage(eventIdHash: Data, enin: UInt64, rpi: Data, challenge: Data?) -> Data {
+    precondition(eventIdHash.count == 32, "eventIdHash must be 32 bytes")
+    precondition(rpi.count == 16, "rpi must be 16 bytes")
+    let challengeBytes = challenge ?? Data()
+    precondition(challengeBytes.count <= 0xffff, "challenge too long")
+
+    var message = Data(rpidProofDomainTag.utf8)
+    message.append(eventIdHash)
+    message.append(contentsOf: withUnsafeBytes(of: enin.bigEndian) { Data($0) })
+    message.append(rpi)
+    message.append(contentsOf: withUnsafeBytes(of: UInt16(challengeBytes.count).bigEndian) { Data($0) })
+    message.append(challengeBytes)
+    return message
+  }
+
+  /// Canonical encoding of a signing-key-to-device-identity binding claim.
+  static func buildKeyBindingMessage(eventCodeHash: Data, displayId: Data) -> Data {
+    var message = Data(keyBindingDomainTag.utf8)
+    message.append(eventCodeHash)
+    message.append(displayId)
+    return message
+  }
+
+  /// Compute the RPID ownership proof for `enin` within `eventCode`, per
+  /// barnard#63. Derives the TEK/RPIK/RPI internally from `deviceSecret`
+  /// (via `BarnardCrypto`) — only the resulting `rpi` (not the TEK/RPIK)
+  /// appears in the output.
+  static func proveRpidOwnership(
+    deviceSecret: Data,
+    eventCode: String,
+    eventIdHash: Data,
+    enin: UInt64,
+    challenge: Data?
+  ) -> RpidOwnershipProof {
+    let tek = BarnardCrypto.deriveTekForEvent(deviceSecret: deviceSecret, eventCode: eventCode)
+    let rpik = BarnardCrypto.deriveRpik(from: tek)
+    let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: UInt32(truncatingIfNeeded: enin))
+
+    let message = buildRpidProofMessage(eventIdHash: eventIdHash, enin: enin, rpi: rpi, challenge: challenge)
+    let keyPair = deriveSigningKeyPair(deviceSecret: deviceSecret, eventCode: eventCode)
+    let sig = signRecoverable(privateKey: keyPair.privateKey, messageHash32: Data(SHA256.hash(data: message)))
+
+    return RpidOwnershipProof(
+      rpi: rpi,
+      enin: enin,
+      eventIdHash: eventIdHash,
+      signingPublicKey: keyPair.publicKeyCompressed,
+      sig: sig
+    )
+  }
+
+  /// Sign the key-binding claim per barnard#63 acceptance criterion 3.
+  static func signKeyBinding(
+    deviceSecret: Data,
+    eventCode: String,
+    eventCodeHash: Data,
+    displayId: Data
+  ) -> RecoverableSignature {
+    let message = buildKeyBindingMessage(eventCodeHash: eventCodeHash, displayId: displayId)
+    let keyPair = deriveSigningKeyPair(deviceSecret: deviceSecret, eventCode: eventCode)
+    return signRecoverable(privateKey: keyPair.privateKey, messageHash32: Data(SHA256.hash(data: message)))
   }
 
   /// RFC 6979 deterministic `k` (HMAC-SHA256; qlen == hlen == 32 bytes for secp256k1/SHA-256).

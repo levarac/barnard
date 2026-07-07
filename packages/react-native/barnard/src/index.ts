@@ -34,4 +34,5 @@ export type {
   DebugEvent,
   BarnardEvent,
   BarnardSignature,
+  RpidOwnershipProof,
 } from './types';
