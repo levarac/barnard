@@ -9,6 +9,9 @@ export { BarnardManager } from './BarnardManager';
 
 export type {
   TransportKind,
+  EninMode,
+  BeaconChainConfig,
+  BarnardConfig,
   BarnardCapabilities,
   BarnardPermissionDecision,
   BarnardPermissionStatus,

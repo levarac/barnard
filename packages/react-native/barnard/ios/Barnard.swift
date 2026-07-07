@@ -113,6 +113,34 @@ class Barnard: RCTEventEmitter {
     resolve(nil)
   }
 
+  @objc
+  func configure(
+    _ config: NSDictionary?,
+    resolve: @escaping RCTPromiseResolveBlock,
+    reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let controller = controller else {
+      reject("E_NOT_INITIALIZED", "Controller not initialized", nil)
+      return
+    }
+    let modeName = config?["eninMode"] as? String
+    let mode: BarnardCrypto.EninMode = modeName == "beaconSlot" ? .beaconSlot : .fixedLength
+    let eninSeconds = (config?["eninSeconds"] as? NSNumber)?.intValue ?? 300
+    let beaconMap = config?["beaconChain"] as? NSDictionary
+    let beaconChain = BarnardCrypto.BeaconChainConfig(
+      chainId: beaconMap?["chainId"] as? String ?? "mainnet",
+      genesisUnixSeconds: (beaconMap?["genesisUnixSeconds"] as? NSNumber)?.intValue ?? 1_606_824_023,
+      slotSeconds: (beaconMap?["slotSeconds"] as? NSNumber)?.intValue ?? 12
+    )
+    controller.configure(
+      eninMode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain,
+      eventCode: config?["eventCode"] as? String
+    )
+    resolve(nil)
+  }
+
   // v2 API
 
   @objc

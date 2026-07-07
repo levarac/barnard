@@ -18,6 +18,10 @@ RCT_EXTERN_METHOD(requestPermissions:(RCTPromiseResolveBlock)resolve
 RCT_EXTERN_METHOD(openAppSettings:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(configure:(NSDictionary *)config
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
 // v2 API
 
 RCT_EXTERN_METHOD(getCurrentEventCode:(RCTPromiseResolveBlock)resolve

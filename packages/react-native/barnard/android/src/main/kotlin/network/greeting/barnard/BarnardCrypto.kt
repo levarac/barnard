@@ -30,6 +30,20 @@ import javax.crypto.spec.SecretKeySpec
  * ```
  */
 object BarnardCrypto {
+    enum class EninMode { FIXED_LENGTH, BEACON_SLOT }
+
+    const val rpidBoundaryRetryDelayMs: Long = 250L
+
+    data class BeaconChainConfig(
+        val chainId: String = "mainnet",
+        val genesisUnixSeconds: Long = 1606824023L,
+        val slotSeconds: Long = 12L,
+    ) {
+        val effectiveGenesisUnixSeconds: Long
+            get() = genesisUnixSeconds.coerceAtLeast(0L)
+        val effectiveSlotSeconds: Long
+            get() = slotSeconds.coerceAtLeast(1L)
+    }
 
     fun deriveTekForEvent(deviceSecret: ByteArray, eventCode: String): ByteArray {
         val eventCodeBytes = eventCode.toByteArray(Charsets.UTF_8)
@@ -71,9 +85,35 @@ object BarnardCrypto {
         }
     }
 
-    fun calculateEnin(timestampMs: Long = System.currentTimeMillis(), eninSeconds: Long = 300L): UInt {
-        val effectiveSeconds = eninSeconds.coerceIn(12L, 3600L)
-        return ((timestampMs / 1000) / effectiveSeconds).toUInt()
+    fun calculateEnin(
+        timestampMs: Long = System.currentTimeMillis(),
+        mode: EninMode = EninMode.FIXED_LENGTH,
+        eninSeconds: Long = 300L,
+        beaconChain: BeaconChainConfig = BeaconChainConfig(),
+    ): UInt {
+        val unixSeconds = timestampMs / 1000
+        return when (mode) {
+            EninMode.FIXED_LENGTH -> {
+                val effectiveSeconds = eninSeconds.coerceIn(12L, 3600L)
+                (unixSeconds / effectiveSeconds).toUInt()
+            }
+            EninMode.BEACON_SLOT -> {
+                val elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds
+                if (elapsed <= 0L) 0U else (elapsed / beaconChain.effectiveSlotSeconds).toUInt()
+            }
+        }
+    }
+
+    fun stableReadEnin(
+        startedAtMs: Long,
+        completedAtMs: Long,
+        mode: EninMode = EninMode.FIXED_LENGTH,
+        eninSeconds: Long = 300L,
+        beaconChain: BeaconChainConfig = BeaconChainConfig(),
+    ): UInt? {
+        val startedEnin = calculateEnin(startedAtMs, mode, eninSeconds, beaconChain)
+        val completedEnin = calculateEnin(completedAtMs, mode, eninSeconds, beaconChain)
+        return if (startedEnin == completedEnin) completedEnin else null
     }
 
     fun computeEventCodeHash(eventCode: String): ByteArray {

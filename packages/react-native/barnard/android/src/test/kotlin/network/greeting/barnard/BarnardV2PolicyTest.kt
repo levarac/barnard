@@ -19,4 +19,18 @@ internal class BarnardV2PolicyTest {
         assertTrue(peer.matches(1234))
         assertFalse(peer.matches(1235))
     }
+
+    @Test
+    fun boundaryRetryBudget_capsRetriesPerPeer() {
+        val budget = BarnardV2Policy.BoundaryRetryBudget(maxRetries = 3)
+
+        assertTrue(budget.consume("AA:BB"))
+        assertTrue(budget.consume("AA:BB"))
+        assertTrue(budget.consume("AA:BB"))
+        assertFalse(budget.consume("AA:BB"))
+        assertTrue(budget.consume("CC:DD"))
+
+        budget.clear("AA:BB")
+        assertTrue(budget.consume("AA:BB"))
+    }
 }

@@ -135,6 +135,7 @@ internal class BarnardController(
     private val lastConnectAttemptAtMs: MutableMap<String, Long> = mutableMapOf()
     private val resolutionBackoffUntilMs: MutableMap<String, Long> = mutableMapOf()
     private val pendingBoundaryRetryDevices: MutableMap<String, BluetoothDevice> = mutableMapOf()
+    private val boundaryRetryBudget = BarnardV2Policy.BoundaryRetryBudget()
     private var activeGatt: BluetoothGatt? = null
 
     private val maxConnectQueue: Int = 20
@@ -548,6 +549,7 @@ internal class BarnardController(
         lastConnectAttemptAtMs.clear()
         resolutionBackoffUntilMs.clear()
         pendingBoundaryRetryDevices.clear()
+        boundaryRetryBudget.clearAll()
         peripheralReadValues.clear()
         knownPeers.clear()
 
@@ -1291,6 +1293,16 @@ internal class BarnardController(
     }
 
     private fun retryAfterRpidBoundaryCrossing(gatt: BluetoothGatt, address: String) {
+        if (!boundaryRetryBudget.consume(address)) {
+            markGattResolutionFailed(
+                address = address,
+                reason = "rpid_boundary_retry_exhausted",
+                recoverable = true,
+                extra = mapOf("maxRetries" to boundaryRetryBudget.maxRetries)
+            )
+            finishConnection(gatt)
+            return
+        }
         val device = gatt.device
         lastConnectAttemptAtMs.remove(address)
         if (device != null) {
@@ -1546,6 +1558,7 @@ internal class BarnardController(
                 val detectedDisplayIdHex = values.detectedDisplayId?.toHex()
                 emitDetection(completedAtMs, rssi, rpidData, detectedDisplayIdHex, lastDiscoveryNameById[address])
                 resolutionBackoffUntilMs.remove(address)
+                boundaryRetryBudget.clear(address)
 
                 if (rpidData.size == 17) {
                     knownPeers[address] = KnownPeer(

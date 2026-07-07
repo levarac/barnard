@@ -19,4 +19,27 @@ enum BarnardV2Policy {
     let enin: UInt32
     func matches(_ currentEnin: UInt32) -> Bool { enin == currentEnin }
   }
+
+  struct BoundaryRetryBudget {
+    let maxRetries: Int
+    private var counts: [UUID: Int] = [:]
+
+    init(maxRetries: Int = 3) {
+      self.maxRetries = maxRetries
+    }
+
+    mutating func consume(_ id: UUID) -> Bool {
+      let next = (counts[id] ?? 0) + 1
+      counts[id] = next
+      return next <= maxRetries
+    }
+
+    mutating func clear(_ id: UUID) {
+      counts.removeValue(forKey: id)
+    }
+
+    mutating func clearAll() {
+      counts.removeAll()
+    }
+  }
 }
