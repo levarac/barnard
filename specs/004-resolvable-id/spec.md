@@ -136,6 +136,20 @@ boundary, the central emits no detection for that exchange and schedules a
 short retry without applying the normal per-peer connection cooldown, because
 the peer RPID cannot be attributed to one observation window without ambiguity.
 
+### 5.3 Central GATT self-recovery
+
+Central implementations MUST bound each active GATT exchange. If the platform
+does not provide a connection / service-discovery / characteristic-read
+deadline, the SDK must arm its own watchdog while `activePeripheral` is pinned.
+The watchdog stays active until the connection is released through GATT
+completion, failure, explicit reset, or disconnect. On timeout, the Central
+marks the resolution attempt as failed, cancels the peripheral connection,
+clears per-connection GATT state, releases the active slot, and resumes the
+connect queue.
+
+This prevents one stalled iOS CoreBluetooth exchange from permanently blocking
+all later Scan results from reaching GATT resolution.
+
 ## 6. `DetectionEvent` (v2)
 
 ```
@@ -161,7 +175,7 @@ the peer RPID cannot be attributed to one observation window without ambiguity.
 
 ### 6.1 `RssiUpdateEvent` (v2)
 
-Emitted on every BLE scan hit for a peer that has already completed v2 GATT exchange and been cached as `knownPeer`. No GATT round-trip is performed; the cached `rpid` and `detectedDisplayId` are reused.
+Emitted on every BLE scan hit for a peer that has already completed v2 GATT exchange and been cached as `knownPeer` in the current ENIN. No GATT round-trip is performed while the cached ENIN still matches; the cached `rpid` and `detectedDisplayId` are reused.
 
 ```
 {
@@ -176,6 +190,12 @@ Emitted on every BLE scan hit for a peer that has already completed v2 GATT exch
 ```
 
 `reporterRpid` and `enin` carry the same atomic-snapshot contract as `DetectionEvent` (both derived natively from the observation `timestamp`), so consumers can bucket Detection and RssiUpdate samples together by `(rpid, enin)` without recomputing `enin` client-side.
+
+Known-peer caches are ENIN-scoped. If a scan hit arrives after the cached
+peer's ENIN no longer matches the current ENIN, the Central MUST discard that
+cached peer, MUST NOT emit `rssi_update` with the stale cached RPID, and SHOULD
+perform a fresh GATT resolution before emitting further RSSI updates for that
+peer.
 
 ## 7. SDK public API
 

@@ -983,7 +983,7 @@ internal class BarnardController(
         val knownPeer = knownPeers[address]
         if (knownPeer != null) {
             val nowEnin = currentEnin(nowMs).toLong()
-            if (BarnardV2Policy.KnownPeerWindow(knownPeer.enin).matches(nowEnin)) {
+            if (BarnardV2Policy.shouldEmitRssiUpdate(knownPeer.enin, nowEnin)) {
                 emitRssiUpdate(address, result.rssi, nowMs)
             } else {
                 knownPeers.remove(address)

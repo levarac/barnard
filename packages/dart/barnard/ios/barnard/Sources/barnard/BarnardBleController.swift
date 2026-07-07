@@ -96,12 +96,12 @@ final class BarnardBleController: NSObject {
   private let resolutionRejectedBackoffSeconds: TimeInterval = 5 * 60
   private let rpidBoundaryRetryDelaySeconds: TimeInterval = 0.25
   private let maxConnectQueue = 20
-  // CoreBluetooth's `connect()` has no built-in deadline. A hung connection
-  // (e.g. to a peripheral whose BLE address has since rotated) keeps
-  // `activePeripheral` pinned forever and starves the connect queue, so
-  // every subsequently-discovered peer shows up as "scan only, awaiting
-  // GATT". Arm a manual watchdog that cancels and releases the pin after
-  // this many seconds if no GATT progress has been made.
+  // CoreBluetooth's connection and GATT callbacks have no built-in deadline.
+  // A hung connection or service/characteristic discovery keeps
+  // `activePeripheral` pinned forever and starves the connect queue, so every
+  // subsequently-discovered peer shows up as "scan only, awaiting GATT".
+  // Arm a manual watchdog that cancels and releases the pin after this many
+  // seconds if the GATT exchange does not reach disconnection or failure.
   private let connectTimeoutSeconds: TimeInterval = 8
   private var connectWatchdog: DispatchWorkItem?
   private var connectCooldownWorkItem: DispatchWorkItem?
@@ -746,13 +746,13 @@ final class BarnardBleController: NSObject {
       guard let pinned = self.activePeripheral, pinned.identifier == id else {
         return
       }
-      self.emitDebug(level: "warn", name: "connect_timeout", data: [
+      self.emitDebug(level: "warn", name: "gatt_exchange_timeout", data: [
         "id": id.uuidString,
         "seconds": self.connectTimeoutSeconds,
       ])
       self.markGattResolutionFailed(
         id,
-        reason: "connect_timeout",
+        reason: "gatt_exchange_timeout",
         recoverable: true,
         extra: ["seconds": self.connectTimeoutSeconds]
       )
@@ -1191,7 +1191,7 @@ extension BarnardBleController: CBCentralManagerDelegate {
 
     if let knownPeer = knownPeers[peripheral.identifier] {
       let currentEninValue = currentEnin(now)
-      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(currentEninValue) {
+      if BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin: knownPeer.enin, currentEnin: currentEninValue) {
         emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
       } else {
         knownPeers.removeValue(forKey: peripheral.identifier)
@@ -1219,7 +1219,6 @@ extension BarnardBleController: CBCentralManagerDelegate {
       ])
       return
     }
-    cancelConnectWatchdog()
     emitDebug(level: "trace", name: "connected", data: ["id": peripheral.identifier.uuidString])
     peripheral.discoverServices([discoveryServiceUUID])
   }

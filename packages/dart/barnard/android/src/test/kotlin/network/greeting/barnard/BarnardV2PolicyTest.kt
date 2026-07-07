@@ -33,4 +33,10 @@ internal class BarnardV2PolicyTest {
         budget.clear("AA:BB")
         assertTrue(budget.consume("AA:BB"))
     }
+
+    @Test
+    fun shouldEmitRssiUpdate_rejectsCachedPeerAfterEninRotation() {
+        assertTrue(BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin = 1234, currentEnin = 1234))
+        assertFalse(BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin = 1234, currentEnin = 1235))
+    }
 }

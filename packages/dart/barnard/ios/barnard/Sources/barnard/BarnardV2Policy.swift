@@ -19,4 +19,13 @@ enum BarnardV2Policy {
     let enin: UInt32
     func matches(_ currentEnin: UInt32) -> Bool { enin == currentEnin }
   }
+
+  /// RSSI updates may reuse a cached peer RPID only while the cache belongs to
+  /// the current ENIN. After rotation, Central must re-resolve B002/B003 first.
+  static func shouldEmitRssiUpdate(
+    cachedPeerEnin: UInt32,
+    currentEnin: UInt32
+  ) -> Bool {
+    KnownPeerWindow(enin: cachedPeerEnin).matches(currentEnin)
+  }
 }

@@ -28,4 +28,8 @@ internal object BarnardV2Policy {
             counts.clear()
         }
     }
+
+    fun shouldEmitRssiUpdate(cachedPeerEnin: Long, currentEnin: Long): Boolean {
+        return KnownPeerWindow(cachedPeerEnin).matches(currentEnin)
+    }
 }

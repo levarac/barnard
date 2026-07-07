@@ -80,8 +80,9 @@ final class BarnardBleController: NSObject {
   private let resolutionFailureBackoffSeconds: TimeInterval = 30
   private let resolutionRejectedBackoffSeconds: TimeInterval = 5 * 60
   private let maxConnectQueue = 20
-  // See Flutter variant: CoreBluetooth's `connect()` has no deadline, so a
-  // hung connection pins `activePeripheral` forever and starves the queue.
+  // See Flutter variant: CoreBluetooth's connection and GATT callbacks have no
+  // deadline, so a hung exchange pins `activePeripheral` forever and starves
+  // the queue.
   private let connectTimeoutSeconds: TimeInterval = 8
   private var connectWatchdog: DispatchWorkItem?
   private var connectCooldownWorkItem: DispatchWorkItem?
@@ -637,13 +638,13 @@ final class BarnardBleController: NSObject {
       guard let pinned = self.activePeripheral, pinned.identifier == id else {
         return
       }
-      self.emitDebug(level: "warn", name: "connect_timeout", data: [
+      self.emitDebug(level: "warn", name: "gatt_exchange_timeout", data: [
         "id": id.uuidString,
         "seconds": self.connectTimeoutSeconds,
       ])
       self.markGattResolutionFailed(
         id,
-        reason: "connect_timeout",
+        reason: "gatt_exchange_timeout",
         recoverable: true,
         extra: ["seconds": self.connectTimeoutSeconds]
       )
@@ -1085,7 +1086,7 @@ extension BarnardBleController: CBCentralManagerDelegate {
 
     if let knownPeer = knownPeers[peripheral.identifier] {
       let nowEnin = currentEnin(for: now)
-      if BarnardV2Policy.KnownPeerWindow(enin: knownPeer.enin).matches(nowEnin) {
+      if BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin: knownPeer.enin, currentEnin: nowEnin) {
         emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
       } else {
         knownPeers.removeValue(forKey: peripheral.identifier)
@@ -1113,7 +1114,6 @@ extension BarnardBleController: CBCentralManagerDelegate {
       ])
       return
     }
-    cancelConnectWatchdog()
     emitDebug(level: "trace", name: "connected", data: ["id": peripheral.identifier.uuidString])
     peripheral.discoverServices([discoveryServiceUUID])
   }
