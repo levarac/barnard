@@ -1,0 +1,71 @@
+name: Native SDK CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  swift-package:
+    # Flutter-free: builds/tests packages/swift/barnard directly. No Flutter
+    # toolchain is installed in this job (barnard#56 acceptance criterion:
+    # "CI validates each first-class SDK surface independently").
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: packages/swift/barnard
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Resolve simulator destination
+        id: destination
+        run: |
+          UDID=$(xcrun simctl list devices available iOS -j | \
+            python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
+            runtimes=[k for k in d if 'iOS' in k]; \
+            runtimes.sort(reverse=True); \
+            devices=[dev for rt in runtimes for dev in d[rt] if 'iPhone' in dev['name']]; \
+            print(devices[0]['udid'])")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: swift build (package graph sanity check)
+        run: xcodebuild -scheme Barnard -destination "id=${{ steps.destination.outputs.udid }}" build
+      - name: swift test (crypto/TEK/RPID + signing unit tests)
+        run: xcodebuild -scheme Barnard -destination "id=${{ steps.destination.outputs.udid }}" test
+
+  swift-mirror-sync-check:
+    # packages/swift/barnard mirrors the Flutter-free crypto/signing/RPID
+    # sources under packages/dart/barnard/ios; this guards against drift
+    # (see scripts/check-swift-mirror.sh).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-swift-mirror.sh
+
+  ios-native-example:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: examples/ios-native
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Resolve simulator destination
+        id: destination
+        run: |
+          UDID=$(xcrun simctl list devices available iOS -j | \
+            python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
+            runtimes=[k for k in d if 'iOS' in k]; \
+            runtimes.sort(reverse=True); \
+            devices=[dev for rt in runtimes for dev in d[rt] if 'iPhone' in dev['name']]; \
+            print(devices[0]['udid'])")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: Build native iOS example (Flutter-free)
+        run: |
+          xcodebuild -project BarnardNativeExample.xcodeproj -scheme BarnardNativeExample \
+            -destination "id=${{ steps.destination.outputs.udid }}" build

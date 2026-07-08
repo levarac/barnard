@@ -1,0 +1,28 @@
+name: BarnardNativeExample
+options:
+  bundleIdPrefix: network.greeting.barnard.example
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  Barnard:
+    path: ../../packages/swift/barnard
+targets:
+  BarnardNativeExample:
+    type: application
+    platform: iOS
+    sources:
+      - BarnardNativeExample
+    dependencies:
+      - package: Barnard
+        product: Barnard
+    info:
+      path: BarnardNativeExample/Info.plist
+      properties:
+        UILaunchScreen: {}
+        NSBluetoothAlwaysUsageDescription: "Barnard uses Bluetooth to scan for and advertise to nearby devices running the Barnard protocol."
+        NSBluetoothPeripheralUsageDescription: "Barnard uses Bluetooth to scan for and advertise to nearby devices running the Barnard protocol."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: network.greeting.barnard.example.native
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"

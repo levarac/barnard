@@ -1,0 +1,1557 @@
+// Copyright 2024-2026 The Greeting Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style license.
+
+import CoreBluetooth
+import Foundation
+import UIKit
+
+/// Flutter-free, Swift-first public event/value types for `BarnardEngine`.
+///
+/// These mirror the shapes emitted on the Flutter `barnard/events` and
+/// `barnard/debugEvents` channels (see
+/// `packages/dart/barnard/ios/barnard/Sources/barnard/BarnardBleController.swift`)
+/// but are expressed as native Swift types instead of untyped
+/// `[String: Any]` dictionaries.
+
+public struct BarnardBeaconChain: Equatable {
+  public let chainId: String
+  public let genesisUnixSeconds: Int
+  public let slotSeconds: Int
+
+  public static let ethereumMainnet = BarnardBeaconChain(
+    chainId: "mainnet",
+    genesisUnixSeconds: 1_606_824_023,
+    slotSeconds: 12
+  )
+
+  public init(chainId: String, genesisUnixSeconds: Int, slotSeconds: Int) {
+    self.chainId = chainId
+    self.genesisUnixSeconds = genesisUnixSeconds
+    self.slotSeconds = slotSeconds
+  }
+
+  fileprivate var internalConfig: BarnardCrypto.BeaconChainConfig {
+    BarnardCrypto.BeaconChainConfig(
+      chainId: chainId,
+      genesisUnixSeconds: genesisUnixSeconds,
+      slotSeconds: slotSeconds
+    )
+  }
+}
+
+public enum BarnardEninMode: String {
+  case fixedLength
+  case beaconSlot
+
+  fileprivate var internalMode: BarnardCrypto.EninMode {
+    switch self {
+    case .fixedLength: return .fixedLength
+    case .beaconSlot: return .beaconSlot
+    }
+  }
+}
+
+public struct BarnardCapabilities {
+  public let supportedTransports: [String]
+  public let supportsConnectionlessRpid: Bool
+  public let supportsGattFallback: Bool
+  public let supportsBackground: Bool
+  public let supportsHighRateRssi: Bool
+  public let eninMode: BarnardEninMode
+  public let eninSeconds: Int
+  public let beaconChain: BarnardBeaconChain
+}
+
+public struct BarnardState {
+  public let isScanning: Bool
+  public let isAdvertising: Bool
+  public let eventCode: String?
+  public let eninMode: BarnardEninMode
+  public let eninSeconds: Int
+  public let beaconChain: BarnardBeaconChain
+  public let reasonCode: String?
+}
+
+public struct BarnardPermissionStatus {
+  public let platform: String
+  public let permissions: [String: String]
+  public let requiredPermissions: [String]
+  public let missingPermissions: [String]
+  public let requestablePermissions: [String]
+  public let blockedPermissions: [String]
+  public let canScan: Bool
+  public let canAdvertise: Bool
+}
+
+public struct BarnardDetectionEvent {
+  public let timestamp: Date
+  public let rssi: Int
+  public let formatVersion: Int
+  /// Lowercase hex, 17 bytes.
+  public let rpid: String
+  /// Lowercase hex, this device's own current RPID at `timestamp`.
+  public let reporterRpid: String
+  public let detectedDisplayId: String?
+  public let enin: Int
+  public let debugLocalName: String?
+}
+
+public struct BarnardRssiUpdateEvent {
+  public let timestamp: Date
+  public let rssi: Int
+  public let rpid: String
+  public let reporterRpid: String
+  public let enin: Int
+  public let detectedDisplayId: String?
+  public let debugLocalName: String?
+}
+
+public struct BarnardErrorEvent {
+  public let code: String
+  public let message: String
+  public let recoverable: Bool?
+}
+
+public struct BarnardConstraintEvent {
+  public let code: String
+  public let message: String?
+}
+
+public enum BarnardEvent {
+  case state(BarnardState)
+  case constraint(BarnardConstraintEvent)
+  case error(BarnardErrorEvent)
+  case detection(BarnardDetectionEvent)
+  case rssiUpdate(BarnardRssiUpdateEvent)
+}
+
+public struct BarnardDebugEvent {
+  public let timestamp: Date
+  public let level: String
+  public let name: String
+  public let data: [String: Any]?
+}
+
+/// Barnard v2 BLE engine — Flutter-free, Swift-first port of
+/// `BarnardBleController` (the Flutter plugin's native controller). Same
+/// GATT service (fixed UUID), same v2 wire behavior:
+///
+/// - B002 RPID (Read, 17 bytes)
+/// - B003 displayId (Read, 4 bytes when joined to an event) — `SHA256(TEK)[0:4]`. v2 no longer serves TEK.
+/// - B004 EventCodeHash (Read, 0 or 8 bytes)
+///
+/// TEK is never transmitted over BLE in v2. No device-unique persistent
+/// identifier is placed on the wire (same invariant as the Flutter plugin).
+public final class BarnardEngine: NSObject {
+  // MARK: - UUIDs
+
+  private let discoveryServiceUUID = CBUUID(string: "0000B001-0000-1000-8000-00805F9B34FB")
+  private let rpidCharacteristicUUID = CBUUID(string: "0000B002-0000-1000-8000-00805F9B34FB")
+  private let displayIdCharacteristicUUID = CBUUID(string: "0000B003-0000-1000-8000-00805F9B34FB")
+  private let eventCodeHashCharacteristicUUID = CBUUID(string: "0000B004-0000-1000-8000-00805F9B34FB")
+  private let localName = "BNRD"
+  private let unavailableRssi = 127
+
+  private var debugLocalName: String {
+    #if DEBUG
+    let suffix = debugDeviceSuffix()
+    return "BND-\(suffix)"
+    #else
+    return localName
+    #endif
+  }
+
+  private func debugDeviceSuffix() -> String {
+    let deviceSecret = rpid.getDeviceSecret()
+    let tail = deviceSecret.suffix(2)
+    let hex = tail.map { String(format: "%02x", $0) }.joined().uppercased()
+    return hex.isEmpty ? "DEAD" : hex
+  }
+
+  private let iso8601: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+  }()
+
+  // MARK: - Components
+
+  private let rpid = BarnardRpidGenerator()
+
+  // MARK: - BLE Managers
+
+  private var centralManager: CBCentralManager?
+  private var peripheralManager: CBPeripheralManager?
+  private var pendingPermissionCompletions: [(BarnardPermissionStatus) -> Void] = []
+
+  // MARK: - GATT Characteristics (Peripheral)
+
+  private var rpidCharacteristic: CBMutableCharacteristic?
+  private var displayIdCharacteristic: CBMutableCharacteristic?
+  private var eventCodeHashCharacteristic: CBMutableCharacteristic?
+
+  // MARK: - State
+
+  private var isScanning = false
+  private var isAdvertising = false
+  private var shouldStartScanWhenReady = false
+  private var shouldStartAdvertiseWhenReady = false
+  private var allowDuplicates = true
+  private var formatVersion: UInt8 = 1
+  private var eninMode: BarnardCrypto.EninMode = .fixedLength
+  private var eninSeconds: Int = 300
+  private var beaconChain: BarnardCrypto.BeaconChainConfig = .ethereumMainnet
+
+  private var lastDiscoveryNameById: [UUID: String] = [:]
+
+  // MARK: - Discovery State
+
+  private var discoveredRssi: [UUID: Int] = [:]
+  private var discoveredAt: [UUID: Date] = [:]
+
+  // MARK: - Connection Queue
+
+  private var connectQueue: [UUID] = []
+  private var peripheralsById: [UUID: CBPeripheral] = [:]
+  private var lastConnectAttemptAt: [UUID: Date] = [:]
+  private var resolutionBackoffUntil: [UUID: Date] = [:]
+  private var pendingBoundaryRetryPeripherals: [UUID: CBPeripheral] = [:]
+  private var activePeripheral: CBPeripheral?
+
+  private let maxConcurrentConnections = 1
+  private let cooldownPerPeerSeconds: TimeInterval = 10
+  private let resolutionFailureBackoffSeconds: TimeInterval = 30
+  private let resolutionRejectedBackoffSeconds: TimeInterval = 5 * 60
+  private let rpidBoundaryRetryDelaySeconds: TimeInterval = 0.25
+  private let maxConnectQueue = 20
+  // See BarnardBleController (issue this mirrors): CoreBluetooth's
+  // connection/GATT callbacks have no built-in deadline, so a manual
+  // watchdog releases a hung `activePeripheral` pin after this many seconds.
+  private let connectTimeoutSeconds: TimeInterval = 8
+  private var connectWatchdog: DispatchWorkItem?
+  private var connectCooldownWorkItem: DispatchWorkItem?
+
+  // MARK: - Central GATT State (per connection)
+
+  private var peripheralCharacteristics: [UUID: [CBUUID: CBCharacteristic]] = [:]
+  private var peripheralReadValues: [UUID: PeripheralGattValues] = [:]
+  private var b004ReadRetries: [UUID: Int] = [:]
+  private let maxB004ReadRetries = 2
+  private let b004ReadRetryDelaySeconds: TimeInterval = 0.25
+
+  private struct PeripheralGattValues {
+    var eventCodeHash: Data?
+    var rpid: Data?
+    var rpidReadStartedAt: Date?
+    var rpidReadCompletedAt: Date?
+    var detectedDisplayId: Data?
+  }
+
+  // MARK: - Known Peers (for high-rate RSSI updates)
+
+  private struct KnownPeer {
+    let rpid: Data
+    let enin: UInt32
+    var detectedDisplayId: String?
+    var debugLocalName: String?
+  }
+
+  private var knownPeers: [UUID: KnownPeer] = [:]
+
+  private func shouldServeGattDisplayId() -> Bool {
+    BarnardV2Policy.shouldServeGattDisplayId(eventCode: rpid.eventCode)
+  }
+
+  private func currentEnin(_ date: Date = Date()) -> UInt32 {
+    BarnardCrypto.calculateEnin(
+      for: date,
+      mode: eninMode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+  }
+
+  private func currentPayload(now: Date) -> Data {
+    rpid.currentPayload(
+      formatVersion: formatVersion,
+      now: now,
+      eninMode: eninMode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    )
+  }
+
+  private func eninModeName() -> BarnardEninMode {
+    switch eninMode {
+    case .beaconSlot: return .beaconSlot
+    case .fixedLength: return .fixedLength
+    }
+  }
+
+  private func beaconChainInfo() -> BarnardBeaconChain {
+    BarnardBeaconChain(
+      chainId: beaconChain.chainId,
+      genesisUnixSeconds: beaconChain.effectiveGenesisUnixSeconds,
+      slotSeconds: beaconChain.effectiveSlotSeconds
+    )
+  }
+
+  // MARK: - Event Delivery
+
+  /// Called on the main queue with the same event stream the Flutter plugin
+  /// exposes on the `barnard/events` channel.
+  public var onEvent: ((BarnardEvent) -> Void)?
+  /// Called on the main queue with the same event stream the Flutter plugin
+  /// exposes on the `barnard/debugEvents` channel.
+  public var onDebugEvent: ((BarnardDebugEvent) -> Void)?
+
+  // MARK: - Initialization
+
+  override public init() {
+    super.init()
+
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appDidBecomeActive),
+      name: UIApplication.didBecomeActiveNotification,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appWillResignActive),
+      name: UIApplication.willResignActiveNotification,
+      object: nil
+    )
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+  }
+
+  private func ensureCentralManager() -> CBCentralManager {
+    if let manager = centralManager {
+      return manager
+    }
+    let manager = CBCentralManager(delegate: self, queue: nil)
+    centralManager = manager
+    return manager
+  }
+
+  private func ensurePeripheralManager() -> CBPeripheralManager {
+    if let manager = peripheralManager {
+      return manager
+    }
+    let manager = CBPeripheralManager(delegate: self, queue: nil)
+    peripheralManager = manager
+    return manager
+  }
+
+  private func ensureBleManagers() {
+    _ = ensureCentralManager()
+    _ = ensurePeripheralManager()
+  }
+
+  private func bluetoothPermissionStatus() -> String {
+    switch CBManager.authorization {
+    case .allowedAlways:
+      return "granted"
+    case .denied:
+      return "denied"
+    case .restricted:
+      return "restricted"
+    case .notDetermined:
+      return "notDetermined"
+    @unknown default:
+      return "unknown"
+    }
+  }
+
+  private func permissionStatusPayload() -> BarnardPermissionStatus {
+    let permissionName = "ios.bluetooth"
+    let status = bluetoothPermissionStatus()
+    let missing = status == "granted" ? [] : [permissionName]
+    let blocked = (status == "denied" || status == "restricted") ? [permissionName] : []
+    let requestable = missing.filter { !blocked.contains($0) }
+    // iOS Simulator cannot scan or advertise over BLE even when CoreBluetooth
+    // authorization is granted, so capability flags must reflect that gap
+    // independently of authorization state. See issue #57.
+    let canBle = status == "granted" && !Self.isIosSimulator
+    return BarnardPermissionStatus(
+      platform: "ios",
+      permissions: [permissionName: status],
+      requiredPermissions: [permissionName],
+      missingPermissions: missing,
+      requestablePermissions: requestable,
+      blockedPermissions: blocked,
+      canScan: canBle,
+      canAdvertise: canBle
+    )
+  }
+
+  private static var isIosSimulator: Bool {
+    #if targetEnvironment(simulator)
+    return true
+    #else
+    return false
+    #endif
+  }
+
+  // MARK: - Public API
+
+  public func getCapabilities() -> BarnardCapabilities {
+    BarnardCapabilities(
+      supportedTransports: ["ble"],
+      supportsConnectionlessRpid: false,
+      supportsGattFallback: true,
+      supportsBackground: false,
+      supportsHighRateRssi: false,
+      eninMode: eninModeName(),
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChainInfo()
+    )
+  }
+
+  public func getState() -> BarnardState {
+    BarnardState(
+      isScanning: isScanning,
+      isAdvertising: isAdvertising,
+      eventCode: rpid.eventCode,
+      eninMode: eninModeName(),
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChainInfo(),
+      reasonCode: nil
+    )
+  }
+
+  public func configure(
+    eninMode: BarnardEninMode = .fixedLength,
+    eninSeconds requestedSeconds: Int = 300,
+    beaconChain requestedBeaconChain: BarnardBeaconChain = .ethereumMainnet,
+    eventCode: String? = nil
+  ) {
+    self.eninMode = eninMode.internalMode
+    self.eninSeconds = min(max(requestedSeconds, 12), 3600)
+    beaconChain = requestedBeaconChain.internalConfig
+
+    if let eventCode = eventCode, !eventCode.isEmpty, eventCode != rpid.eventCode {
+      resetPeerDiscoveryState(reason: "configure_event")
+      rpid.joinEvent(eventCode)
+      rebuildGattServiceIfNeeded()
+      emitState(reasonCode: "configure_event")
+    }
+
+    knownPeers.removeAll()
+    emitDebug(level: "info", name: "configure", data: [
+      "eninMode": eninModeName().rawValue,
+      "eninSeconds": self.eninSeconds,
+      "beaconChain": beaconChainInfo().chainId,
+    ])
+  }
+
+  public func getCurrentEventCode() -> String? {
+    rpid.eventCode
+  }
+
+  public func getMyDisplayId() -> String {
+    BarnardCrypto.displayIdString(from: rpid.getCurrentTek())
+  }
+
+  public func getCurrentRpi() -> String {
+    let rpik = BarnardCrypto.deriveRpik(from: rpid.getCurrentTek())
+    let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: currentEnin())
+    return rpi.hexString
+  }
+
+  public func getCurrentEnin() -> Int {
+    Int(currentEnin())
+  }
+
+  /// Explicit privacy egress. The SDK never transmits TEK over BLE; callers
+  /// decide whether/how to transmit it via another channel. Deprecated
+  /// (barnard#63): exposing the raw TEK lets anyone derive every RPID and
+  /// the displayId for it. Prefer `BarnardIdentity.proveRpidOwnership`. Kept
+  /// for parity with the Flutter plugin's `exportCurrentTek`.
+  public func exportCurrentTek() -> String {
+    rpid.getCurrentTek().hexString
+  }
+
+  public func getPermissionStatus() -> BarnardPermissionStatus {
+    permissionStatusPayload()
+  }
+
+  public func requestPermissions(completion: @escaping (BarnardPermissionStatus) -> Void) {
+    if bluetoothPermissionStatus() != "notDetermined" {
+      completion(permissionStatusPayload())
+      return
+    }
+
+    pendingPermissionCompletions.append(completion)
+    ensureBleManagers()
+    resolvePendingPermissionCompletionsIfPossible()
+  }
+
+  private func resolvePendingPermissionCompletionsIfPossible() {
+    guard !pendingPermissionCompletions.isEmpty else { return }
+    guard bluetoothPermissionStatus() != "notDetermined" else { return }
+
+    let payload = permissionStatusPayload()
+    let completions = pendingPermissionCompletions
+    pendingPermissionCompletions.removeAll()
+    for completion in completions {
+      completion(payload)
+    }
+  }
+
+  public func openAppSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    DispatchQueue.main.async {
+      UIApplication.shared.open(url)
+    }
+  }
+
+  public func startScan(allowDuplicates: Bool = true) {
+    self.allowDuplicates = allowDuplicates
+    startScanInternal()
+  }
+
+  public func stopScan() {
+    stopScanInternal()
+  }
+
+  public func startAdvertise(formatVersion: Int = 1) {
+    self.formatVersion = acceptFormatVersion(formatVersion)
+    startAdvertiseInternal()
+  }
+
+  public func stopAdvertise() {
+    stopAdvertiseInternal()
+  }
+
+  @discardableResult
+  public func startAuto(
+    scanAllowDuplicates: Bool = true,
+    advertiseFormatVersion: Int = 1
+  ) -> (scanningStarted: Bool, advertisingStarted: Bool) {
+    allowDuplicates = scanAllowDuplicates
+    formatVersion = acceptFormatVersion(advertiseFormatVersion)
+
+    let wasScanning = isScanning
+    let wasAdvertising = isAdvertising
+    startScanInternal()
+    startAdvertiseInternal()
+    return (
+      scanningStarted: !wasScanning && isScanning,
+      advertisingStarted: !wasAdvertising && isAdvertising
+    )
+  }
+
+  public func stopAuto() {
+    stopScanInternal()
+    stopAdvertiseInternal()
+  }
+
+  public func dispose() {
+    stopScanInternal()
+    stopAdvertiseInternal()
+  }
+
+  public func joinEvent(_ eventCode: String) {
+    resetPeerDiscoveryState(reason: "join_event")
+    rpid.joinEvent(eventCode)
+    rebuildGattServiceIfNeeded()
+    emitState(reasonCode: "join_event")
+    emitDebug(level: "info", name: "join_event", data: [
+      "eventCode": eventCode,
+      "myDisplayId": rpid.getCurrentDisplayId(),
+    ])
+  }
+
+  public func leaveEvent() {
+    resetPeerDiscoveryState(reason: "leave_event")
+    rpid.leaveEvent()
+    rebuildGattServiceIfNeeded()
+    emitState(reasonCode: "leave_event")
+    emitDebug(level: "info", name: "leave_event", data: nil)
+  }
+
+  // MARK: - Lifecycle
+
+  // On background, iOS demotes our advertised service UUID from the AdvData
+  // section to the overflow area (Apple-only scanners can still see it, but
+  // generic centrals cannot). When the app returns to foreground, iOS does
+  // not automatically repromote the UUID, so peers that started their scan
+  // while we were backgrounded will never discover us. Bounce advertising on
+  // foreground resume to repopulate the AdvData section. See issue #45.
+  @objc private func appDidBecomeActive() {
+    guard isAdvertising else {
+      emitDebug(level: "trace", name: "foreground_resume", data: ["isAdvertising": false])
+      return
+    }
+    peripheralManager?.stopAdvertising()
+    isAdvertising = false
+    startAdvertiseInternal()
+    emitDebug(level: "info", name: "advertise_restart_on_foreground", data: nil)
+  }
+
+  @objc private func appWillResignActive() {
+    emitDebug(level: "info", name: "advertise_backgrounded", data: [
+      "isAdvertising": isAdvertising,
+    ])
+  }
+
+  // MARK: - Scan Control
+
+  private func startScanInternal() {
+    let manager = ensureCentralManager()
+    if isScanning {
+      shouldStartScanWhenReady = false
+      return
+    }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartScanWhenReady = true
+        emitDebug(level: "info", name: "scan_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartScanWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "CentralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartScanWhenReady = false
+    let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
+    manager.scanForPeripherals(withServices: [discoveryServiceUUID], options: options)
+    isScanning = true
+    emitState(reasonCode: "scan_start")
+    emitDebug(level: "info", name: "scan_start", data: ["allowDuplicates": allowDuplicates])
+  }
+
+  private func stopScanInternal() {
+    shouldStartScanWhenReady = false
+    if !isScanning { return }
+    centralManager?.stopScan()
+    isScanning = false
+    resetPeerDiscoveryState(reason: "scan_stop")
+
+    emitState(reasonCode: "scan_stop")
+    emitDebug(level: "info", name: "scan_stop", data: nil)
+  }
+
+  private func resetPeerDiscoveryState(reason: String) {
+    connectQueue.removeAll()
+    if let active = activePeripheral {
+      centralManager?.cancelPeripheralConnection(active)
+    }
+    activePeripheral = nil
+    cancelConnectWatchdog()
+    cancelConnectCooldownWorkItem()
+
+    discoveredRssi.removeAll()
+    discoveredAt.removeAll()
+    peripheralsById.removeAll()
+    lastConnectAttemptAt.removeAll()
+    resolutionBackoffUntil.removeAll()
+    pendingBoundaryRetryPeripherals.removeAll()
+    peripheralCharacteristics.removeAll()
+    peripheralReadValues.removeAll()
+    b004ReadRetries.removeAll()
+    lastDiscoveryNameById.removeAll()
+    knownPeers.removeAll()
+
+    emitDebug(level: "info", name: "peer_cache_reset", data: ["reason": reason])
+  }
+
+  // MARK: - Advertise Control
+
+  private func startAdvertiseInternal() {
+    let manager = ensurePeripheralManager()
+    if isAdvertising {
+      shouldStartAdvertiseWhenReady = false
+      return
+    }
+    guard manager.state == .poweredOn else {
+      if manager.state == .unknown || manager.state == .resetting {
+        shouldStartAdvertiseWhenReady = true
+        emitDebug(level: "info", name: "advertise_waiting_for_powered_on", data: [
+          "state": manager.state.rawValue,
+        ])
+      } else {
+        shouldStartAdvertiseWhenReady = false
+        emitConstraint(code: "bluetooth_not_ready", message: "PeripheralManager state=\(manager.state.rawValue)")
+      }
+      return
+    }
+    shouldStartAdvertiseWhenReady = false
+    ensureGattService()
+    var ad: [String: Any] = [
+      CBAdvertisementDataServiceUUIDsKey: [discoveryServiceUUID],
+    ]
+    #if DEBUG
+    ad[CBAdvertisementDataLocalNameKey] = debugLocalName
+    #endif
+    manager.startAdvertising(ad)
+    isAdvertising = true
+    emitState(reasonCode: "advertise_start")
+    emitDebug(
+      level: "info",
+      name: "advertise_start",
+      data: [
+        "formatVersion": Int(formatVersion),
+        "serviceUuid": discoveryServiceUUID.uuidString,
+        "localName": debugLocalName,
+      ]
+    )
+  }
+
+  private func stopAdvertiseInternal() {
+    shouldStartAdvertiseWhenReady = false
+    if !isAdvertising { return }
+    peripheralManager?.stopAdvertising()
+    isAdvertising = false
+    emitState(reasonCode: "advertise_stop")
+    emitDebug(level: "info", name: "advertise_stop", data: nil)
+  }
+
+  // MARK: - GATT Service Management
+
+  private func ensureGattService() {
+    _ = ensurePeripheralManager()
+    if rpidCharacteristic != nil { return }
+    buildAndAddGattService()
+  }
+
+  private func rebuildGattServiceIfNeeded() {
+    guard let manager = peripheralManager, manager.state == .poweredOn else { return }
+
+    manager.removeAllServices()
+    rpidCharacteristic = nil
+    displayIdCharacteristic = nil
+    eventCodeHashCharacteristic = nil
+
+    buildAndAddGattService()
+
+    emitDebug(level: "info", name: "gatt_service_rebuilt", data: nil)
+  }
+
+  private func buildAndAddGattService() {
+    guard let manager = peripheralManager else { return }
+
+    // B002 RPID (Read only)
+    let rpidCh = CBMutableCharacteristic(
+      type: rpidCharacteristicUUID,
+      properties: [.read],
+      value: nil,
+      permissions: [.readable]
+    )
+
+    // B003 displayId (Read only, 4 bytes) — v2: was TEK, now event-scoped SHA256(TEK)[0:4]
+    let displayIdCh = CBMutableCharacteristic(
+      type: displayIdCharacteristicUUID,
+      properties: [.read],
+      value: nil,
+      permissions: [.readable]
+    )
+
+    // B004 EventCodeHash (Read only)
+    let eventCodeHashCh = CBMutableCharacteristic(
+      type: eventCodeHashCharacteristicUUID,
+      properties: [.read],
+      value: nil,
+      permissions: [.readable]
+    )
+
+    let svc = CBMutableService(type: discoveryServiceUUID, primary: true)
+    svc.characteristics = [rpidCh, displayIdCh, eventCodeHashCh]
+    manager.add(svc)
+
+    rpidCharacteristic = rpidCh
+    displayIdCharacteristic = displayIdCh
+    eventCodeHashCharacteristic = eventCodeHashCh
+
+    emitDebug(level: "info", name: "gatt_service_added", data: [
+      "characteristics": ["RPID", "displayId", "EventCodeHash"],
+    ])
+  }
+
+  // MARK: - Connection Queue
+
+  private func enqueueConnect(_ peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    peripheralsById[id] = peripheral
+
+    let now = Date()
+    if isResolutionBackedOff(id, now: now) {
+      emitResolutionBackoff(id, now: now)
+      return
+    }
+
+    if connectQueue.contains(id) || (activePeripheral?.identifier == id) { return }
+
+    if connectQueue.count >= maxConnectQueue {
+      emitDebug(level: "warn", name: "connect_queue_full", data: ["max": maxConnectQueue])
+      return
+    }
+
+    connectQueue.append(id)
+    pumpConnectQueue()
+  }
+
+  private func pumpConnectQueue() {
+    if maxConcurrentConnections <= 0 { return }
+    if activePeripheral != nil { return }
+    guard let nextId = connectQueue.first else { return }
+
+    let now = Date()
+    if let last = lastConnectAttemptAt[nextId] {
+      let remaining = cooldownPerPeerSeconds - now.timeIntervalSince(last)
+      if remaining > 0 {
+        connectQueue.removeFirst()
+        connectQueue.append(nextId)
+        scheduleConnectQueuePump(after: remaining)
+        return
+      }
+    }
+
+    guard let p = peripheralsById[nextId] else {
+      connectQueue.removeFirst()
+      return
+    }
+    guard let manager = centralManager else { return }
+
+    connectQueue.removeFirst()
+    activePeripheral = p
+    lastConnectAttemptAt[nextId] = now
+
+    peripheralReadValues[nextId] = PeripheralGattValues()
+    b004ReadRetries[nextId] = 0
+
+    p.delegate = self
+    manager.connect(p, options: nil)
+    emitDebug(level: "trace", name: "connect_attempt", data: ["id": nextId.uuidString])
+    armConnectWatchdog(for: nextId)
+  }
+
+  private func armConnectWatchdog(for id: UUID) {
+    connectWatchdog?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self else { return }
+      guard let pinned = self.activePeripheral, pinned.identifier == id else {
+        return
+      }
+      self.emitDebug(level: "warn", name: "gatt_exchange_timeout", data: [
+        "id": id.uuidString,
+        "seconds": self.connectTimeoutSeconds,
+      ])
+      self.markGattResolutionFailed(
+        id,
+        reason: "gatt_exchange_timeout",
+        recoverable: true,
+        extra: ["seconds": self.connectTimeoutSeconds]
+      )
+      self.centralManager?.cancelPeripheralConnection(pinned)
+      self.peripheralCharacteristics.removeValue(forKey: id)
+      self.peripheralReadValues.removeValue(forKey: id)
+      self.lastDiscoveryNameById.removeValue(forKey: id)
+      self.activePeripheral = nil
+      self.pumpConnectQueue()
+    }
+    connectWatchdog = work
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + connectTimeoutSeconds,
+      execute: work
+    )
+  }
+
+  private func cancelConnectWatchdog() {
+    connectWatchdog?.cancel()
+    connectWatchdog = nil
+  }
+
+  private func scheduleConnectQueuePump(after delay: TimeInterval) {
+    guard connectCooldownWorkItem == nil else { return }
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self else { return }
+      self.connectCooldownWorkItem = nil
+      self.pumpConnectQueue()
+    }
+    connectCooldownWorkItem = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+  }
+
+  private func cancelConnectCooldownWorkItem() {
+    connectCooldownWorkItem?.cancel()
+    connectCooldownWorkItem = nil
+  }
+
+  private func isResolutionBackedOff(_ id: UUID, now: Date) -> Bool {
+    guard let until = resolutionBackoffUntil[id] else { return false }
+    if now < until { return true }
+    resolutionBackoffUntil.removeValue(forKey: id)
+    return false
+  }
+
+  private func emitResolutionBackoff(_ id: UUID, now: Date) {
+    guard let until = resolutionBackoffUntil[id] else { return }
+    emitDebug(level: "trace", name: "gatt_resolution_backoff", data: [
+      "id": id.uuidString,
+      "remainingMs": max(0, Int(until.timeIntervalSince(now) * 1000)),
+    ])
+  }
+
+  private func markGattResolutionFailed(
+    _ id: UUID,
+    reason: String,
+    recoverable: Bool,
+    extra: [String: Any] = [:]
+  ) {
+    let backoffSeconds = recoverable ? resolutionFailureBackoffSeconds : resolutionRejectedBackoffSeconds
+    resolutionBackoffUntil[id] = Date().addingTimeInterval(backoffSeconds)
+    var data: [String: Any] = [
+      "id": id.uuidString,
+      "reason": reason,
+      "recoverable": recoverable,
+      "backoffMs": Int(backoffSeconds * 1000),
+    ]
+    for (key, value) in extra {
+      data[key] = value
+    }
+    emitDebug(
+      level: recoverable ? "warn" : "info",
+      name: "gatt_resolution_failed",
+      data: data
+    )
+  }
+
+  // MARK: - GATT Exchange (Central side, v2 flow: B004 → B002 → B003)
+
+  private func startGattExchange(for peripheral: CBPeripheral, service: CBService) {
+    let id = peripheral.identifier
+    var charMap: [CBUUID: CBCharacteristic] = [:]
+
+    guard let characteristics = service.characteristics else {
+      markGattResolutionFailed(id, reason: "characteristics_missing", recoverable: true)
+      finishConnection(peripheral)
+      return
+    }
+
+    for ch in characteristics {
+      charMap[ch.uuid] = ch
+    }
+    peripheralCharacteristics[id] = charMap
+
+    // Step 1: EventCodeHash. B004 gates B002/B003 exchange.
+    guard let eventCodeHashCh = charMap[eventCodeHashCharacteristicUUID] else {
+      markGattResolutionFailed(id, reason: "b004_missing", recoverable: true)
+      emitDebug(level: "warn", name: "gatt_b004_missing", data: [
+        "id": id.uuidString,
+      ])
+      finishConnection(peripheral)
+      return
+    }
+    peripheral.readValue(for: eventCodeHashCh)
+  }
+
+  private func eventCodeHashMatches(_ peerHash: Data) -> Bool {
+    peerHash == rpid.getEventCodeHash()
+  }
+
+  private func readRpidCharacteristic(for peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    guard let charMap = peripheralCharacteristics[id],
+      let rpidCh = charMap[rpidCharacteristicUUID]
+    else {
+      markGattResolutionFailed(id, reason: "b002_missing", recoverable: true)
+      finishConnection(peripheral)
+      return
+    }
+    peripheralReadValues[id]?.rpidReadStartedAt = Date()
+    peripheral.readValue(for: rpidCh)
+  }
+
+  private func readDisplayIdCharacteristic(for peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    guard let charMap = peripheralCharacteristics[id],
+      let displayIdCh = charMap[displayIdCharacteristicUUID]
+    else {
+      // Missing B003 — per v2 policy, still emit detection with null displayId.
+      emitDebug(level: "warn", name: "gatt_b003_missing", data: [
+        "id": id.uuidString,
+      ])
+      completeGattExchange(for: peripheral)
+      return
+    }
+    peripheral.readValue(for: displayIdCh)
+  }
+
+  private func completeGattExchange(for peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    guard let values = peripheralReadValues[id] else {
+      finishConnection(peripheral)
+      return
+    }
+
+    if let rpidData = values.rpid {
+      let rssi = discoveredRssi[id] ?? 0
+      let completedAt = values.rpidReadCompletedAt ?? Date()
+      guard let peerEnin = BarnardCrypto.stableReadEnin(
+        startedAt: values.rpidReadStartedAt ?? completedAt,
+        completedAt: completedAt,
+        mode: eninMode,
+        eninSeconds: eninSeconds,
+        beaconChain: beaconChain
+      ) else {
+        emitDebug(level: "warn", name: "gatt_rpid_read_crossed_enin_boundary", data: [
+          "id": id.uuidString,
+          "startedAt": (values.rpidReadStartedAt ?? completedAt).timeIntervalSince1970,
+          "completedAt": completedAt.timeIntervalSince1970,
+        ])
+        retryAfterRpidBoundaryCrossing(peripheral)
+        return
+      }
+      let detectedDisplayId = values.detectedDisplayId?.hexString
+      emitDetection(
+        timestamp: completedAt,
+        rssi: rssi,
+        payload: rpidData,
+        detectedDisplayId: detectedDisplayId,
+        debugLocalName: lastDiscoveryNameById[id]
+      )
+
+      if rpidData.count == 17 {
+        knownPeers[id] = KnownPeer(
+          rpid: rpidData,
+          enin: peerEnin,
+          detectedDisplayId: detectedDisplayId,
+          debugLocalName: lastDiscoveryNameById[id]
+        )
+        resolutionBackoffUntil.removeValue(forKey: id)
+      }
+    }
+
+    finishConnection(peripheral)
+  }
+
+  private func finishConnection(_ peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    peripheralCharacteristics.removeValue(forKey: id)
+    peripheralReadValues.removeValue(forKey: id)
+    b004ReadRetries.removeValue(forKey: id)
+    lastDiscoveryNameById.removeValue(forKey: id)
+    centralManager?.cancelPeripheralConnection(peripheral)
+  }
+
+  private func retryAfterRpidBoundaryCrossing(_ peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    lastConnectAttemptAt.removeValue(forKey: id)
+    pendingBoundaryRetryPeripherals[id] = peripheral
+    finishConnection(peripheral)
+  }
+
+  private func schedulePendingBoundaryRetry(for id: UUID) {
+    guard let peripheral = pendingBoundaryRetryPeripherals.removeValue(forKey: id) else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + rpidBoundaryRetryDelaySeconds) { [weak self, weak peripheral] in
+      guard let self = self, let peripheral = peripheral else { return }
+      if self.isScanning {
+        self.enqueueConnect(peripheral)
+      }
+    }
+  }
+
+  // MARK: - Event Emission
+
+  private func emitState(reasonCode: String?) {
+    onEvent?(.state(BarnardState(
+      isScanning: isScanning,
+      isAdvertising: isAdvertising,
+      eventCode: rpid.eventCode,
+      eninMode: eninModeName(),
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChainInfo(),
+      reasonCode: reasonCode
+    )))
+  }
+
+  private func emitConstraint(code: String, message: String?) {
+    onEvent?(.constraint(BarnardConstraintEvent(code: code, message: message)))
+  }
+
+  private func emitError(code: String, message: String, recoverable: Bool? = nil) {
+    onEvent?(.error(BarnardErrorEvent(code: code, message: message, recoverable: recoverable)))
+  }
+
+  /// Emit v2 detection event. Byte fields are lowercase hex.
+  private func emitDetection(
+    timestamp: Date,
+    rssi: Int,
+    payload: Data,
+    detectedDisplayId: String?,
+    debugLocalName: String? = nil
+  ) {
+    guard payload.count == 17 else {
+      emitDebug(level: "warn", name: "payload_invalid_length", data: ["length": payload.count])
+      return
+    }
+    let version = Int(payload[0])
+    if version != 1 {
+      emitDebug(level: "warn", name: "payload_unsupported_version", data: ["formatVersion": version])
+      return
+    }
+
+    // Atomic snapshot: use the observation timestamp for both reporterRpid
+    // and enin, so they always agree across ENIN boundaries.
+    let reporterPayload = currentPayload(now: timestamp)
+    let enin = Int(currentEnin(timestamp))
+
+    var resolvedDebugLocalName: String?
+    #if DEBUG
+    resolvedDebugLocalName = debugLocalName
+    #endif
+
+    onEvent?(.detection(BarnardDetectionEvent(
+      timestamp: timestamp,
+      rssi: rssi,
+      formatVersion: version,
+      rpid: payload.hexString,
+      reporterRpid: reporterPayload.hexString,
+      detectedDisplayId: detectedDisplayId,
+      enin: enin,
+      debugLocalName: resolvedDebugLocalName
+    )))
+  }
+
+  private func emitRssiUpdate(peripheralId: UUID, rssi: Int, timestamp: Date) {
+    guard isUsableRssi(rssi) else { return }
+    guard let peer = knownPeers[peripheralId] else { return }
+
+    // Atomic reporter snapshot (same contract as DetectionEvent).
+    let reporterPayload = currentPayload(now: timestamp)
+    let enin = Int(currentEnin(timestamp))
+
+    onEvent?(.rssiUpdate(BarnardRssiUpdateEvent(
+      timestamp: timestamp,
+      rssi: rssi,
+      rpid: peer.rpid.hexString,
+      reporterRpid: reporterPayload.hexString,
+      enin: enin,
+      detectedDisplayId: peer.detectedDisplayId,
+      debugLocalName: peer.debugLocalName
+    )))
+  }
+
+  private func emitDebug(level: String, name: String, data: [String: Any]?) {
+    onDebugEvent?(BarnardDebugEvent(timestamp: Date(), level: level, name: name, data: data))
+  }
+
+  /// Accept a caller-provided formatVersion. v2 only ships format 1, so
+  /// clamp to 1 and emit a debug warning when callers request an
+  /// unsupported value — advertising format 2+ would otherwise make the
+  /// device silently undiscoverable to all v2 peers.
+  private func acceptFormatVersion(_ raw: Int?) -> UInt8 {
+    guard let v = raw else { return 1 }
+    if v == 1 { return 1 }
+    emitDebug(
+      level: "warn",
+      name: "format_version_clamped",
+      data: ["requested": v, "applied": 1]
+    )
+    return 1
+  }
+
+  private func characteristicName(_ uuid: CBUUID) -> String {
+    switch uuid {
+    case rpidCharacteristicUUID:
+      return "B002_RPID"
+    case displayIdCharacteristicUUID:
+      return "B003_displayId"
+    case eventCodeHashCharacteristicUUID:
+      return "B004_eventCodeHash"
+    default:
+      return uuid.uuidString
+    }
+  }
+
+  private func respondRead(
+    _ peripheral: CBPeripheralManager,
+    request: CBATTRequest,
+    value: Data,
+    debugName: String,
+    debugData: [String: Any] = [:]
+  ) {
+    guard request.offset <= value.count else {
+      peripheral.respond(to: request, withResult: .invalidOffset)
+      emitDebug(level: "warn", name: "\(debugName)_invalid_offset", data: [
+        "offset": request.offset,
+        "bytes": value.count,
+      ])
+      return
+    }
+    request.value = value.subdata(in: request.offset..<value.count)
+    peripheral.respond(to: request, withResult: .success)
+    var data = debugData
+    data["bytes"] = value.count
+    data["offset"] = request.offset
+    emitDebug(level: "trace", name: debugName, data: data)
+  }
+
+  private func isUsableRssi(_ rssi: Int) -> Bool {
+    // CoreBluetooth uses 127 when RSSI is unavailable. Do not surface it as a
+    // real dBm value because downstream timelines and aggregations treat RSSI
+    // numerically.
+    rssi != unavailableRssi
+  }
+}
+
+// MARK: - CBCentralManagerDelegate
+
+extension BarnardEngine: CBCentralManagerDelegate {
+  public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    resolvePendingPermissionCompletionsIfPossible()
+    emitDebug(level: "info", name: "central_state", data: ["state": central.state.rawValue])
+    if central.state == .poweredOn, shouldStartScanWhenReady {
+      startScanInternal()
+    } else if central.state != .poweredOn, isScanning {
+      stopScanInternal()
+    }
+  }
+
+  public func centralManager(
+    _ central: CBCentralManager,
+    didDiscover peripheral: CBPeripheral,
+    advertisementData: [String: Any],
+    rssi RSSI: NSNumber
+  ) {
+    let rssi = RSSI.intValue
+    guard isUsableRssi(rssi) else {
+      emitDebug(level: "trace", name: "ble_discovery_rssi_unavailable", data: [
+        "id": peripheral.identifier.uuidString,
+        "rssi": rssi,
+        "name": (advertisementData[CBAdvertisementDataLocalNameKey] as? String) as Any,
+      ])
+      return
+    }
+    let now = Date()
+    discoveredRssi[peripheral.identifier] = rssi
+    discoveredAt[peripheral.identifier] = now
+
+    emitDebug(level: "trace", name: "ble_discovery_result", data: [
+      "id": peripheral.identifier.uuidString,
+      "rssi": rssi,
+      "name": (advertisementData[CBAdvertisementDataLocalNameKey] as? String) as Any,
+    ])
+
+    #if DEBUG
+    if let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String, !name.isEmpty {
+      lastDiscoveryNameById[peripheral.identifier] = name
+    }
+    #endif
+
+    if let knownPeer = knownPeers[peripheral.identifier] {
+      let currentEninValue = currentEnin(now)
+      if BarnardV2Policy.shouldEmitRssiUpdate(cachedPeerEnin: knownPeer.enin, currentEnin: currentEninValue) {
+        emitRssiUpdate(peripheralId: peripheral.identifier, rssi: rssi, timestamp: now)
+      } else {
+        knownPeers.removeValue(forKey: peripheral.identifier)
+        emitDebug(level: "trace", name: "known_peer_rpid_expired", data: [
+          "id": peripheral.identifier.uuidString,
+          "cachedEnin": Int(knownPeer.enin),
+          "currentEnin": Int(currentEninValue),
+        ])
+        // Force a fresh resolution. enqueueConnect dedups against in-flight /
+        // queued connects, so following advertisements on the same identifier
+        // remain safe.
+        enqueueConnect(peripheral)
+      }
+    } else if isResolutionBackedOff(peripheral.identifier, now: now) {
+      emitResolutionBackoff(peripheral.identifier, now: now)
+    } else {
+      enqueueConnect(peripheral)
+    }
+  }
+
+  public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    guard activePeripheral?.identifier == peripheral.identifier else {
+      emitDebug(level: "trace", name: "stale_connect_ignored", data: [
+        "id": peripheral.identifier.uuidString,
+      ])
+      return
+    }
+    emitDebug(level: "trace", name: "connected", data: ["id": peripheral.identifier.uuidString])
+    peripheral.discoverServices([discoveryServiceUUID])
+  }
+
+  public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    guard activePeripheral?.identifier == peripheral.identifier else {
+      emitDebug(level: "trace", name: "stale_connect_failed_ignored", data: [
+        "id": peripheral.identifier.uuidString,
+      ])
+      return
+    }
+    cancelConnectWatchdog()
+    emitError(code: "connect_failed", message: error?.localizedDescription ?? "unknown", recoverable: true)
+    let id = peripheral.identifier
+    markGattResolutionFailed(
+      id,
+      reason: "connect_failed",
+      recoverable: true,
+      extra: ["error": error?.localizedDescription ?? "unknown"]
+    )
+    peripheralCharacteristics.removeValue(forKey: id)
+    peripheralReadValues.removeValue(forKey: id)
+    activePeripheral = nil
+    pumpConnectQueue()
+  }
+
+  public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    guard activePeripheral?.identifier == peripheral.identifier else {
+      emitDebug(level: "trace", name: "stale_disconnect_ignored", data: [
+        "id": peripheral.identifier.uuidString,
+      ])
+      return
+    }
+    cancelConnectWatchdog()
+    let id = peripheral.identifier
+    peripheralCharacteristics.removeValue(forKey: id)
+    peripheralReadValues.removeValue(forKey: id)
+    activePeripheral = nil
+    schedulePendingBoundaryRetry(for: id)
+    pumpConnectQueue()
+  }
+}
+
+// MARK: - CBPeripheralDelegate
+
+extension BarnardEngine: CBPeripheralDelegate {
+  public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    if let error = error {
+      markGattResolutionFailed(
+        peripheral.identifier,
+        reason: "service_discovery_failed",
+        recoverable: true,
+        extra: ["error": error.localizedDescription]
+      )
+      emitError(code: "service_discovery_failed", message: error.localizedDescription, recoverable: true)
+      finishConnection(peripheral)
+      return
+    }
+    guard let services = peripheral.services, let svc = services.first(where: { $0.uuid == discoveryServiceUUID }) else {
+      markGattResolutionFailed(peripheral.identifier, reason: "service_not_found", recoverable: true)
+      emitError(code: "service_not_found", message: "Barnard service not found", recoverable: true)
+      finishConnection(peripheral)
+      return
+    }
+    peripheral.discoverCharacteristics(
+      [rpidCharacteristicUUID, displayIdCharacteristicUUID, eventCodeHashCharacteristicUUID],
+      for: svc
+    )
+  }
+
+  public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    if let error = error {
+      markGattResolutionFailed(
+        peripheral.identifier,
+        reason: "characteristic_discovery_failed",
+        recoverable: true,
+        extra: ["error": error.localizedDescription]
+      )
+      emitError(code: "characteristic_discovery_failed", message: error.localizedDescription, recoverable: true)
+      finishConnection(peripheral)
+      return
+    }
+    startGattExchange(for: peripheral, service: service)
+  }
+
+  public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+    let id = peripheral.identifier
+
+    // Distinguish B003 read failure (still emit detection with null) from
+    // B002 read failure (drop the detection — no RPID, nothing to emit).
+    if let error = error {
+      if characteristic.uuid == displayIdCharacteristicUUID {
+        emitDebug(level: "warn", name: "gatt_b003_read_failed", data: [
+          "id": id.uuidString,
+          "error": error.localizedDescription,
+        ])
+        peripheralReadValues[id]?.detectedDisplayId = nil
+        completeGattExchange(for: peripheral)
+        return
+      }
+      if characteristic.uuid == eventCodeHashCharacteristicUUID {
+        let retries = b004ReadRetries[id] ?? 0
+        if retries < maxB004ReadRetries {
+          b004ReadRetries[id] = retries + 1
+          emitDebug(level: "warn", name: "gatt_b004_read_retry", data: [
+            "id": id.uuidString,
+            "attempt": retries + 1,
+            "max": maxB004ReadRetries,
+            "error": error.localizedDescription,
+          ])
+          DispatchQueue.main.asyncAfter(deadline: .now() + b004ReadRetryDelaySeconds) { [weak self, weak peripheral] in
+            guard let self = self, let peripheral = peripheral else { return }
+            guard self.activePeripheral?.identifier == id else { return }
+            peripheral.readValue(for: characteristic)
+          }
+          return
+        }
+      }
+      let name = characteristicName(characteristic.uuid)
+      markGattResolutionFailed(
+        id,
+        reason: "read_failed",
+        recoverable: true,
+        extra: [
+          "characteristic": name,
+          "error": error.localizedDescription,
+        ]
+      )
+      emitDebug(level: "warn", name: "gatt_read_failed", data: [
+        "id": id.uuidString,
+        "characteristic": name,
+        "error": error.localizedDescription,
+      ])
+      emitError(code: "read_failed", message: "\(name): \(error.localizedDescription)", recoverable: true)
+      finishConnection(peripheral)
+      return
+    }
+
+    let value = characteristic.value ?? Data()
+
+    switch characteristic.uuid {
+    case eventCodeHashCharacteristicUUID:
+      peripheralReadValues[id]?.eventCodeHash = value
+      let matches = eventCodeHashMatches(value)
+      emitDebug(level: "trace", name: "gatt_read_event_code_hash", data: [
+        "id": id.uuidString,
+        "bytes": value.count,
+        "isEmpty": value.isEmpty,
+        "matches": matches,
+      ])
+      guard matches else {
+        markGattResolutionFailed(
+          id,
+          reason: "b004_mismatch",
+          recoverable: false,
+          extra: ["bytes": value.count]
+        )
+        emitDebug(level: "info", name: "gatt_b004_mismatch", data: [
+          "id": id.uuidString,
+          "bytes": value.count,
+        ])
+        finishConnection(peripheral)
+        return
+      }
+      readRpidCharacteristic(for: peripheral)
+
+    case rpidCharacteristicUUID:
+      peripheralReadValues[id]?.rpid = value
+      peripheralReadValues[id]?.rpidReadCompletedAt = Date()
+      emitDebug(level: "trace", name: "gatt_read_rpid", data: [
+        "id": id.uuidString,
+        "bytes": value.count,
+      ])
+      readDisplayIdCharacteristic(for: peripheral)
+
+    case displayIdCharacteristicUUID:
+      if value.count == 4 {
+        peripheralReadValues[id]?.detectedDisplayId = value
+        emitDebug(level: "trace", name: "gatt_read_display_id", data: [
+          "id": id.uuidString,
+          "displayId": value.hexString,
+        ])
+      } else {
+        emitDebug(level: "warn", name: "gatt_b003_invalid_length", data: [
+          "id": id.uuidString,
+          "length": value.count,
+        ])
+        peripheralReadValues[id]?.detectedDisplayId = nil
+      }
+      completeGattExchange(for: peripheral)
+
+    default:
+      break
+    }
+  }
+}
+
+// MARK: - CBPeripheralManagerDelegate
+
+extension BarnardEngine: CBPeripheralManagerDelegate {
+  public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+    resolvePendingPermissionCompletionsIfPossible()
+    emitDebug(level: "info", name: "peripheral_state", data: ["state": peripheral.state.rawValue])
+    if peripheral.state == .poweredOn, shouldStartAdvertiseWhenReady {
+      startAdvertiseInternal()
+    } else if peripheral.state != .poweredOn, isAdvertising {
+      stopAdvertiseInternal()
+    }
+  }
+
+  public func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
+    if let error = error {
+      emitError(code: "gatt_service_add_failed", message: error.localizedDescription, recoverable: false)
+    }
+  }
+
+  public func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
+    if let error = error {
+      emitError(code: "advertise_failed", message: error.localizedDescription, recoverable: true)
+      isAdvertising = false
+      emitState(reasonCode: "advertise_failed")
+    }
+  }
+
+  public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
+    switch request.characteristic.uuid {
+    case rpidCharacteristicUUID:
+      let payload = currentPayload(now: Date())
+      respondRead(
+        peripheral,
+        request: request,
+        value: payload,
+        debugName: "gatt_respond_rpid",
+        debugData: ["formatVersion": Int(formatVersion)]
+      )
+
+    case displayIdCharacteristicUUID:
+      guard shouldServeGattDisplayId() else {
+        peripheral.respond(to: request, withResult: .readNotPermitted)
+        emitDebug(level: "trace", name: "gatt_reject_display_id_read", data: [
+          "reason": "not_joined_to_event",
+        ])
+        return
+      }
+
+      // v2: event-scoped B003 serves 4-byte SHA256(TEK)[0:4]. Read-only.
+      let displayId = BarnardCrypto.displayId4(from: rpid.getCurrentTek())
+      respondRead(
+        peripheral,
+        request: request,
+        value: displayId,
+        debugName: "gatt_respond_display_id"
+      )
+
+    case eventCodeHashCharacteristicUUID:
+      let hash = rpid.getEventCodeHash()
+      respondRead(
+        peripheral,
+        request: request,
+        value: hash,
+        debugName: "gatt_respond_event_code_hash",
+        debugData: ["isEmpty": hash.isEmpty]
+      )
+
+    default:
+      peripheral.respond(to: request, withResult: .attributeNotFound)
+    }
+  }
+
+  // v2 has no writable characteristics. Reject any write attempt.
+  public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
+    for request in requests {
+      peripheral.respond(to: request, withResult: .writeNotPermitted)
+    }
+    emitDebug(level: "warn", name: "gatt_write_rejected", data: [
+      "count": requests.count,
+    ])
+  }
+}
