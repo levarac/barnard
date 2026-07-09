@@ -69,3 +69,48 @@ jobs:
         run: |
           xcodebuild -project BarnardNativeExample.xcodeproj -scheme BarnardNativeExample \
             -destination "id=${{ steps.destination.outputs.udid }}" build
+
+  android-library:
+    # Flutter-free: builds/tests packages/android/barnard directly. No
+    # Flutter or React Native toolchain is installed in this job (barnard#56
+    # acceptance criterion: "CI validates each first-class SDK surface
+    # independently").
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/android/barnard
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: gradle build (library sanity check)
+        run: ./gradlew assembleDebug assembleRelease
+      - name: gradle test (crypto/TEK/RPID + signing + engine/identity unit tests)
+        run: ./gradlew test
+
+  android-mirror-sync-check:
+    # packages/android/barnard mirrors the Flutter-free crypto/signing/RPID
+    # sources under packages/dart/barnard/android; this guards against drift
+    # (see scripts/check-android-mirror.sh).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-android-mirror.sh
+
+  android-native-example:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/android-native
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build native Android example (Flutter-free)
+        run: ./gradlew assembleDebug
