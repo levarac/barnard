@@ -1,0 +1,44 @@
+// Copyright 2024-2026 The Greeting Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style license.
+
+plugins {
+    id("com.android.application") version "8.11.1"
+    id("org.jetbrains.kotlin.android") version "2.2.20"
+}
+
+android {
+    namespace = "network.greeting.barnard.example"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "network.greeting.barnard.example.native"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+}
+
+dependencies {
+    // Minimal native Android example (barnard#56): start/stop scan+advertise
+    // against the Flutter-free `packages/android/barnard` Gradle library and
+    // print events. No Flutter runtime involved.
+    implementation("network.greeting.barnard:barnard:1.0-SNAPSHOT")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+}

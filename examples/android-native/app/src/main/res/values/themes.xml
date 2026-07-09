@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.BarnardNativeExample" parent="Theme.MaterialComponents.DayNight.NoActionBar" />
+</resources>
