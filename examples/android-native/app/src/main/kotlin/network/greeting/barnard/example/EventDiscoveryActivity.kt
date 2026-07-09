@@ -252,12 +252,29 @@ class EventDiscoveryActivity : AppCompatActivity() {
                 gatt.readCharacteristic(characteristic)
             }
 
+            // API 33+ callback (has the value directly).
             override fun onCharacteristicRead(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
                 value: ByteArray,
                 status: Int,
             ) {
+                onCharacteristicReadCompat(gatt, value, status)
+            }
+
+            // Pre-API-33 callback -- this is the one the OS actually calls on the
+            // Android 8 emi lab devices (API 26/27); value comes from
+            // characteristic.value instead of a callback parameter.
+            @Suppress("DEPRECATION")
+            override fun onCharacteristicRead(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                status: Int,
+            ) {
+                onCharacteristicReadCompat(gatt, characteristic.value ?: ByteArray(0), status)
+            }
+
+            private fun onCharacteristicReadCompat(gatt: BluetoothGatt, value: ByteArray, status: Int) {
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     append("participant: announcement_read_failed status=$status")
                     gatt.disconnect()

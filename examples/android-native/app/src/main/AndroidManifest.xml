@@ -24,6 +24,6 @@
         </activity>
         <activity
             android:name=".EventDiscoveryActivity"
-            android:exported="false" />
+            android:exported="true" />
     </application>
 </manifest>
