@@ -3,6 +3,7 @@
 
 package network.greeting.barnard
 
+import android.app.Activity
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
@@ -12,6 +13,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 
 /**
@@ -144,4 +146,77 @@ class BarnardEngineTest {
         engine.dispose()
         assertTrue(engine.onEvent == null)
     }
+
+    // MARK: - requestPermissions error signaling (chk-android fix round, PR #71)
+
+    @Test
+    fun requestPermissionsWithNoAttachedActivityFailsWithENoActivity() {
+        val engine = BarnardEngine(newContext())
+        // No setActivity() call: runtime permissions are denied by default under
+        // Robolectric, so requiredRuntimePermissions() is non-empty and requestable.
+        var result: BarnardPermissionResult? = null
+
+        engine.requestPermissions { result = it }
+
+        val failed = result as? BarnardPermissionResult.Failed
+            ?: throw AssertionError("expected Failed, got $result")
+        assertEquals("E_NO_ACTIVITY", failed.error.code)
+    }
+
+    @Test
+    fun requestPermissionsAlreadyInProgressFailsWithEPermissionRequestInProgress() {
+        val engine = BarnardEngine(newContext())
+        // Real Activity.shouldShowRequestPermissionRationale() defaults to
+        // false and Robolectric has no shadow to override it; without forcing
+        // it true here, the first call's markPermissionsRequested() side
+        // effect would make isPermissionRequestBlocked() true for the second
+        // call (already requested + no rationale), so requestPermissions()
+        // would short-circuit to Granted before ever reaching the in-progress
+        // guard this test targets — a Robolectric/test-double limitation, not
+        // production behavior (on-device, the OS permission dialog is still
+        // showing at this point, which is a distinct state from "denied with
+        // no rationale").
+        val activity = Robolectric.buildActivity(RationaleAlwaysTrueActivity::class.java).create().get()
+        engine.setActivity(activity)
+
+        var firstResult: BarnardPermissionResult? = null
+        engine.requestPermissions { firstResult = it }
+        // First call goes pending (activity.requestPermissions() was invoked; no
+        // onRequestPermissionsResult has fired yet), so it must not have resolved.
+        assertNull(firstResult)
+
+        var secondResult: BarnardPermissionResult? = null
+        engine.requestPermissions { secondResult = it }
+
+        val failed = secondResult as? BarnardPermissionResult.Failed
+            ?: throw AssertionError("expected Failed, got $secondResult")
+        assertEquals("E_PERMISSION_REQUEST_IN_PROGRESS", failed.error.code)
+        // The first (still in-flight) request must remain untouched by the second call.
+        assertNull(firstResult)
+    }
+
+    @Test
+    fun disposeMidRequestResolvesPendingCallbackInsteadOfHanging() {
+        val engine = BarnardEngine(newContext())
+        val activity = Robolectric.buildActivity(Activity::class.java).create().get()
+        engine.setActivity(activity)
+
+        var result: BarnardPermissionResult? = null
+        engine.requestPermissions { result = it }
+        assertNull(result) // pending: platform hasn't replied yet
+
+        engine.dispose()
+
+        // A caller suspended on this callback (e.g. suspendCancellableCoroutine)
+        // must be resumed, not left hanging, once the engine is disposed.
+        val failed = result as? BarnardPermissionResult.Failed
+            ?: throw AssertionError("expected Failed after dispose(), got $result")
+        assertEquals("E_DISPOSED", failed.error.code)
+        assertNull(failed.error.status)
+    }
+}
+
+/** Test-only: forces `shouldShowRequestPermissionRationale` true so a second, still-pending [BarnardEngine.requestPermissions] call is not short-circuited by [isPermissionRequestBlocked]'s already-requested check. */
+private class RationaleAlwaysTrueActivity : Activity() {
+    override fun shouldShowRequestPermissionRationale(permission: String): Boolean = true
 }

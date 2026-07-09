@@ -39,9 +39,17 @@ engine.onEvent = { event ->
     }
 }
 
-engine.requestPermissions { status ->
-    if (status.canScan && status.canAdvertise) {
-        engine.startAuto()
+engine.requestPermissions { result ->
+    when (result) {
+        is BarnardPermissionResult.Granted -> {
+            if (result.status.canScan && result.status.canAdvertise) {
+                engine.startAuto()
+            }
+        }
+        is BarnardPermissionResult.Failed -> {
+            // result.error.code is one of E_NO_ACTIVITY, E_PERMISSION_REQUEST_IN_PROGRESS,
+            // or E_DISPOSED (engine disposed before the platform replied).
+        }
     }
 }
 ```

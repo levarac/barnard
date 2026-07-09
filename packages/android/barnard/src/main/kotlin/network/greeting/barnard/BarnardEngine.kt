@@ -79,7 +79,7 @@ public class BarnardEngine(private val appContext: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var activity: Activity? = null
-    private var pendingPermissionCallback: ((BarnardPermissionStatus) -> Unit)? = null
+    private var pendingPermissionCallback: ((BarnardPermissionResult) -> Unit)? = null
 
     // MARK: - Event Delivery
 
@@ -204,7 +204,23 @@ public class BarnardEngine(private val appContext: Context) {
     public fun dispose() {
         stopScan()
         stopAdvertise()
-        pendingPermissionCallback = null
+        // Mirrors the original BarnardController.dispose(), which resolves any
+        // in-flight MethodChannel.Result with E_DISPOSED rather than dropping
+        // it: a caller awaiting this callback (e.g. wrapped in
+        // suspendCancellableCoroutine) must not hang forever just because the
+        // engine was disposed mid-request.
+        pendingPermissionCallback?.let { callback ->
+            pendingPermissionCallback = null
+            callback(
+                BarnardPermissionResult.Failed(
+                    BarnardPermissionError(
+                        code = "E_DISPOSED",
+                        message = "BarnardEngine disposed before permission result",
+                        status = null,
+                    )
+                )
+            )
+        }
         activity = null
         onEvent = null
         onDebugEvent = null
@@ -278,28 +294,44 @@ public class BarnardEngine(private val appContext: Context) {
 
     public fun getPermissionStatus(): BarnardPermissionStatus = permissionStatusPayload()
 
-    public fun requestPermissions(callback: (BarnardPermissionStatus) -> Unit) {
+    public fun requestPermissions(callback: (BarnardPermissionResult) -> Unit) {
         val missing = requiredRuntimePermissions().filter { !hasPermission(it) }
         if (missing.isEmpty()) {
-            callback(permissionStatusPayload())
+            callback(BarnardPermissionResult.Granted(permissionStatusPayload()))
             return
         }
         val requestable = missing.filterNot { isPermissionRequestBlocked(it) }
         if (requestable.isEmpty()) {
-            callback(permissionStatusPayload())
+            callback(BarnardPermissionResult.Granted(permissionStatusPayload()))
             return
         }
 
         val currentActivity = activity
         if (currentActivity == null) {
             emitDebug("warn", "request_permissions_no_activity", null)
-            callback(permissionStatusPayload())
+            callback(
+                BarnardPermissionResult.Failed(
+                    BarnardPermissionError(
+                        code = "E_NO_ACTIVITY",
+                        message = "requestPermissions requires an attached Activity",
+                        status = permissionStatusPayload(),
+                    )
+                )
+            )
             return
         }
 
         if (pendingPermissionCallback != null) {
             emitDebug("warn", "request_permissions_already_in_progress", null)
-            callback(permissionStatusPayload())
+            callback(
+                BarnardPermissionResult.Failed(
+                    BarnardPermissionError(
+                        code = "E_PERMISSION_REQUEST_IN_PROGRESS",
+                        message = "A Barnard permission request is already in progress",
+                        status = permissionStatusPayload(),
+                    )
+                )
+            )
             return
         }
 
@@ -317,7 +349,7 @@ public class BarnardEngine(private val appContext: Context) {
         if (requestCode != permissionRequestCode) return false
         val callback = pendingPermissionCallback ?: return false
         pendingPermissionCallback = null
-        callback(permissionStatusPayload())
+        callback(BarnardPermissionResult.Granted(permissionStatusPayload()))
         return true
     }
 

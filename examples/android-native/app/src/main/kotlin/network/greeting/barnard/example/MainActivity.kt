@@ -11,6 +11,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import network.greeting.barnard.BarnardEngine
 import network.greeting.barnard.BarnardEvent
+import network.greeting.barnard.BarnardPermissionResult
 
 private const val TAG = "BarnardExample"
 private const val MAX_LOG_LINES = 200
@@ -59,13 +60,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestPermissionsThenStart() {
-        engine.requestPermissions { status ->
+        engine.requestPermissions { result ->
             runOnUiThread {
-                append("permissions: canScan=${status.canScan} canAdvertise=${status.canAdvertise}")
-                if (status.canScan && status.canAdvertise) {
-                    engine.startAuto()
-                } else {
-                    engine.openAppSettings()
+                when (result) {
+                    is BarnardPermissionResult.Granted -> {
+                        val status = result.status
+                        append("permissions: canScan=${status.canScan} canAdvertise=${status.canAdvertise}")
+                        if (status.canScan && status.canAdvertise) {
+                            engine.startAuto()
+                        } else {
+                            engine.openAppSettings()
+                        }
+                    }
+                    is BarnardPermissionResult.Failed -> {
+                        append("permissions_failed: ${result.error.code} ${result.error.message}")
+                    }
                 }
             }
         }

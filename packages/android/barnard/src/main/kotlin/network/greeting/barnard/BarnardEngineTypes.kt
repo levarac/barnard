@@ -82,6 +82,33 @@ public data class BarnardPermissionStatus(
     val canAdvertise: Boolean,
 )
 
+/**
+ * Error accompanying a [BarnardPermissionResult.Failed], mirroring the
+ * Flutter plugin's `MethodChannel.Result.error` codes for
+ * `requestPermissions` (`E_DISPOSED`, `E_NO_ACTIVITY`,
+ * `E_PERMISSION_REQUEST_IN_PROGRESS`). [status] carries the
+ * last-known [BarnardPermissionStatus] as details, same as the original's
+ * error `details` argument — `null` for `E_DISPOSED`, matching the
+ * original passing `null` there too.
+ */
+public data class BarnardPermissionError(
+    val code: String,
+    val message: String,
+    val status: BarnardPermissionStatus?,
+)
+
+/**
+ * Outcome of [BarnardEngine.requestPermissions]. Callers MUST branch on
+ * this instead of assuming every callback invocation means the request
+ * actually completed — [Failed] signals a request that never happened
+ * (no attached `Activity`, one already in flight) or was abandoned
+ * ([BarnardEngine.dispose] called before the platform replied).
+ */
+public sealed class BarnardPermissionResult {
+    public data class Granted(val status: BarnardPermissionStatus) : BarnardPermissionResult()
+    public data class Failed(val error: BarnardPermissionError) : BarnardPermissionResult()
+}
+
 public data class BarnardDetectionEvent(
     /** Unix epoch milliseconds. */
     val timestampMs: Long,
