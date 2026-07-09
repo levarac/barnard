@@ -3,6 +3,7 @@
 
 package network.greeting.barnard.example
 
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.widget.Button
@@ -39,6 +40,9 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.startButton).setOnClickListener { requestPermissionsThenStart() }
         findViewById<Button>(R.id.stopButton).setOnClickListener { engine.stopAuto() }
+        findViewById<Button>(R.id.discoveryButton).setOnClickListener {
+            startActivity(Intent(this, EventDiscoveryActivity::class.java))
+        }
 
         engine.setActivity(this)
         engine.onEvent = { event -> runOnUiThread { handle(event) } }

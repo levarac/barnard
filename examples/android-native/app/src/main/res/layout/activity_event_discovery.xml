@@ -6,10 +6,10 @@
     android:padding="16dp">
 
     <TextView
-        android:id="@+id/statusText"
+        android:id="@+id/discoveryStatusText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Scanning: off  Advertising: off"
+        android:text="Discovery: idle"
         android:paddingBottom="8dp" />
 
     <LinearLayout
@@ -19,22 +19,22 @@
         android:paddingBottom="8dp">
 
         <Button
-            android:id="@+id/startButton"
+            android:id="@+id/organizerButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Start" />
+            android:text="Organizer" />
 
         <Button
-            android:id="@+id/stopButton"
+            android:id="@+id/participantButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Participant" />
+
+        <Button
+            android:id="@+id/discoveryStopButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Stop" />
-
-        <Button
-            android:id="@+id/discoveryButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Event Discovery (spike)" />
     </LinearLayout>
 
     <ScrollView
@@ -43,7 +43,7 @@
         android:layout_weight="1">
 
         <TextView
-            android:id="@+id/logText"
+            android:id="@+id/discoveryLogText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
