@@ -112,5 +112,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Build native Android example (Flutter-free)
-        run: ./gradlew assembleDebug
+      - name: Check device-lab host script syntax
+        run: bash -n device-lab/run_two_device_loop.sh
+      - name: Build native Android example and device-lab test APKs (Flutter-free)
+        run: ./gradlew assembleDebug assembleDebugAndroidTest

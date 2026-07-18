@@ -101,6 +101,33 @@ As a maintainer, I want a core SDK structure that can be distributed as iOS (SPM
 
 ---
 
+### Native Android device-lab conformance (Issue #72)
+
+The native Android surface MUST have a real-device two-role harness that drives
+`examples/android-native` and `packages/android/barnard` directly, without a
+Flutter or React Native runtime.
+
+- The Advertiser role joins a configured event, starts Advertise through
+  `BarnardEngine`, confirms the advertising state, and reports its
+  event-scoped `displayId` to the host harness.
+- The Scanner role joins the same event, starts Scan through `BarnardEngine`,
+  and waits for a `Detection` or `RssiUpdate` event whose `detectedDisplayId`
+  matches the Advertiser's reported value.
+- PASS requires both Android instrumentation roles to start successfully and
+  the Scanner to find that exact `displayId` within a bounded timeout. Building
+  the APKs or compiling the instrumentation tests is not a substitute for this
+  real two-device result.
+- The host harness MUST use bounded waits and bounded, overwritten diagnostic
+  logs, grant the runtime permissions required by each connected Android
+  version, and clean up both app processes after the run.
+- This harness does not change any public schema or on-wire payload. The
+  transmitted values remain event-scoped, and no device-unique persistent
+  identifier is added on-wire.
+
+The iOS native twin remains out of scope until iOS devices join the lab.
+
+---
+
 ### Edge Cases
 
 - Repeated `startScan()` calls (idempotent vs error vs restart)
@@ -147,6 +174,7 @@ As a maintainer, I want a core SDK structure that can be distributed as iOS (SPM
 - **FR-IOS-004**: iOS wrappers MUST defer `CBCentralManager` / `CBPeripheralManager` construction until an explicit host-app action to avoid Bluetooth permission prompts during app launch
 - **FR-ANDROID-001**: Android packages MUST ship manifest declarations for BLE Scan, Advertise, Connect, legacy Bluetooth, legacy location, and BLE feature support so host apps receive them through manifest merge
 - **FR-ANDROID-002**: Android 12+ `BLUETOOTH_SCAN` MUST use `neverForLocation` by default so BLE Scan does not require location permission on API 31+
+- **FR-ANDROID-003**: The native Android example MUST provide a bounded two-device lab harness that proves Advertise-to-Scan rendezvous through `BarnardEngine` on real hardware before the first external consumer adopts the package
 
 ### Prototype API Sketch (minimal config)
 
