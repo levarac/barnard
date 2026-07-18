@@ -30,6 +30,8 @@ final class BarnardRpidGenerator {
   /// Current TEK (Temporary Exposure Key)
   private var currentTek: Data
 
+  private var cachedReporterPayload: (enin: UInt32, tekHash: Int, payload: Data)?
+
   // MARK: - Initialization
 
   init() {
@@ -116,11 +118,21 @@ final class BarnardRpidGenerator {
       eninSeconds: eninSeconds,
       beaconChain: beaconChain
     )
-    let rpik = BarnardCrypto.deriveRpik(from: currentTek)
+    let tek = currentTek
+    let tekHash = tek.hashValue
+
+    if let cached = cachedReporterPayload,
+       cached.enin == enin,
+       cached.tekHash == tekHash {
+      return cached.payload
+    }
+
+    let rpik = BarnardCrypto.deriveRpik(from: tek)
     let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: enin)
 
     var payload = Data([formatVersion])
     payload.append(rpi)
+    cachedReporterPayload = (enin: enin, tekHash: tekHash, payload: payload)
     return payload
   }
 
