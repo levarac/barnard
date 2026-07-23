@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Copyright 2024-2026 The Greeting Inc. All rights reserved.
 # Use of this source code is governed by a BSD-style license.
 #
 # barnard#56: packages/android/barnard mirrors the Flutter-free crypto/RPID
-# sources from packages/dart/barnard/android/src/main/kotlin/network/greeting/barnard
+# sources from packages/dart/barnard/android/src/main/kotlin/org/levarac/barnard
 # (byte-for-byte, not re-implemented) so the two packages cannot silently drift.
 # Fails with a diff if any mirrored file no longer matches its origin.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-origin_dir="$repo_root/packages/dart/barnard/android/src/main/kotlin/network/greeting/barnard"
-mirror_dir="$repo_root/packages/android/barnard/src/main/kotlin/network/greeting/barnard"
+origin_dir="$repo_root/packages/dart/barnard/android/src/main/kotlin/org/levarac/barnard"
+mirror_dir="$repo_root/packages/android/barnard/src/main/kotlin/org/levarac/barnard"
 
 mirrored_files=(
   "BarnardCrypto.kt"

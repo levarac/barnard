@@ -22,6 +22,6 @@ include(":app")
 // as a local SwiftPM package. No Flutter toolchain involved.
 includeBuild("../../packages/android/barnard") {
     dependencySubstitution {
-        substitute(module("network.greeting.barnard:barnard")).using(project(":"))
+        substitute(module("org.levarac.barnard:barnard")).using(project(":"))
     }
 }

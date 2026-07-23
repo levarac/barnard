@@ -1,5 +1,4 @@
-/* Copyright 2024-2026 The Greeting Inc. All rights reserved.
- * Use of this source code is governed by a BSD-style license.
+/* Use of this source code is governed by a BSD-style license.
  *
  * C-host consumption proof for the BarnardCoreC shared library (issue #78).
  *

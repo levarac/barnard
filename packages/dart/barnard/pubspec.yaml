@@ -37,7 +37,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: network.greeting.barnard
+        package: org.levarac.barnard
         pluginClass: BarnardPlugin
       ios:
         pluginClass: BarnardPlugin

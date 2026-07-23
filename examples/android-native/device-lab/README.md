@@ -26,7 +26,7 @@ The defaults match the current emi lab:
 - Advertiser: Galaxy S7 edge, adb serial `45732079`
 - Scanner: Nexus 5X, adb serial `00b8316e85a2a456`
 - Event code: `BND`
-- Application ID: `network.greeting.barnard.example.native`
+- Application ID: `org.levarac.barnard.example.native`
 
 Override them with `ADV_SERIAL`, `SCAN_SERIAL`, `EVENT_CODE`, `HOLD_SECONDS`,
 `SCAN_TIMEOUT_SECONDS`, or `OUTPUT_DIR`. The existing pull-based watcher can

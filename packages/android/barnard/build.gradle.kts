@@ -1,4 +1,3 @@
-// Copyright 2024-2026 The Greeting Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style license.
 
 plugins {
@@ -6,11 +5,11 @@ plugins {
     id("org.jetbrains.kotlin.android") version "2.2.20"
 }
 
-group = "network.greeting.barnard"
+group = "org.levarac.barnard"
 version = "1.0-SNAPSHOT"
 
 android {
-    namespace = "network.greeting.barnard"
+    namespace = "org.levarac.barnard"
 
     compileSdk = 36
 

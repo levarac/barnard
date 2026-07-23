@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Copyright 2024-2026 The Greeting Inc. All rights reserved.
 # Use of this source code is governed by a BSD-style license.
 #
 # barnard#56 and #80: packages/swift/barnard mirrors the Flutter-free

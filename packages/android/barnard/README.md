@@ -12,7 +12,7 @@ this package is released):
 // settings.gradle.kts
 includeBuild("../path/to/packages/android/barnard") {
     dependencySubstitution {
-        substitute(module("network.greeting.barnard:barnard")).using(project(":"))
+        substitute(module("org.levarac.barnard:barnard")).using(project(":"))
     }
 }
 ```
@@ -20,15 +20,15 @@ includeBuild("../path/to/packages/android/barnard") {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("network.greeting.barnard:barnard:1.0-SNAPSHOT")
+    implementation("org.levarac.barnard:barnard:1.0-SNAPSHOT")
 }
 ```
 
 ## Usage
 
 ```kotlin
-import network.greeting.barnard.BarnardEngine
-import network.greeting.barnard.BarnardEvent
+import org.levarac.barnard.BarnardEngine
+import org.levarac.barnard.BarnardEvent
 
 val engine = BarnardEngine(applicationContext)
 engine.setActivity(activity) // required for requestPermissions()
@@ -62,7 +62,7 @@ resolve.
 
 For per-event device signing identity (RPID ownership proofs, key
 binding), use `BarnardIdentity` — see
-`src/main/kotlin/network/greeting/barnard/BarnardIdentity.kt`.
+`src/main/kotlin/org/levarac/barnard/BarnardIdentity.kt`.
 
 See `examples/android-native` for a runnable minimal app.
 

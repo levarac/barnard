@@ -73,9 +73,9 @@ android {
 
     compileSdkVersion rootProject.ext.compileSdkVersion
 
-    namespace "network.greeting.barnard.demo"
+    namespace "org.levarac.barnard.demo"
     defaultConfig {
-        applicationId "network.greeting.barnard.demo"
+        applicationId "org.levarac.barnard.demo"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

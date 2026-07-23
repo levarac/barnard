@@ -18,7 +18,7 @@ def safeExtGet(prop, fallback) {
 
 android {
     compileSdkVersion safeExtGet('compileSdkVersion', 33)
-    namespace 'network.greeting.barnard'
+    namespace 'org.levarac.barnard'
 
     defaultConfig {
         minSdkVersion safeExtGet('minSdkVersion', 21)
