@@ -1,0 +1,137 @@
+name: Swift Android Cross-Compile
+
+# Locks in what the issue #78 spike proved manually: BarnardCore (and its C ABI
+# surface, BarnardCoreC) cross-compiles for aarch64-android with the official
+# Swift Android SDK, and the exported C symbols stay present in the .so.
+#
+# Toolchain pin tradeoff (documented decision, issue #78):
+# - Swift 6.4 has no stable release with Android SDK support yet, so this pins
+#   one exact 6.4.x development snapshot (host + Android SDK are a matched
+#   pair). Bump both lines of the pin together.
+# - The host toolchain (~1.3 GB) and Android SDK bundle (~340 MB) downloads are
+#   cached via actions/cache (~1.6 GB of the repo's 10 GB budget); a cold run
+#   downloads them once. This keeps the job on every PR touching
+#   packages/swift instead of a scheduled job, at roughly 2-4 min warm.
+# - Only aarch64 is cross-compiled here (the spike proved armv7/x86_64 build
+#   identically); the goal is a drift guard, not a release pipeline.
+
+on:
+  pull_request:
+    paths:
+      - "packages/swift/**"
+      - ".github/workflows/swift-android.yml"
+  push:
+    branches: [ main ]
+    paths:
+      - "packages/swift/**"
+      - ".github/workflows/swift-android.yml"
+  workflow_dispatch:
+
+env:
+  SWIFT_SNAPSHOT: swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a
+  SWIFT_HOST_URL: https://download.swift.org/swift-6.4.x-branch/ubuntu2404/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a-ubuntu24.04.tar.gz
+  SWIFT_HOST_SHA256: 58f4717c54c4fd87084647b947bf509c51c317313b7f50cbd30ed6f43814c47a
+  SWIFT_ANDROID_SDK_URL: https://download.swift.org/swift-6.4.x-branch/android-sdk/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-17-a_android.artifactbundle.tar.gz
+  SWIFT_ANDROID_SDK_SHA256: 54a9c6b9491ea531cd3f5696f1071c2ca055cad89b89a2f408633b73f373c601
+  ANDROID_TRIPLE: aarch64-unknown-linux-android28
+
+jobs:
+  android-cross-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Swift toolchain downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/swift-downloads
+          key: swift-android-${{ env.SWIFT_SNAPSHOT }}-v1
+
+      - name: Download pinned toolchain artifacts (cache miss only)
+        run: |
+          mkdir -p ~/swift-downloads
+          cd ~/swift-downloads
+          if [ ! -f host.tar.gz ]; then
+            curl -fsSL -o host.tar.gz "$SWIFT_HOST_URL"
+          fi
+          if [ ! -f android-sdk.tar.gz ]; then
+            curl -fsSL -o android-sdk.tar.gz "$SWIFT_ANDROID_SDK_URL"
+          fi
+          echo "$SWIFT_HOST_SHA256  host.tar.gz" | sha256sum -c -
+          echo "$SWIFT_ANDROID_SDK_SHA256  android-sdk.tar.gz" | sha256sum -c -
+
+      - name: Install host toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/swift-host"
+          tar -xzf ~/swift-downloads/host.tar.gz -C "$RUNNER_TEMP/swift-host" --strip-components=1
+          echo "$RUNNER_TEMP/swift-host/usr/bin" >> "$GITHUB_PATH"
+
+      - name: Install Android Swift SDK
+        run: |
+          swift --version
+          swift sdk install ~/swift-downloads/android-sdk.tar.gz
+          swift sdk list
+
+      - name: Link Android SDK sysroot to the runner's NDK
+        run: |
+          echo "NDK: $ANDROID_NDK_LATEST_HOME"
+          setup_script=$(find "$HOME/.swiftpm/swift-sdks" "$HOME/.config/swiftpm/swift-sdks" \
+            -name setup-android-sdk.sh 2>/dev/null | head -1)
+          if [ -z "$setup_script" ]; then
+            echo "setup-android-sdk.sh not found in installed SDK bundle" >&2
+            find "$HOME/.swiftpm" "$HOME/.config/swiftpm" -maxdepth 4 -type d 2>/dev/null >&2
+            exit 1
+          fi
+          ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" SWIFT_ANDROID_NDK_LINK=1 \
+            bash "$setup_script"
+
+      - name: Cross-compile BarnardCoreC for aarch64-android
+        run: |
+          swift build --package-path packages/swift/barnard \
+            --product BarnardCoreC \
+            --swift-sdk "$ANDROID_TRIPLE" \
+            -c release
+      - name: Verify exported C ABI symbols in the Android .so
+        run: |
+          so=$(find packages/swift/barnard/.build -name libBarnardCoreC.so -path "*release*" | head -1)
+          echo "shared library: $so"
+          file "$so"
+          nm_tool=$(find "$ANDROID_NDK_LATEST_HOME" -name llvm-nm | head -1)
+          "$nm_tool" -D --defined-only "$so" | tee /tmp/exported-symbols.txt
+          for symbol in \
+            barnard_core_derive_tek_for_event \
+            barnard_core_derive_tek_for_anonymous \
+            barnard_core_derive_rpik \
+            barnard_core_generate_rpi \
+            barnard_core_calculate_enin \
+            barnard_core_stable_read_enin \
+            barnard_core_compute_event_code_hash \
+            barnard_core_display_id4 \
+            barnard_core_sha256 \
+            barnard_core_derive_signing_keypair \
+            barnard_core_sign_recoverable \
+            barnard_core_should_emit_rssi_update \
+            barnard_core_should_serve_gatt_display_id; do
+            if ! grep -qw "$symbol" /tmp/exported-symbols.txt; then
+              echo "MISSING exported symbol: $symbol" >&2
+              exit 1
+            fi
+          done
+          echo "OK: all 13 C ABI symbols exported for $ANDROID_TRIPLE"
+
+      - name: C host consumption proof (Linux native, same C ABI)
+        # The Android .so cannot execute on the runner; this builds the same
+        # BarnardCoreC product for the Linux host with the same toolchain and
+        # replays the issue #80 golden vector through dlopen + the C ABI.
+        run: |
+          swift build --package-path packages/swift/barnard \
+            --product BarnardCoreC \
+            -c release \
+            --scratch-path packages/swift/barnard/.build-host
+          lib=$(find packages/swift/barnard/.build-host -name libBarnardCoreC.so -path "*release*" | head -1)
+          echo "host library: $lib"
+          cc -o /tmp/barnard_core_c_host_proof \
+            packages/swift/barnard/CHostProof/barnard_core_c_host_proof.c
+          LD_LIBRARY_PATH="$RUNNER_TEMP/swift-host/usr/lib/swift/linux" \
+            /tmp/barnard_core_c_host_proof "$lib"
