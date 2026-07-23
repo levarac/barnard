@@ -1,80 +1,130 @@
 # Barnard
 
-Barnard is a sensing foundation SDK.
+Barnard is a mobile BLE sensing SDK for applications that need structured,
+receiver-observed events from nearby devices.
 
-It focuses on **Scan/Advertise** and delivering a stable event model (main + debug) for upper layers (e.g., Flutter / React Native), while keeping domain logic and server dependencies out of scope.
+## Positioning
+
+Barnard is for native iOS and Android, Flutter/Dart, and React Native
+applications that need to Scan, Advertise, and consume BLE observations without
+making a backend or product-specific domain model part of the SDK.
+
+The repository is organized around a few design principles:
+
+- **Receiver-observed events.** Detections represent what the receiver observed:
+  an RPID, RSSI, and timestamp. Higher layers decide how to interpret or store
+  those events.
+- **GATT-first RPID delivery.** A Peripheral advertises the Barnard service for
+  discovery; a Central then connects and reads the RPID through GATT. This keeps
+  the discovery advertisement separate from the RPID payload.
+- **Schema-first contracts.** Language-agnostic JSON Schema defines shared event,
+  configuration, and capability shapes so SDK implementations do not need to
+  share runtime code to share a contract.
+- **Privacy at the wire boundary.** Barnard's BLE payloads do not contain a
+  device-unique persistent identifier. The v2 protocol does not transmit a TEK
+  over BLE.
+- **Native SDKs alongside framework bindings.** Swift and Android packages let
+  native apps use Barnard without a Flutter or React Native runtime, while the
+  Flutter/Dart and React Native packages provide framework-specific APIs.
+
+## What is implemented
+
+- The Flutter/Dart and React Native packages expose BLE Scan and Advertise APIs,
+  including a GATT-based RPID exchange on iOS and Android.
+- The native Swift and Android packages expose first-class platform APIs and are
+  built and tested directly in CI. Mirror checks make the relationship between
+  their shared crypto, signing, and RPID sources and the Flutter plugin's
+  Flutter-free platform sources verifiable.
+- Examples cover mock-driven Dart use, real Flutter BLE use, and minimal native
+  iOS and Android integrations. The native Android example also contains a
+  two-device test-loop script for a device lab.
 
 ## Repository layout
 
-- `specs/` — product and SDK specifications (source of intent)
-- `schema/` — language-agnostic **JSON Schemas** (source of truth for event/config/capabilities shapes)
-- `packages/`
-  - `packages/dart/barnard/` — Flutter plugin package (public API + mock + real BLE Transport)
-  - `packages/react-native/barnard/` — React Native package (TypeScript API + native BLE Transport)
-- `examples/`
-  - `examples/dart/barnard_demo/` — demo using the mock implementation
-  - `examples/flutter/barnard_poc/` — Flutter PoC app (real BLE via GATT-first RPID read)
-  - `examples/react-native/barnard_demo/` — React Native demo app
-- `.github/workflows/` — CI (Flutter analyze/test, Android plugin unit tests, and demos)
+Every top-level directory is listed here. Each entry describes both its contents
+and the reason it is kept in the repository.
 
-## Package READMEs
-
-Start with the package README for the platform you are integrating:
-
-- [Flutter/Dart package](packages/dart/barnard/README.md)
-- [React Native package](packages/react-native/barnard/README.md)
-
-Those documents cover installation, iOS `Info.plist` setup, Android manifest merge behavior, runtime permission APIs, and minimal Scan / Advertise usage.
-
-## Flutter quick start
-
-From `packages/dart/barnard`:
-
-```bash
-flutter pub get
-flutter test
+```text
+.
+├── .codex/       # Spec Kit prompt files; keep repeatable AI-assisted spec work close to its templates.
+├── .github/      # GitHub Actions workflows; verify packages and examples on pull requests and main.
+├── .specify/     # Spec Kit constitution, scripts, and templates; make specifications a reviewable source of intent.
+├── .vscode/      # Workspace settings and launch configuration; provide a shared local development baseline.
+├── examples/     # Runnable integrations; prove each SDK surface in a minimal host application.
+├── packages/     # Distributable SDK packages; provide native and framework-specific adoption paths.
+├── schema/       # Versioned JSON Schema; define language-agnostic public shapes before implementation details.
+├── scripts/      # Repository checks; detect drift between native mirrors and their source files.
+├── specs/        # Feature specifications; record behavior, boundaries, and privacy decisions independently of code.
+└── tools/        # Focused developer utilities; keep one-off protocol and scanner tooling outside SDK packages.
 ```
 
-Run the Flutter plugin Android unit tests:
+### Packages
 
-```bash
-cd packages/dart/barnard/android
-flutter precache --android
-./gradlew testDebugUnitTest
+`packages/` contains the public SDK surfaces. The native packages coexist with
+the framework bindings because a host app should be able to adopt Barnard in its
+own runtime rather than carry an unrelated framework runtime.
+
+```text
+packages/
+├── swift/barnard/        # Swift Package Manager library for native iOS apps.
+├── android/barnard/      # Gradle library for native Android apps.
+├── dart/barnard/         # Flutter plugin and Dart API, including mock and BLE Transport implementations.
+└── react-native/barnard/ # React Native package with a TypeScript API and native iOS/Android modules.
 ```
 
-Run the demo:
+- `packages/swift/barnard/` is a Swift Package Manager library for iOS 14 and
+  later. It exists so native iOS apps can use Barnard without a Flutter runtime;
+  its mirrored Flutter-free sources are checked for byte-for-byte drift.
+- `packages/android/barnard/` is a Gradle library for Android API 24 and later.
+  It exists so native Android apps can use typed Kotlin APIs without a Flutter
+  or React Native runtime; its mirrored Flutter-free sources are likewise
+  checked for drift.
+- `packages/dart/barnard/` is the Flutter/Dart SDK. It exists for Flutter apps
+  that need the shared domain API, a hardware-free `MockBarnard` integration
+  path, or the platform BLE Transport.
+- `packages/react-native/barnard/` is the React Native SDK. It exists for React
+  Native apps that need a TypeScript API over native iOS and Android BLE
+  implementations.
 
-```bash
-cd examples/dart/barnard_demo
-flutter pub get
-dart run bin/main.dart
-```
+### Supporting directories
 
-Run the Flutter PoC app:
+- `examples/` contains `dart/barnard_demo`, `flutter/barnard_poc`,
+  `ios-native`, `android-native`, and `react-native/barnard_demo`. They keep
+  integration and platform setup observable without turning a production app
+  into a test fixture.
+- `schema/` contains versioned Barnard v1 and v2 JSON Schema definitions. It is
+  separate from any package so Dart, Swift, Kotlin, and TypeScript consumers can
+  share public shapes without sharing an implementation language.
+- `specs/` contains the numbered core SDK, Flutter prototype, real BLE, and
+  resolvable-ID specifications. It preserves the intended behavior and
+  constraints that code alone cannot explain.
+- `tools/` currently contains `barnard-scan`, a small scanner utility. Keeping
+  it outside `packages/` prevents a focused developer tool from becoming a
+  required SDK dependency.
+- `scripts/` contains the Swift and Android mirror checks. They make the
+  deliberate shared-source relationship between native SDKs and the Flutter
+  plugin verifiable in CI.
+- `.github/` contains the Dart and native SDK workflows. It keeps package
+  verification in the repository where changes are reviewed.
+- `.specify/` contains Spec Kit templates, helper scripts, and the project
+  constitution; it keeps the specification workflow repeatable.
+- `.codex/` contains the corresponding Spec Kit prompt files for Codex-driven
+  work, so the repository's workflow can be invoked consistently.
+- `.vscode/` contains shared editor settings and launch configuration, reducing
+  local setup differences without imposing an editor at runtime.
 
-```bash
-cd examples/flutter/barnard_poc
-flutter pub get
-flutter run
-```
+## Package quick starts
 
-## React Native quick start
+Choose the package for the host application. Each package README contains its
+installation and usage details, plus platform-specific setup where required.
 
-From `packages/react-native/barnard`:
+- [Swift / native iOS](packages/swift/barnard/README.md)
+- [Android / native Kotlin](packages/android/barnard/README.md)
+- [Flutter / Dart](packages/dart/barnard/README.md)
+- [React Native](packages/react-native/barnard/README.md)
 
-```bash
-npm install
-npm test
-```
+## Protocol and privacy references
 
-Run the React Native demo from `examples/react-native/barnard_demo` after installing its app dependencies and native platform dependencies.
-
-## Principles
-
-- Detection is based on **receiver-observed facts**: `rpid + rssi + timestamp`
-- Cross-language consistency is driven by **JSON Schema** under `schema/barnard/v2`
-- On-wire BLE payloads must not contain device-unique persistent identifiers
-- Host apps control OS permission dialog timing through Barnard permission APIs
-- Host apps can detect blocked runtime permissions and send users to app settings instead of retrying dialogs the OS will not show
-- Android uses `neverForLocation` for Barnard's default BLE Scan permission; host apps that use BLE Scan results themselves for physical location can override that merged declaration
+The [resolvable-ID v2 specification](specs/004-resolvable-id/spec.md) defines
+the current GATT service and the RPID wire form. The [schema README](schema/README.md)
+explains how the versioned JSON Schema directories relate to SDK contracts.
