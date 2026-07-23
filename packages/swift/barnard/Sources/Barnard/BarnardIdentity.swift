@@ -1,7 +1,9 @@
 // Copyright 2024-2026 The Greeting Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style license.
 
-import CryptoKit
+#if canImport(BarnardCore)
+import BarnardCore
+#endif
 import Foundation
 
 /// Recoverable secp256k1 signature `(r, s, v)`, Swift-first mirror of
@@ -30,8 +32,13 @@ public struct BarnardRpidOwnershipProof {
 /// only the public key and signatures do.
 public final class BarnardIdentity {
   private let deviceSecretKey = "barnard.rpidSeed"
+  private let keyStorage: any BarnardCoreKeyStorage
+  private let randomSource: any BarnardCoreRandomSource
 
-  public init() {}
+  public init() {
+    keyStorage = BarnardUserDefaultsKeyStorage()
+    randomSource = BarnardSystemRandomSource()
+  }
 
   public func signingPublicKey(eventCode: String) -> Data {
     let keyPair = BarnardSigning.deriveSigningKeyPair(deviceSecret: getOrCreateDeviceSecret(), eventCode: eventCode)
@@ -42,7 +49,7 @@ public final class BarnardIdentity {
   /// `eventCode`.
   public func sign(eventCode: String, bytes: Data) -> BarnardRecoverableSignature {
     let keyPair = BarnardSigning.deriveSigningKeyPair(deviceSecret: getOrCreateDeviceSecret(), eventCode: eventCode)
-    let messageHash = Data(SHA256.hash(data: bytes))
+    let messageHash = BarnardCrypto.sha256(bytes)
     let sig = BarnardSigning.signRecoverable(privateKey: keyPair.privateKey, messageHash32: messageHash)
     return BarnardRecoverableSignature(r: sig.r, s: sig.s, v: sig.v)
   }
@@ -86,12 +93,12 @@ public final class BarnardIdentity {
   // BarnardEngine.exportCurrentTek, which is the TEK, not the raw secret).
 
   private func getOrCreateDeviceSecret() -> Data {
-    let defaults = UserDefaults.standard
-    if let existing = defaults.data(forKey: deviceSecretKey), existing.count >= 32 {
-      return existing
-    }
-    let newSecret = BarnardCrypto.generateRandomBytes(32)
-    defaults.set(newSecret, forKey: deviceSecretKey)
-    return newSecret
+    Data(BarnardCoreKeyManager.loadOrCreate(
+      key: deviceSecretKey,
+      minimumByteCount: 32,
+      generatedByteCount: 32,
+      storage: keyStorage,
+      randomSource: randomSource
+    ))
   }
 }

@@ -1,31 +1,33 @@
-import Foundation
+// Copyright 2024-2026 The Greeting Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style license.
 
-/// Pure-logic policy decisions for Barnard v2.
-///
-/// Mirrors `BarnardV2Policy` on the Android side so the same review-fix
-/// rules are expressed in the same shape on both platforms.
+#if canImport(BarnardCore)
+import BarnardCore
+#endif
+
 enum BarnardV2Policy {
-  /// B003 displayId may only be served while the peripheral is joined to an event.
-  /// Anonymous reads are rejected so the device-secret-derived TEK does not
-  /// surface as a stable on-wire displayId.
   static func shouldServeGattDisplayId(eventCode: String?) -> Bool {
-    guard let code = eventCode, !code.isEmpty else { return false }
-    return true
+    BarnardCoreV2Policy.shouldServeGattDisplayId(eventCode: eventCode)
   }
 
-  /// Cached known-peer RPID is reusable only within the ENIN window in which
-  /// it was resolved. After ENIN rotation the SDK must re-read B002/B003.
   struct KnownPeerWindow {
     let enin: UInt32
-    func matches(_ currentEnin: UInt32) -> Bool { enin == currentEnin }
+
+    func matches(_ currentEnin: UInt32) -> Bool {
+      BarnardCoreV2Policy.shouldEmitRssiUpdate(
+        cachedPeerEnin: enin,
+        currentEnin: currentEnin
+      )
+    }
   }
 
-  /// RSSI updates may reuse a cached peer RPID only while the cache belongs to
-  /// the current ENIN. After rotation, Central must re-resolve B002/B003 first.
   static func shouldEmitRssiUpdate(
     cachedPeerEnin: UInt32,
     currentEnin: UInt32
   ) -> Bool {
-    KnownPeerWindow(enin: cachedPeerEnin).matches(currentEnin)
+    BarnardCoreV2Policy.shouldEmitRssiUpdate(
+      cachedPeerEnin: cachedPeerEnin,
+      currentEnin: currentEnin
+    )
   }
 }
