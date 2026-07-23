@@ -103,6 +103,21 @@ final class BarnardCoreCTests: XCTestCase {
     XCTAssertEqual(v, 0)
   }
 
+  func testOutOfDomainTimestampsDoNotTrap() {
+    // calculate_enin has no error channel: out-of-domain saturates.
+    XCTAssertEqual(barnard_core_calculate_enin(-400, 0, 300, 0, 0), 0)
+    XCTAssertEqual(barnard_core_calculate_enin(.max, 0, 300, 0, 0), .max)
+    XCTAssertEqual(barnard_core_calculate_enin(.max, 1, 300, 0, 1), .max)
+    XCTAssertEqual(barnard_core_calculate_enin(-400, 1, 300, 0, 12), 0)
+
+    // stable_read_enin has an error channel: out-of-domain is rejected.
+    var enin: UInt32 = 0
+    XCTAssertEqual(barnard_core_stable_read_enin(-1, 899, 0, 300, 0, 0, &enin), -1)
+    XCTAssertEqual(barnard_core_stable_read_enin(899, .max, 0, 300, 0, 0, &enin), -1)
+    XCTAssertEqual(barnard_core_stable_read_enin(-1, -1, 1, 300, 0, 12, &enin), 1)
+    XCTAssertEqual(enin, 0)
+  }
+
   func testInvalidArgumentsAreRejected() {
     var out = [UInt8](repeating: 0, count: 16)
     XCTAssertEqual(barnard_core_derive_tek_for_event(nil, 32, nil, 0, &out), -1)
