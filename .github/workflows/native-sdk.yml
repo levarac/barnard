@@ -33,9 +33,10 @@ jobs:
       - name: BarnardCore stdlib-only build and purity check
         run: |
           swift build --target BarnardCore
+          swift build --target BarnardCoreC
           if grep -RnwE \
-            'Foundation|CryptoKit|CoreBluetooth|Security|UIKit|CommonCrypto|SecRandom|UserDefaults|Data|Date|CCCrypt' \
-            Sources/BarnardCore; then
+            'Foundation|FoundationEssentials|CryptoKit|CoreBluetooth|Security|UIKit|CommonCrypto|SecRandom|UserDefaults|Data|Date|CCCrypt' \
+            Sources/BarnardCore Sources/BarnardCoreC; then
             echo "BarnardCore contains a forbidden platform dependency"
             exit 1
           fi
