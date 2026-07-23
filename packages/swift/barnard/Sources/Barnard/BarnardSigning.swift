@@ -66,7 +66,7 @@ enum BarnardSigning {
       r: r.bytes,
       s: s.bytes,
       messageHash32: Array(messageHash32)
-    ).map(Data.init)
+    ).map { Data($0) }
   }
 
   static func buildRpidProofMessage(
