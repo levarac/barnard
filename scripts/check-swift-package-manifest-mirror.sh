@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Use of this source code is governed by a BSD-style license.
+# Use of this source code is governed by the MIT license in /LICENSE.
 #
 # barnard#85: the repository-root Package.swift exposes the Swift package for
 # remote consumption while packages/swift/barnard/Package.swift remains the
