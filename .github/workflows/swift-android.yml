@@ -94,7 +94,12 @@ jobs:
             -c release
       - name: Verify exported C ABI symbols in the Android .so
         run: |
-          so=$(find packages/swift/barnard/.build -name libBarnardCoreC.so -path "*release*" | head -1)
+          so=$(find packages/swift/barnard/.build -name libBarnardCoreC.so | head -1)
+          if [ -z "$so" ]; then
+            echo "libBarnardCoreC.so not found under .build; layout was:" >&2
+            find packages/swift/barnard/.build -name "*.so" >&2
+            exit 1
+          fi
           echo "shared library: $so"
           file "$so"
           nm_tool=$(find "$ANDROID_NDK_LATEST_HOME" -name llvm-nm | head -1)
@@ -129,7 +134,12 @@ jobs:
             --product BarnardCoreC \
             -c release \
             --scratch-path packages/swift/barnard/.build-host
-          lib=$(find packages/swift/barnard/.build-host -name libBarnardCoreC.so -path "*release*" | head -1)
+          lib=$(find packages/swift/barnard/.build-host -name libBarnardCoreC.so | head -1)
+          if [ -z "$lib" ]; then
+            echo "host libBarnardCoreC.so not found under .build-host; layout was:" >&2
+            find packages/swift/barnard/.build-host -name "*.so" >&2
+            exit 1
+          fi
           echo "host library: $lib"
           cc -o /tmp/barnard_core_c_host_proof \
             packages/swift/barnard/CHostProof/barnard_core_c_host_proof.c
