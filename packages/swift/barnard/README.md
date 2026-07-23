@@ -14,7 +14,10 @@ dependencies: [
 ]
 ```
 
-Then depend on the `Barnard` product in your app target.
+Then depend on the `Barnard` product in your app target. The package also
+publishes `BarnardCore` for deterministic RPID, ENIN, signing, and policy work
+on non-Apple Swift targets. `BarnardCore` uses standard-library byte arrays and
+integer Unix time; it does not expose Foundation types.
 
 ## Usage
 
@@ -47,10 +50,14 @@ See `examples/ios-native` for a runnable minimal app.
 This package is currently a **mirror**, not a move, of
 `packages/dart/barnard/ios/barnard`:
 
-- `BarnardCrypto.swift`, `Secp256k1.swift`, `BarnardSigning.swift`,
-  `BarnardRpidGenerator.swift`, `BarnardV2Policy.swift`, and
-  `PrivacyInfo.xcprivacy` are byte-for-byte copies of the Flutter plugin's
-  Flutter-free sources. `scripts/check-swift-mirror.sh` (repo root) fails CI
+- The platform adapters (`BarnardCrypto.swift`, `Secp256k1.swift`,
+  `BarnardSigning.swift`, `BarnardRpidGenerator.swift`,
+  `BarnardV2Policy.swift`, `BarnardPlatformDependencies.swift`, and
+  `PrivacyInfo.xcprivacy`) are byte-for-byte copies of the Flutter plugin's
+  Flutter-free sources.
+- Every source under `Sources/BarnardCore` is also a byte-for-byte copy of the
+  corresponding Flutter plugin source under `Sources/barnard/BarnardCore`.
+  `scripts/check-swift-mirror.sh` (repo root) checks both groups and fails CI
   if they drift.
 - `BarnardEngine.swift` (Flutter-free port of `BarnardBleController`) and
   `BarnardIdentity.swift` (Flutter-free port of `BarnardIdentityController`)
