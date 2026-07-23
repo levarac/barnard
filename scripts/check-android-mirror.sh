@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Use of this source code is governed by a BSD-style license.
+# Use of this source code is governed by the MIT license in /LICENSE.
 #
 # barnard#56: packages/android/barnard mirrors the Flutter-free crypto/RPID
 # sources from packages/dart/barnard/android/src/main/kotlin/org/levarac/barnard

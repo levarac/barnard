@@ -39,7 +39,7 @@ For a Git dependency:
 dependencies:
   barnard:
     git:
-      url: https://github.com/thegreeting/barnard.git
+      url: https://github.com/levarac/barnard.git
       path: packages/dart/barnard
 ```
 

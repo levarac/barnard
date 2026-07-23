@@ -123,6 +123,18 @@ installation and usage details, plus platform-specific setup where required.
 - [Flutter / Dart](packages/dart/barnard/README.md)
 - [React Native](packages/react-native/barnard/README.md)
 
+### Swift Package Manager installation
+
+Add Barnard to the `dependencies` in your package manifest:
+
+```swift
+.package(url: "https://github.com/levarac/barnard.git", from: "0.1.0")
+```
+
+The repository-root `Package.swift` supports remote consumption. The inner
+manifest at `packages/swift/barnard/Package.swift` remains available for
+in-repository development, and CI checks that their declarations stay aligned.
+
 ## Protocol and privacy references
 
 The [resolvable-ID v2 specification](specs/004-resolvable-id/spec.md) defines
