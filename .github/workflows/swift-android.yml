@@ -18,11 +18,13 @@ name: Swift Android Cross-Compile
 on:
   pull_request:
     paths:
+      - "Package.swift"
       - "packages/swift/**"
       - ".github/workflows/swift-android.yml"
   push:
     branches: [ main ]
     paths:
+      - "Package.swift"
       - "packages/swift/**"
       - ".github/workflows/swift-android.yml"
   workflow_dispatch:

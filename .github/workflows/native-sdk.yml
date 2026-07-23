@@ -42,6 +42,42 @@ jobs:
           fi
       - name: swift test (Barnard compatibility + BarnardCore unit tests)
         run: xcodebuild -scheme Barnard-Package -destination "id=${{ steps.destination.outputs.udid }}" test
+      - name: Root and inner Swift package manifest drift guard
+        working-directory: .
+        run: ./scripts/check-swift-package-manifest-mirror.sh
+      - name: Scratch consumer builds for iOS Simulator and imports Barnard
+        working-directory: .
+        run: |
+          consumer_dir="$(mktemp -d)"
+          mkdir -p "$consumer_dir/Sources/BarnardConsumer"
+          cat > "$consumer_dir/Package.swift" <<EOF
+          // swift-tools-version: 5.9
+          import PackageDescription
+
+          let package = Package(
+              name: "BarnardConsumer",
+              dependencies: [
+                  .package(name: "barnard", path: "$GITHUB_WORKSPACE")
+              ],
+              targets: [
+                  .executableTarget(
+                      name: "BarnardConsumer",
+                      dependencies: [
+                          .product(name: "Barnard", package: "barnard")
+                      ]
+                  )
+              ]
+          )
+          EOF
+          cat > "$consumer_dir/Sources/BarnardConsumer/main.swift" <<'EOF'
+          import Barnard
+
+          print("Barnard import succeeded")
+          EOF
+          swift build \
+            --package-path "$consumer_dir" \
+            --triple arm64-apple-ios15.0-simulator \
+            --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
 
   swift-mirror-sync-check:
     # packages/swift/barnard mirrors the Flutter-free platform adapters and
