@@ -10,7 +10,10 @@ let package = Package(
     ],
     products: [
         .library(name: "Barnard", targets: ["Barnard"]),
-        .library(name: "BarnardCore", targets: ["BarnardCore"])
+        .library(name: "BarnardCore", targets: ["BarnardCore"]),
+        // Dynamic on purpose: this is the .so/.dylib consumed over the C ABI
+        // by non-Swift hosts (Kotlin/JNI on Android, C, ...). See issue #78.
+        .library(name: "BarnardCoreC", type: .dynamic, targets: ["BarnardCoreC"])
     ],
     dependencies: [],
     targets: [
@@ -25,6 +28,10 @@ let package = Package(
             name: "BarnardCore",
             dependencies: []
         ),
+        .target(
+            name: "BarnardCoreC",
+            dependencies: ["BarnardCore"]
+        ),
         .testTarget(
             name: "BarnardTests",
             dependencies: ["Barnard"]
@@ -32,6 +39,10 @@ let package = Package(
         .testTarget(
             name: "BarnardCoreTests",
             dependencies: ["BarnardCore"]
+        ),
+        .testTarget(
+            name: "BarnardCoreCTests",
+            dependencies: ["BarnardCoreC"]
         )
     ]
 )
