@@ -8,7 +8,7 @@ When the user asks to create a PR and verify CI, prefer GitHub MCP operations ov
 
 Repository defaults:
 
-- Repo: `thegreeting/barnard`
+- Repo: `levarac/barnard`
 - Base branch: `main`
 
 Recommended flow:
