@@ -1,9 +1,10 @@
 // Copyright 2024-2026 The Greeting Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style license.
 
-import CryptoKit
+#if canImport(BarnardCore)
+import BarnardCore
+#endif
 import Foundation
-import Security
 
 /// GAEN v1.2-compatible RPI generator with Event Mode support.
 ///
@@ -29,10 +30,19 @@ final class BarnardRpidGenerator {
 
   /// Current TEK (Temporary Exposure Key)
   private var currentTek: Data
+  private var cachedReporterPayload: (enin: UInt32, tekHash: Int, payload: Data)?
+  private let keyStorage: any BarnardCoreKeyStorage
+  private let randomSource: any BarnardCoreRandomSource
 
   // MARK: - Initialization
 
-  init() {
+  init(
+    keyStorage: any BarnardCoreKeyStorage = BarnardUserDefaultsKeyStorage(),
+    randomSource: any BarnardCoreRandomSource = BarnardSystemRandomSource()
+  ) {
+    self.keyStorage = keyStorage
+    self.randomSource = randomSource
+
     // Load persisted event code
     let defaults = UserDefaults.standard
     eventCode = defaults.string(forKey: eventCodeKey)
@@ -116,11 +126,22 @@ final class BarnardRpidGenerator {
       eninSeconds: eninSeconds,
       beaconChain: beaconChain
     )
-    let rpik = BarnardCrypto.deriveRpik(from: currentTek)
+    let tek = currentTek
+    let tekHash = tek.hashValue
+
+    if let cached = cachedReporterPayload,
+      cached.enin == enin,
+      cached.tekHash == tekHash
+    {
+      return cached.payload
+    }
+
+    let rpik = BarnardCrypto.deriveRpik(from: tek)
     let rpi = BarnardCrypto.generateRpi(rpik: rpik, enin: enin)
 
     var payload = Data([formatVersion])
     payload.append(rpi)
+    cachedReporterPayload = (enin: enin, tekHash: tekHash, payload: payload)
     return payload
   }
 
@@ -128,16 +149,13 @@ final class BarnardRpidGenerator {
 
   /// Get or create the DeviceSecret (32 bytes, device-unique, never transmitted).
   private func getOrCreateDeviceSecret() -> Data {
-    let defaults = UserDefaults.standard
-
-    if let existing = defaults.data(forKey: deviceSecretKey), existing.count >= 32 {
-      return existing
-    }
-
-    // Generate new 32-byte DeviceSecret
-    let newSecret = BarnardCrypto.generateRandomBytes(32)
-    defaults.set(newSecret, forKey: deviceSecretKey)
-    return newSecret
+    Data(BarnardCoreKeyManager.loadOrCreate(
+      key: deviceSecretKey,
+      minimumByteCount: 32,
+      generatedByteCount: 32,
+      storage: keyStorage,
+      randomSource: randomSource
+    ))
   }
 
   /// Get the DeviceSecret (for platform channel access).

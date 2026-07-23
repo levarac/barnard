@@ -1,7 +1,6 @@
 // Copyright 2024-2026 The Greeting Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style license.
 
-import CryptoKit
 import Flutter
 import Foundation
 
@@ -42,7 +41,7 @@ final class BarnardIdentityController: NSObject, FlutterPlugin {
         return
       }
       let keyPair = BarnardSigning.deriveSigningKeyPair(deviceSecret: getOrCreateDeviceSecret(), eventCode: eventCode)
-      let messageHash = Data(SHA256.hash(data: hexToBytes(bytesHex)))
+      let messageHash = BarnardCrypto.sha256(hexToBytes(bytesHex))
       let sig = BarnardSigning.signRecoverable(privateKey: keyPair.privateKey, messageHash32: messageHash)
       result([
         "r": sig.r.hexString,
