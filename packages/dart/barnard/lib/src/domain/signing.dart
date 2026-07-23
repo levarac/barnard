@@ -1,4 +1,3 @@
-// Copyright 2024-2026 The Greeting Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style license.
 
 /// Per-event device signing identity (barnard#65).

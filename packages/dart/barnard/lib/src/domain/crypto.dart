@@ -1,4 +1,3 @@
-// Copyright 2024-2026 The Greeting Inc. All rights reserved.
 // Use of this source code is governed by a BSD-style license.
 
 /// GAEN v1.2-compatible cryptographic utilities for Resolvable ID.

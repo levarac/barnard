@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Copyright 2024-2026 The Greeting Inc. All rights reserved.
 # Use of this source code is governed by a BSD-style license.
 #
 # Native Android two-device rendezvous for the Barnard device lab (issue #72).
@@ -15,7 +14,7 @@ GRADLEW="${GRADLEW:-$APP_DIR/gradlew}"
 
 ADV_SERIAL="${ADV_SERIAL:-45732079}"
 SCAN_SERIAL="${SCAN_SERIAL:-00b8316e85a2a456}"
-APP_ID="${APP_ID:-network.greeting.barnard.example.native}"
+APP_ID="${APP_ID:-org.levarac.barnard.example.native}"
 TEST_APP_ID="${TEST_APP_ID:-$APP_ID.test}"
 RUNNER="${RUNNER:-androidx.test.runner.AndroidJUnitRunner}"
 EVENT_CODE="${EVENT_CODE:-BND}"
@@ -24,8 +23,8 @@ SCAN_TIMEOUT_SECONDS="${SCAN_TIMEOUT_SECONDS:-60}"
 PERMISSION_WAIT_SECONDS="${PERMISSION_WAIT_SECONDS:-30}"
 OUTPUT_DIR="${OUTPUT_DIR:-/tmp/barnard-android-native-device-lab}"
 
-ADV_TEST_CLASS="network.greeting.barnard.example.devicelab.BarnardAdvertiserDeviceLabTest#advertisesAndHolds"
-SCAN_TEST_CLASS="network.greeting.barnard.example.devicelab.BarnardScannerDeviceLabTest#discoversAdvertiserByDisplayId"
+ADV_TEST_CLASS="org.levarac.barnard.example.devicelab.BarnardAdvertiserDeviceLabTest#advertisesAndHolds"
+SCAN_TEST_CLASS="org.levarac.barnard.example.devicelab.BarnardScannerDeviceLabTest#discoversAdvertiserByDisplayId"
 APP_APK="${APP_APK:-$APP_DIR/app/build/outputs/apk/debug/app-debug.apk}"
 TEST_APK="${TEST_APK:-$APP_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk}"
 

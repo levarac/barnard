@@ -1,4 +1,4 @@
-group = "network.greeting.barnard"
+group = "org.levarac.barnard"
 version = "1.0-SNAPSHOT"
 
 def localProperties = new Properties()
@@ -70,7 +70,7 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
 android {
-    namespace = "network.greeting.barnard"
+    namespace = "org.levarac.barnard"
 
     compileSdk = 36
 

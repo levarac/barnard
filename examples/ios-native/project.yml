@@ -1,6 +1,6 @@
 name: BarnardNativeExample
 options:
-  bundleIdPrefix: network.greeting.barnard.example
+  bundleIdPrefix: org.levarac.barnard.example
   deploymentTarget:
     iOS: "16.0"
 packages:
@@ -23,6 +23,6 @@ targets:
         NSBluetoothPeripheralUsageDescription: "Barnard uses Bluetooth to scan for and advertise to nearby devices running the Barnard protocol."
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: network.greeting.barnard.example.native
+        PRODUCT_BUNDLE_IDENTIFIER: org.levarac.barnard.example.native
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"

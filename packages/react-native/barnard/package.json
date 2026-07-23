@@ -37,7 +37,7 @@
     "url": "git+https://github.com/thegreeting/barnard.git",
     "directory": "packages/react-native/barnard"
   },
-  "author": "The Greeting Network",
+  "author": "Levarac",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/thegreeting/barnard/issues"
