@@ -1,5 +1,9 @@
 name: Native SDK CI
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   pull_request:
   push:
@@ -11,6 +15,7 @@ jobs:
     # toolchain is installed in this job (barnard#56 acceptance criterion:
     # "CI validates each first-class SDK surface independently").
     runs-on: macos-15
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: packages/swift/barnard
@@ -85,12 +90,14 @@ jobs:
     # and BarnardCore sources mirrored under packages/dart/barnard/ios; this
     # guards against drift (see scripts/check-swift-mirror.sh).
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-swift-mirror.sh
 
   ios-native-example:
     runs-on: macos-15
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: examples/ios-native
@@ -123,6 +130,7 @@ jobs:
     # acceptance criterion: "CI validates each first-class SDK surface
     # independently").
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: packages/android/barnard
@@ -143,12 +151,14 @@ jobs:
     # crypto/signing/RPID sources mirrored under packages/dart/barnard/android;
     # this guards against drift (see scripts/check-android-mirror.sh).
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-android-mirror.sh
 
   android-native-example:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: examples/android-native
