@@ -6,8 +6,20 @@ concurrency:
 
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.coderabbit.yaml'
+      - 'LICENSE'
+      - '.gitignore'
   push:
     branches: [ main, "release/**" ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.coderabbit.yaml'
+      - 'LICENSE'
+      - '.gitignore'
 
 jobs:
   schema-privacy-invariant:
