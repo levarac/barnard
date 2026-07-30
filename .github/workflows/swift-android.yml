@@ -151,6 +151,10 @@ jobs:
             echo "Android SDK command-line tools are unavailable" >&2
             exit 1
           fi
+          # ARM DBT license accepted by maintainer decision 2026-07-31 (issue #86).
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf '%s\n' '859f317696f67ef3d7f30a50a5560e7834b43903' \
+            > "$ANDROID_HOME/licenses/android-sdk-arm-dbt-license"
           "$sdkmanager" --install "system-images;android-35;google_apis;arm64-v8a"
           image="$ANDROID_HOME/system-images/android-35/google_apis/arm64-v8a/system.img"
           simg2img "$image" /tmp/android-system.raw.img
