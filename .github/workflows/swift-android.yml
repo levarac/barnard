@@ -1,5 +1,9 @@
 name: Swift Android Cross-Compile
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Locks in what the issue #78 spike proved manually: BarnardCore (and its C ABI
 # surface, BarnardCoreC) cross-compiles for aarch64-android with the official
 # Swift Android SDK, and the exported C symbols stay present in the .so.
