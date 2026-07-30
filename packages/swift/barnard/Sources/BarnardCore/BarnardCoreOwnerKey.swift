@@ -70,6 +70,39 @@ public extension BarnardCoreSigning {
     ].joined(separator: "\n")
   }
 
+  static func buildAccountUnbindingText(
+    domain: String,
+    walletAddress: [UInt8],
+    ownerPublicKey: [UInt8],
+    chainId: UInt64,
+    nonce: [UInt8],
+    issuedAt: String
+  ) -> String? {
+    guard
+      isCanonicalDomain(domain),
+      walletAddress.count == 20,
+      isValidCompressedPublicKey(ownerPublicKey),
+      nonce.count == 16,
+      isCanonicalIssuedAt(issuedAt)
+    else {
+      return nil
+    }
+
+    return [
+      "\(domain) wants to revoke this wallet's binding to a Levarac owner key.",
+      "",
+      "This signature REVOKES a wallet binding and authorizes no transaction.",
+      "",
+      "Domain-Tag: \(accountUnbindingDomainTag)",
+      "Wallet: 0x\(lowercaseHex(walletAddress))",
+      "Owner-Key: 0x\(lowercaseHex(ownerPublicKey))",
+      "Chain-ID: eip155:\(chainId)",
+      "Scope: global",
+      "Nonce: 0x\(lowercaseHex(nonce))",
+      "Issued-At: \(issuedAt)",
+    ].joined(separator: "\n")
+  }
+
   static func buildSelfProofMessage(
     eventIdHash: [UInt8],
     eventSigningPublicKey: [UInt8],
@@ -303,27 +336,68 @@ public extension BarnardCoreSigning {
     walletSignature: [UInt8],
     signature: BarnardCoreRecoverableSignature
   ) -> Bool {
-    guard
-      let message = buildAccountUnbindingMessage(
-        ownerPublicKey: ownerPublicKey,
-        walletAddress: walletAddress,
-        walletSignature: walletSignature
-      ),
-      let recoveredPublicKey = strictRecoveredPublicKey(
-        signature,
-        messageHash32: BarnardCorePrimitives.sha256(message)
-      )
-    else {
-      return false
-    }
-
     switch signer {
     case .owner:
+      guard
+        let message = buildAccountUnbindingMessage(
+          ownerPublicKey: ownerPublicKey,
+          walletAddress: walletAddress,
+          walletSignature: walletSignature
+        ),
+        let recoveredPublicKey = strictRecoveredPublicKey(
+          signature,
+          messageHash32: BarnardCorePrimitives.sha256(message)
+        )
+      else {
+        return false
+      }
       return recoveredPublicKey == ownerPublicKey
     case .wallet:
-      return ethereumAddress(publicKeyCompressed: recoveredPublicKey)
-        == walletAddress
+      return false
     }
+  }
+
+  static func verifyAccountUnbinding(
+    text: String,
+    walletSignature: [UInt8],
+    expectedWalletAddress: [UInt8],
+    expectedOwnerPublicKey: [UInt8]
+  ) -> BarnardCoreWalletBindingVerification {
+    guard
+      expectedWalletAddress.count == 20,
+      isValidCompressedPublicKey(expectedOwnerPublicKey),
+      isCanonicalAccountUnbindingText(
+        text,
+        expectedWalletAddress: expectedWalletAddress,
+        expectedOwnerPublicKey: expectedOwnerPublicKey
+      )
+    else {
+      return .invalid
+    }
+    switch classifyWalletSignature(walletSignature) {
+    case .invalid:
+      return .invalid
+    case .smartWalletUnsupported:
+      return .smartWalletUnsupported
+    case .validEoaShape:
+      break
+    }
+    guard
+      let recoveryId = normalizedEthereumRecoveryId(walletSignature[64]),
+      let recoveredPublicKey = strictRecoveredPublicKey(
+        BarnardCoreRecoverableSignature(
+          r: Array(walletSignature[0..<32]),
+          s: Array(walletSignature[32..<64]),
+          v: recoveryId
+        ),
+        messageHash32: computeEip191Digest(text: text)
+      ),
+      ethereumAddress(publicKeyCompressed: recoveredPublicKey)
+        == expectedWalletAddress
+    else {
+      return .invalid
+    }
+    return .valid
   }
 
   static func classifyWalletSignature(
@@ -455,6 +529,83 @@ public extension BarnardCoreSigning {
     let issuedAt = String(lines[10].dropFirst(issuedAtPrefix.count))
 
     guard let reconstructed = buildAccountBindingText(
+      domain: domain,
+      walletAddress: expectedWalletAddress,
+      ownerPublicKey: expectedOwnerPublicKey,
+      chainId: chainId,
+      nonce: nonce,
+      issuedAt: issuedAt
+    ) else {
+      return false
+    }
+    return reconstructed.utf8.elementsEqual(text.utf8)
+  }
+
+  private static func isCanonicalAccountUnbindingText(
+    _ text: String,
+    expectedWalletAddress: [UInt8],
+    expectedOwnerPublicKey: [UInt8]
+  ) -> Bool {
+    guard !text.contains("\r"), !text.hasSuffix("\n") else {
+      return false
+    }
+    let lines = text.split(
+      separator: "\n",
+      omittingEmptySubsequences: false
+    ).map(String.init)
+    guard
+      lines.count == 11,
+      lines[1].isEmpty,
+      lines[2]
+        == "This signature REVOKES a wallet binding and authorizes no transaction.",
+      lines[3].isEmpty,
+      lines[4] == "Domain-Tag: \(accountUnbindingDomainTag)",
+      lines[5] == "Wallet: 0x\(lowercaseHex(expectedWalletAddress))",
+      lines[6] == "Owner-Key: 0x\(lowercaseHex(expectedOwnerPublicKey))",
+      lines[8] == "Scope: global"
+    else {
+      return false
+    }
+
+    let headerSuffix =
+      " wants to revoke this wallet's binding to a Levarac owner key."
+    guard lines[0].hasSuffix(headerSuffix) else {
+      return false
+    }
+    let domain = String(lines[0].dropLast(headerSuffix.count))
+
+    let chainPrefix = "Chain-ID: eip155:"
+    guard lines[7].hasPrefix(chainPrefix) else {
+      return false
+    }
+    let chainIdText = String(lines[7].dropFirst(chainPrefix.count))
+    guard
+      !chainIdText.isEmpty,
+      chainIdText.utf8.allSatisfy({ (0x30...0x39).contains($0) }),
+      (chainIdText == "0" || !chainIdText.hasPrefix("0")),
+      let chainId = UInt64(chainIdText)
+    else {
+      return false
+    }
+
+    let noncePrefix = "Nonce: 0x"
+    guard
+      lines[9].hasPrefix(noncePrefix),
+      let nonce = decodeLowercaseHex(
+        String(lines[9].dropFirst(noncePrefix.count))
+      ),
+      nonce.count == 16
+    else {
+      return false
+    }
+
+    let issuedAtPrefix = "Issued-At: "
+    guard lines[10].hasPrefix(issuedAtPrefix) else {
+      return false
+    }
+    let issuedAt = String(lines[10].dropFirst(issuedAtPrefix.count))
+
+    guard let reconstructed = buildAccountUnbindingText(
       domain: domain,
       walletAddress: expectedWalletAddress,
       ownerPublicKey: expectedOwnerPublicKey,
