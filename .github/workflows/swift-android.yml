@@ -140,12 +140,19 @@ jobs:
           echo "OK: all 20 C ABI symbols exported for $ANDROID_TRIPLE"
 
       - name: Replay issue #80 golden vector through the Android .so
-        # qemu-user executes the aarch64 Android C consumer itself. The Swift
-        # runtime is statically linked into BarnardCoreC so the only runtime
-        # root needed is the NDK's Android sysroot.
+        # qemu-user needs Android's Bionic linker, which the NDK sysroot does
+        # not ship. Extract only that arm64 system image; no emulator/device
+        # process is started.
         run: |
           sudo apt-get update
-          sudo apt-get install --yes qemu-user
+          sudo apt-get install --yes qemu-user android-sdk-libsparse-utils
+          sdkmanager --install "system-images;android-35;google_apis;arm64-v8a"
+          image="$ANDROID_HOME/system-images/android-35/google_apis/arm64-v8a/system.img"
+          simg2img "$image" /tmp/android-system.raw.img
+          mkdir -p /tmp/android-root/system
+          debugfs -R "rdump / /tmp/android-root/system" /tmp/android-system.raw.img
+          cp "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+            /tmp/android-root/system/lib64/
           so=$(find packages/swift/barnard/.build -name libBarnardCoreC.so | head -1)
           if [ -z "$so" ]; then
             echo "libBarnardCoreC.so not found under .build" >&2
@@ -156,7 +163,6 @@ jobs:
             echo "aarch64-linux-android28-clang not found in the Android NDK" >&2
             exit 1
           fi
-          sysroot="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           "$clang" -fPIE -pie -o /tmp/barnard_core_c_android_proof \
             packages/swift/barnard/CHostProof/barnard_core_c_host_proof.c
           cp packages/swift/barnard/CHostProof/barnard_core_c_host_proof.c /tmp/barnard_core_c_android_red.c
@@ -164,12 +170,19 @@ jobs:
             /tmp/barnard_core_c_android_red.c
           "$clang" -fPIE -pie -o /tmp/barnard_core_c_android_red \
             /tmp/barnard_core_c_android_red.c
-          if qemu-aarch64 -L "$sysroot" /tmp/barnard_core_c_android_red "$so"; then
+          if qemu-aarch64 -L /tmp/android-root /tmp/barnard_core_c_android_red "$so" \
+            >/tmp/barnard_core_c_android_red.log 2>&1; then
             echo "red proof unexpectedly accepted a corrupted golden byte" >&2
             exit 1
           fi
+          if ! grep -q 'MISMATCH' /tmp/barnard_core_c_android_red.log; then
+            cat /tmp/barnard_core_c_android_red.log >&2
+            echo "red proof did not reach the golden-vector assertion" >&2
+            exit 1
+          fi
+          cat /tmp/barnard_core_c_android_red.log
           echo "OK: red proof rejected a corrupted issue #80 golden byte"
-          qemu-aarch64 -L "$sysroot" /tmp/barnard_core_c_android_proof "$so"
+          qemu-aarch64 -L /tmp/android-root /tmp/barnard_core_c_android_proof "$so"
 
       - name: C host consumption proof (Linux native, same C ABI)
         # The Android .so cannot execute on the runner; this builds the same
