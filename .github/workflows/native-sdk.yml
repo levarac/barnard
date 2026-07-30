@@ -10,6 +10,15 @@ on:
     branches: [ main, "release/**" ]
 
 jobs:
+  schema-privacy-invariant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce schema privacy invariant
+        run: |
+          python3 scripts/check-schema-privacy-invariant.py --self-test
+          python3 scripts/check-wallet-binding-schema.py
+
   swift-package:
     # Flutter-free: builds/tests packages/swift/barnard directly. No Flutter
     # toolchain is installed in this job (barnard#56 acceptance criterion:

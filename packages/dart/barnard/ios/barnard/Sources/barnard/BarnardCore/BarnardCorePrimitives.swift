@@ -1,6 +1,43 @@
 // Use of this source code is governed by a BSD-style license.
 
 enum BarnardCorePrimitives {
+  static func keccak256(_ input: [UInt8]) -> [UInt8] {
+    let rate = 136
+    var state = [UInt64](repeating: 0, count: 25)
+    var offset = 0
+
+    while input.count - offset >= rate {
+      absorbKeccakBlock(
+        Array(input[offset..<(offset + rate)]),
+        into: &state
+      )
+      keccakF1600(&state)
+      offset += rate
+    }
+
+    var finalBlock = [UInt8](repeating: 0, count: rate)
+    let remaining = input.count - offset
+    if remaining > 0 {
+      for index in 0..<remaining {
+        finalBlock[index] = input[offset + index]
+      }
+    }
+    finalBlock[remaining] ^= 0x01
+    finalBlock[rate - 1] ^= 0x80
+    absorbKeccakBlock(finalBlock, into: &state)
+    keccakF1600(&state)
+
+    var output: [UInt8] = []
+    output.reserveCapacity(32)
+    for byteIndex in 0..<32 {
+      let lane = state[byteIndex / 8]
+      output.append(
+        UInt8((lane >> UInt64(8 * (byteIndex % 8))) & 0xff)
+      )
+    }
+    return output
+  }
+
   static func sha256(_ input: [UInt8]) -> [UInt8] {
     let constants: [UInt32] = [
       0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -155,6 +192,88 @@ enum BarnardCorePrimitives {
 
   private static func rotateRight(_ value: UInt32, by count: UInt32) -> UInt32 {
     (value >> count) | (value << (32 - count))
+  }
+
+  private static func absorbKeccakBlock(
+    _ block: [UInt8],
+    into state: inout [UInt64]
+  ) {
+    for index in block.indices {
+      state[index / 8] ^=
+        UInt64(block[index]) << UInt64(8 * (index % 8))
+    }
+  }
+
+  private static func keccakF1600(_ state: inout [UInt64]) {
+    let roundConstants: [UInt64] = [
+      0x0000000000000001, 0x0000000000008082,
+      0x800000000000808a, 0x8000000080008000,
+      0x000000000000808b, 0x0000000080000001,
+      0x8000000080008081, 0x8000000000008009,
+      0x000000000000008a, 0x0000000000000088,
+      0x0000000080008009, 0x000000008000000a,
+      0x000000008000808b, 0x800000000000008b,
+      0x8000000000008089, 0x8000000000008003,
+      0x8000000000008002, 0x8000000000000080,
+      0x000000000000800a, 0x800000008000000a,
+      0x8000000080008081, 0x8000000000008080,
+      0x0000000080000001, 0x8000000080008008,
+    ]
+    let rotationOffsets: [Int] = [
+      0, 1, 62, 28, 27,
+      36, 44, 6, 55, 20,
+      3, 10, 43, 25, 39,
+      41, 45, 15, 21, 8,
+      18, 2, 61, 56, 14,
+    ]
+
+    for roundConstant in roundConstants {
+      var columns = [UInt64](repeating: 0, count: 5)
+      for x in 0..<5 {
+        columns[x] =
+          state[x]
+          ^ state[x + 5]
+          ^ state[x + 10]
+          ^ state[x + 15]
+          ^ state[x + 20]
+      }
+      for x in 0..<5 {
+        let delta =
+          columns[(x + 4) % 5]
+          ^ rotateLeft(columns[(x + 1) % 5], by: 1)
+        for y in 0..<5 {
+          state[x + 5 * y] ^= delta
+        }
+      }
+
+      var permuted = [UInt64](repeating: 0, count: 25)
+      for x in 0..<5 {
+        for y in 0..<5 {
+          let source = x + 5 * y
+          let destination = y + 5 * ((2 * x + 3 * y) % 5)
+          permuted[destination] = rotateLeft(
+            state[source],
+            by: rotationOffsets[source]
+          )
+        }
+      }
+
+      for x in 0..<5 {
+        for y in 0..<5 {
+          let row = 5 * y
+          state[x + row] =
+            permuted[x + row]
+            ^ ((~permuted[(x + 1) % 5 + row])
+              & permuted[(x + 2) % 5 + row])
+        }
+      }
+      state[0] ^= roundConstant
+    }
+  }
+
+  private static func rotateLeft(_ value: UInt64, by count: Int) -> UInt64 {
+    guard count != 0 else { return value }
+    return (value << UInt64(count)) | (value >> UInt64(64 - count))
   }
 
   private static let aesSBox: [UInt8] = [

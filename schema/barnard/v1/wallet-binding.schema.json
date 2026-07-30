@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v1/wallet-binding.schema.json",
+  "title": "Barnard Wallet Binding and Owner-Key Lifecycle Records (v1)",
+  "description": "Holder-held wallet endorsement, owner-key rotation, and account-unbinding records. These records are disclosed point-to-point and are never public or on-wire.",
+  "x-barnard-disclosure-scope": "holder-held",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/WalletBindingRecord"
+    },
+    {
+      "$ref": "#/$defs/AccountRotationRecord"
+    },
+    {
+      "$ref": "#/$defs/AccountUnbindingRecord"
+    }
+  ],
+  "$defs": {
+    "Hash32": {
+      "description": "32 bytes as 0x-prefixed lowercase hex.",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$",
+      "x-barnard-byte-length": 32
+    },
+    "OwnerPublicKey": {
+      "description": "33-byte compressed SEC1 owner public key as 0x-prefixed lowercase hex.",
+      "type": "string",
+      "pattern": "^0x(?:02|03)[0-9a-f]{64}$",
+      "x-barnard-byte-length": 33
+    },
+    "WalletAddress": {
+      "description": "20-byte EVM address as 0x-prefixed lowercase hex.",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$",
+      "x-barnard-byte-length": 20
+    },
+    "BarnardRecoverableSignature": {
+      "description": "65-byte Barnard Recoverable secp256k1 Signature Profile v1 value r || s || recoveryId as 0x-prefixed lowercase hex. recoveryId is 0 or 1.",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{128}(?:00|01)$",
+      "x-barnard-byte-length": 65
+    },
+    "WalletSignature": {
+      "description": "65-byte EOA personal_sign signature r || s || v as 0x-prefixed lowercase hex. v is 0, 1, 27, or 28.",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{128}(?:00|01|1b|1c)$",
+      "x-barnard-byte-length": 65
+    },
+    "BindingMessage": {
+      "description": "Canonical UTF-8 account-binding text with LF line endings and no trailing newline.",
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})? wants to bind this wallet to a Levarac owner key\\.\\n\\nThis signature authorizes no transaction and moves no assets\\.\\n\\nDomain-Tag: barnard-account-binding:v1\\nWallet: 0x[0-9a-f]{40}\\nOwner-Key: 0x(?:02|03)[0-9a-f]{64}\\nChain-ID: eip155:(?:0|[1-9][0-9]*)\\nScope: global\\nNonce: 0x[0-9a-f]{32}\\nIssued-At: [0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])",
+      "allOf": [
+        {
+          "description": "The optional decimal port is canonical and in the 0...65535 range.",
+          "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::(?:0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))? wants "
+        },
+        {
+          "description": "Chain-ID is in the UInt64 range used by BarnardCore.",
+          "pattern": "\\nChain-ID: eip155:(?:0|[1-9][0-9]{0,18}|1[0-7][0-9]{18}|18[0-3][0-9]{17}|184[0-3][0-9]{16}|1844[0-5][0-9]{15}|18446[0-6][0-9]{14}|184467[0-3][0-9]{13}|1844674[0-3][0-9]{12}|184467440[0-6][0-9]{10}|1844674407[0-2][0-9]{9}|18446744073[0-6][0-9]{8}|1844674407370[0-8][0-9]{6}|18446744073709[0-4][0-9]{5}|184467440737095[0-4][0-9]{4}|18446744073709550[0-9]{3}|18446744073709551[0-5][0-9]{2}|1844674407370955160[0-9]|1844674407370955161[0-4]|18446744073709551615)\\n"
+        },
+        {
+          "description": "Issued-At is a valid proleptic-Gregorian date at UTC second precision.",
+          "pattern": "\\nIssued-At: (?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])"
+        }
+      ]
+    },
+    "WalletBindingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "wallet-binding"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "message": {
+          "$ref": "#/$defs/BindingMessage"
+        },
+        "walletSignature": {
+          "$ref": "#/$defs/WalletSignature"
+        },
+        "ackSignature": {
+          "$ref": "#/$defs/BarnardRecoverableSignature"
+        }
+      },
+      "required": [
+        "type",
+        "schemaVersion",
+        "message",
+        "walletSignature",
+        "ackSignature"
+      ]
+    },
+    "AccountRotationRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "account-rotation"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "previousOwnerPublicKey": {
+          "$ref": "#/$defs/OwnerPublicKey"
+        },
+        "successorOwnerPublicKey": {
+          "$ref": "#/$defs/OwnerPublicKey"
+        },
+        "signature": {
+          "$ref": "#/$defs/BarnardRecoverableSignature"
+        }
+      },
+      "required": [
+        "type",
+        "schemaVersion",
+        "previousOwnerPublicKey",
+        "successorOwnerPublicKey",
+        "signature"
+      ]
+    },
+    "AccountUnbindingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "account-unbinding"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "ownerPublicKey": {
+          "$ref": "#/$defs/OwnerPublicKey"
+        },
+        "walletAddress": {
+          "$ref": "#/$defs/WalletAddress"
+        },
+        "walletSignatureHash": {
+          "$ref": "#/$defs/Hash32"
+        },
+        "signer": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "wallet"
+          ]
+        },
+        "signature": {
+          "$ref": "#/$defs/BarnardRecoverableSignature"
+        }
+      },
+      "required": [
+        "type",
+        "schemaVersion",
+        "ownerPublicKey",
+        "walletAddress",
+        "walletSignatureHash",
+        "signer",
+        "signature"
+      ]
+    }
+  }
+}

@@ -16,6 +16,7 @@ swift_mirrored_pairs=(
   "BarnardCore/BarnardCoreCrypto.swift|BarnardCore/BarnardCoreCrypto.swift"
   "BarnardCore/BarnardCorePolicy.swift|BarnardCore/BarnardCorePolicy.swift"
   "BarnardCore/BarnardCorePrimitives.swift|BarnardCore/BarnardCorePrimitives.swift"
+  "BarnardCore/BarnardCoreOwnerKey.swift|BarnardCore/BarnardCoreOwnerKey.swift"
   "BarnardCore/BarnardCoreSigning.swift|BarnardCore/BarnardCoreSigning.swift"
   "BarnardCore/Secp256k1.swift|BarnardCore/Secp256k1.swift"
 )

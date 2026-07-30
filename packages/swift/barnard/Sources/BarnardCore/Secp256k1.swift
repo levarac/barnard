@@ -300,6 +300,13 @@ enum BarnardCoreSecp256k1 {
     return [y.testBit(0) ? 0x03 : 0x02] + x.bytes
   }
 
+  static func serializeUncompressed(_ point: Point) -> [UInt8] {
+    guard let x = point.x, let y = point.y else {
+      return []
+    }
+    return [0x04] + x.bytes + y.bytes
+  }
+
   static func decompress(x: UInt256, yIsOdd: Bool) -> Point? {
     let xCubed = Field.multiplyMod(
       Field.multiplyMod(x, x, fieldPrime),

@@ -23,6 +23,15 @@ private func utf8String(_ pointer: UnsafePointer<UInt8>?, _ count: Int32) -> Str
   return String(decoding: raw, as: UTF8.self)
 }
 
+private func strictUtf8String(
+  _ pointer: UnsafePointer<UInt8>?,
+  _ count: Int32
+) -> String? {
+  guard let raw = bytes(pointer, count) else { return nil }
+  let value = String(decoding: raw, as: UTF8.self)
+  return Array(value.utf8) == raw ? value : nil
+}
+
 private func write(_ output: [UInt8], _ expectedCount: Int, to pointer: UnsafeMutablePointer<UInt8>) {
   precondition(
     output.count == expectedCount,
@@ -239,6 +248,38 @@ public func barnard_core_sha256(
   return 0
 }
 
+/// out_digest32: 32 bytes.
+@_cdecl("barnard_core_keccak256")
+public func barnard_core_keccak256(
+  _ input: UnsafePointer<UInt8>?,
+  _ inputLength: Int32,
+  _ outDigest32: UnsafeMutablePointer<UInt8>?
+) -> Int32 {
+  guard let raw = bytes(input, inputLength), let outDigest32 else { return -1 }
+  write(BarnardCoreCrypto.keccak256(raw), 32, to: outDigest32)
+  return 0
+}
+
+/// Computes the EIP-191 personal_sign digest of message_utf8. out_digest32:
+/// 32 bytes. The caller is responsible for supplying UTF-8 canonical text;
+/// the digest operates on the byte sequence exactly as received.
+@_cdecl("barnard_core_eip191_digest")
+public func barnard_core_eip191_digest(
+  _ messageUtf8: UnsafePointer<UInt8>?,
+  _ messageLength: Int32,
+  _ outDigest32: UnsafeMutablePointer<UInt8>?
+) -> Int32 {
+  guard let message = bytes(messageUtf8, messageLength), let outDigest32 else {
+    return -1
+  }
+  write(
+    BarnardCoreSigning.computeEip191Digest(messageBytes: message),
+    32,
+    to: outDigest32
+  )
+  return 0
+}
+
 /// out_private_key32: 32 bytes. out_public_key_compressed33: 33 bytes.
 @_cdecl("barnard_core_derive_signing_keypair")
 public func barnard_core_derive_signing_keypair(
@@ -258,6 +299,29 @@ public func barnard_core_derive_signing_keypair(
   let keyPair = BarnardCoreSigning.deriveSigningKeyPair(
     deviceSecret: secret,
     eventCode: eventCode
+  )
+  write(keyPair.privateKey, 32, to: outPrivateKey32)
+  write(keyPair.publicKeyCompressed, 33, to: outPublicKeyCompressed33)
+  return 0
+}
+
+/// account_secret32: 32 bytes in. out_private_key32: 32 bytes.
+/// out_public_key_compressed33: 33 bytes.
+@_cdecl("barnard_core_derive_owner_keypair")
+public func barnard_core_derive_owner_keypair(
+  _ accountSecret32: UnsafePointer<UInt8>?,
+  _ outPrivateKey32: UnsafeMutablePointer<UInt8>?,
+  _ outPublicKeyCompressed33: UnsafeMutablePointer<UInt8>?
+) -> Int32 {
+  guard
+    let accountSecret = bytes(accountSecret32, 32),
+    let outPrivateKey32,
+    let outPublicKeyCompressed33
+  else {
+    return -1
+  }
+  let keyPair = BarnardCoreSigning.deriveOwnerKeyPair(
+    accountSecret: accountSecret
   )
   write(keyPair.privateKey, 32, to: outPrivateKey32)
   write(keyPair.publicKeyCompressed, 33, to: outPublicKeyCompressed33)
@@ -289,6 +353,127 @@ public func barnard_core_sign_recoverable(
   write(signature.s, 32, to: outS32)
   outV.pointee = Int32(signature.v)
   return 0
+}
+
+/// Fixed inputs: event_id_hash32 (32), event_signing_public_key33 (33), and
+/// owner_public_key33 (33). out_message135: 135 bytes.
+@_cdecl("barnard_core_build_self_proof_message")
+public func barnard_core_build_self_proof_message(
+  _ eventIdHash32: UnsafePointer<UInt8>?,
+  _ eventSigningPublicKey33: UnsafePointer<UInt8>?,
+  _ eninStart: UInt64,
+  _ eninEnd: UInt64,
+  _ ownerPublicKey33: UnsafePointer<UInt8>?,
+  _ outMessage135: UnsafeMutablePointer<UInt8>?
+) -> Int32 {
+  guard
+    let eventIdHash = bytes(eventIdHash32, 32),
+    let eventSigningPublicKey = bytes(eventSigningPublicKey33, 33),
+    let ownerPublicKey = bytes(ownerPublicKey33, 33),
+    let outMessage135,
+    let message = BarnardCoreSigning.buildSelfProofMessage(
+      eventIdHash: eventIdHash,
+      eventSigningPublicKey: eventSigningPublicKey,
+      eninStart: eninStart,
+      eninEnd: eninEnd,
+      ownerPublicKey: ownerPublicKey
+    )
+  else {
+    return -1
+  }
+  write(message, 135, to: outMessage135)
+  return 0
+}
+
+/// Fixed key/hash/scalar inputs follow build_self_proof_message. Returns 1
+/// when valid, 0 when cryptographically invalid, and -1 for missing pointers.
+@_cdecl("barnard_core_verify_self_proof")
+public func barnard_core_verify_self_proof(
+  _ eventIdHash32: UnsafePointer<UInt8>?,
+  _ eventSigningPublicKey33: UnsafePointer<UInt8>?,
+  _ eninStart: UInt64,
+  _ eninEnd: UInt64,
+  _ ownerPublicKey33: UnsafePointer<UInt8>?,
+  _ signatureR32: UnsafePointer<UInt8>?,
+  _ signatureS32: UnsafePointer<UInt8>?,
+  _ signatureV: Int32
+) -> Int32 {
+  guard
+    let eventIdHash = bytes(eventIdHash32, 32),
+    let eventSigningPublicKey = bytes(eventSigningPublicKey33, 33),
+    let ownerPublicKey = bytes(ownerPublicKey33, 33),
+    let signatureR = bytes(signatureR32, 32),
+    let signatureS = bytes(signatureS32, 32)
+  else {
+    return -1
+  }
+  let signature = BarnardCoreRecoverableSignature(
+    r: signatureR,
+    s: signatureS,
+    v: Int(signatureV)
+  )
+  return BarnardCoreSigning.verifySelfProof(
+    eventIdHash: eventIdHash,
+    eventSigningPublicKey: eventSigningPublicKey,
+    eninStart: eninStart,
+    eninEnd: eninEnd,
+    ownerPublicKey: ownerPublicKey,
+    signature: signature
+  ) ? 1 : 0
+}
+
+/// Returns BarnardCoreWalletSignatureClassification raw values:
+/// 0 invalid, 1 EOA shape, 2 unsupported ERC-6492; -1 on invalid arguments.
+@_cdecl("barnard_core_classify_wallet_signature")
+public func barnard_core_classify_wallet_signature(
+  _ signature: UnsafePointer<UInt8>?,
+  _ signatureLength: Int32
+) -> Int32 {
+  guard let signatureBytes = bytes(signature, signatureLength) else {
+    return -1
+  }
+  return BarnardCoreSigning.classifyWalletSignature(signatureBytes).rawValue
+}
+
+/// Verifies one EOA wallet-binding record. Fixed inputs:
+/// expected_wallet_address20 (20), expected_owner_public_key33 (33),
+/// acknowledgement_r32/s32 (32 each). Returns
+/// BarnardCoreWalletBindingVerification raw values: 0 invalid, 1 valid,
+/// 2 unsupported ERC-6492; -1 on invalid arguments.
+@_cdecl("barnard_core_verify_wallet_binding")
+public func barnard_core_verify_wallet_binding(
+  _ bindingTextUtf8: UnsafePointer<UInt8>?,
+  _ bindingTextLength: Int32,
+  _ walletSignature: UnsafePointer<UInt8>?,
+  _ walletSignatureLength: Int32,
+  _ expectedWalletAddress20: UnsafePointer<UInt8>?,
+  _ expectedOwnerPublicKey33: UnsafePointer<UInt8>?,
+  _ acknowledgementR32: UnsafePointer<UInt8>?,
+  _ acknowledgementS32: UnsafePointer<UInt8>?,
+  _ acknowledgementV: Int32
+) -> Int32 {
+  guard
+    let text = strictUtf8String(bindingTextUtf8, bindingTextLength),
+    let signature = bytes(walletSignature, walletSignatureLength),
+    let address = bytes(expectedWalletAddress20, 20),
+    let ownerPublicKey = bytes(expectedOwnerPublicKey33, 33),
+    let acknowledgementR = bytes(acknowledgementR32, 32),
+    let acknowledgementS = bytes(acknowledgementS32, 32)
+  else {
+    return -1
+  }
+  let acknowledgement = BarnardCoreRecoverableSignature(
+    r: acknowledgementR,
+    s: acknowledgementS,
+    v: Int(acknowledgementV)
+  )
+  return BarnardCoreSigning.verifyWalletBinding(
+    text: text,
+    walletSignature: signature,
+    expectedWalletAddress: address,
+    expectedOwnerPublicKey: ownerPublicKey,
+    acknowledgement: acknowledgement
+  ).rawValue
 }
 
 /// Returns 1 when the RSSI update should be emitted, else 0.
