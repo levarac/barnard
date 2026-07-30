@@ -24,7 +24,7 @@ jobs:
     # toolchain is installed in this job (barnard#56 acceptance criterion:
     # "CI validates each first-class SDK surface independently").
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: packages/swift/barnard
