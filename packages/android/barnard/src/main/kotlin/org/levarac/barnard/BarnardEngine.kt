@@ -118,7 +118,16 @@ public class BarnardEngine(private val appContext: Context) {
     // MARK: - Event Mode
 
     private var eventCode: String? = null
+    @Volatile
     private var currentTek: ByteArray = ByteArray(16)
+
+    private data class CachedReporterPayload(
+        val enin: UInt,
+        val tek: ByteArray,
+        val payload: ByteArray,
+    )
+
+    private var cachedReporterPayload: CachedReporterPayload? = null
 
     // MARK: - Discovery State
 
@@ -723,15 +732,25 @@ public class BarnardEngine(private val appContext: Context) {
     /**
      * Build the 17-byte RPID wire form at [nowMs], atomically deriving ENIN
      * and RPI from the same timestamp.
+     *
+     * A cache hit returns the same array instance; callers must not mutate it.
      */
+    @Synchronized
     private fun computePayload(nowMs: Long): ByteArray {
         val enin = currentEnin(nowMs)
-        val rpik = BarnardCrypto.deriveRpik(currentTek)
+        val tek = currentTek
+        val cached = cachedReporterPayload
+        if (cached != null && cached.enin == enin && cached.tek.contentEquals(tek)) {
+            return cached.payload
+        }
+
+        val rpik = BarnardCrypto.deriveRpik(tek)
         val rpi = BarnardCrypto.generateRpi(rpik, enin)
 
         val payload = ByteArray(17)
         payload[0] = (formatVersion and 0xFF).toByte()
         System.arraycopy(rpi, 0, payload, 1, 16)
+        cachedReporterPayload = CachedReporterPayload(enin, tek.copyOf(), payload)
         return payload
     }
 
