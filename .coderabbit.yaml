@@ -1,0 +1,45 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/reference/configuration
+# Public repo (free tier). Review output stays in English: barnard is a public
+# OSS repo whose issues/PRs are English by convention.
+language: "en-US"
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+      - "release/.*"
+  path_instructions:
+    - path: "packages/swift/barnard/Sources/BarnardCore/**"
+      instructions: |
+        Pure-logic core layer. Review with a cryptography lens: domain-tag
+        separation (no tag may be a prefix of another), canonical encodings
+        must be byte-exact and round-trip through their parsers, golden
+        vectors must be regenerated together with any encoding change, and
+        secrets must never be logged. New dependencies on Foundation are
+        forbidden here (stdlib purity is CI-enforced).
+    - path: "packages/dart/barnard/**"
+      instructions: |
+        Parts of this tree are byte-for-byte mirrors of native origins (see
+        scripts/mirror-manifest.sh). Never suggest editing a mirrored file
+        directly; the fix belongs in the native origin followed by
+        scripts/sync-mirrors.sh.
+    - path: "specs/**"
+      instructions: |
+        Spec-first repository (Spec Kit discipline). Frozen :v1 message
+        formats must not change shape; propose a :v2 profile instead.
+        Normative language should use RFC 2119 keywords consistently.
+    - path: ".github/workflows/**"
+      instructions: |
+        Workflows must keep push triggers scoped (main and release/**),
+        job-level timeout-minutes, and concurrency groups that cancel only
+        pull_request runs. Flag any job added without a timeout.
+
+chat:
+  auto_reply: true
