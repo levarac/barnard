@@ -109,6 +109,63 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
     )
   }
 
+  func testCanonicalUnbindingTextMatchesPinnedBytesAndDigest() throws {
+    let text = try XCTUnwrap(
+      BarnardCoreSigning.buildAccountUnbindingText(
+        domain: "beid.levarac.org",
+        walletAddress: bytes("7e5f4552091a69125d5dfcb7b8c2659029395bdf"),
+        ownerPublicKey: generatorCompressed,
+        chainId: 1,
+        nonce: (0x00...0x0f).map(UInt8.init),
+        issuedAt: "2026-07-30T09:00:00Z"
+      )
+    )
+
+    XCTAssertEqual(
+      text,
+      """
+      beid.levarac.org wants to revoke this wallet's binding to a Levarac owner key.
+
+      This signature REVOKES a wallet binding and authorizes no transaction.
+
+      Domain-Tag: barnard-account-unbinding:v1
+      Wallet: 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
+      Owner-Key: 0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+      Chain-ID: eip155:1
+      Scope: global
+      Nonce: 0x000102030405060708090a0b0c0d0e0f
+      Issued-At: 2026-07-30T09:00:00Z
+      """
+    )
+    XCTAssertEqual(Array(text.utf8).count, 430)
+    XCTAssertEqual(
+      hex(BarnardCoreSigning.computeEip191Digest(text: text)),
+      "f11e3d04d85d6ac228dde88cebea4ba9554ed06b9c363d5a32f3e4fd89366929"
+    )
+    XCTAssertFalse(text.hasSuffix("\n"))
+
+    XCTAssertNil(
+      BarnardCoreSigning.buildAccountUnbindingText(
+        domain: "BEID.levarac.org",
+        walletAddress: [UInt8](repeating: 0, count: 20),
+        ownerPublicKey: generatorCompressed,
+        chainId: 1,
+        nonce: [UInt8](repeating: 0, count: 16),
+        issuedAt: "2026-07-30T09:00:00Z"
+      )
+    )
+    XCTAssertNil(
+      BarnardCoreSigning.buildAccountUnbindingText(
+        domain: "beid.levarac.org",
+        walletAddress: [UInt8](repeating: 0, count: 20),
+        ownerPublicKey: generatorCompressed,
+        chainId: 1,
+        nonce: [UInt8](repeating: 0, count: 15),
+        issuedAt: "2026-07-30T09:00:00Z"
+      )
+    )
+  }
+
   func testSelfProofBuilderSignerAndVerifier() throws {
     let eventHash = (0x00...0x1f).map(UInt8.init)
     let eventPublicKey = compressedPublicKey(privateKey: scalarTwo)
@@ -329,7 +386,7 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
     )
   }
 
-  func testUnbindingBuilderAndBothSignerKinds() throws {
+  func testNativeUnbindingBuilderAndOwnerSigner() throws {
     let walletPrivateKey = scalarTwo
     let walletPublicKey = compressedPublicKey(privateKey: walletPrivateKey)
     let walletAddress = try XCTUnwrap(
@@ -389,23 +446,171 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
         signature: ownerSignature
       )
     )
+  }
 
-    let walletSigner = try XCTUnwrap(
-      BarnardCoreSigning.signAccountUnbinding(
-        signerPrivateKey: walletPrivateKey,
-        ownerPublicKey: generatorCompressed,
-        walletAddress: walletAddress,
-        walletSignature: walletSignature
+  func testWalletSignerUnbindingRequiresCanonicalEip191Text() throws {
+    let walletPrivateKey = scalarOne
+    let walletAddress = try XCTUnwrap(
+      BarnardCoreSigning.ethereumAddress(
+        publicKeyCompressed: generatorCompressed
       )
     )
-    XCTAssertTrue(
-      BarnardCoreSigning.verifyAccountUnbinding(
-        signer: .wallet,
-        ownerPublicKey: generatorCompressed,
+    let ownerPublicKey = compressedPublicKey(privateKey: scalarTwo)
+    let originalBindingSignature = (0x40...0x80).map(UInt8.init)
+    let text = try XCTUnwrap(
+      BarnardCoreSigning.buildAccountUnbindingText(
+        domain: "beid.levarac.org",
         walletAddress: walletAddress,
-        walletSignature: walletSignature,
-        signature: walletSigner
+        ownerPublicKey: ownerPublicKey,
+        chainId: 1,
+        nonce: (0x00...0x0f).map(UInt8.init),
+        issuedAt: "2026-07-30T09:00:00Z"
       )
+    )
+    let eip191Signature = BarnardCoreSigning.signRecoverable(
+      privateKey: walletPrivateKey,
+      messageHash32: BarnardCoreSigning.computeEip191Digest(text: text)
+    )
+    let walletSigner =
+      eip191Signature.r
+      + eip191Signature.s
+      + [UInt8(eip191Signature.v + 27)]
+
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: text,
+        walletSignature: walletSigner,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .valid
+    )
+
+    var rawRecoveryIdSignature = walletSigner
+    rawRecoveryIdSignature[64] = UInt8(eip191Signature.v)
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: text,
+        walletSignature: rawRecoveryIdSignature,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .valid
+    )
+
+    var invalidRecoveryIdSignature = walletSigner
+    invalidRecoveryIdSignature[64] = 2
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: text,
+        walletSignature: invalidRecoveryIdSignature,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .invalid
+    )
+
+    var highSSignature = walletSigner
+    let highS = BarnardCoreSecp256k1.curveOrder.subtracting(
+      BarnardCoreSecp256k1.UInt256(bytes: eip191Signature.s)
+    ).bytes
+    highSSignature.replaceSubrange(32..<64, with: highS)
+    highSSignature[64] = UInt8((eip191Signature.v ^ 1) + 27)
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: text,
+        walletSignature: highSSignature,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .invalid
+    )
+
+    let wrongDomainTagText = text.replacingOccurrences(
+      of: "Domain-Tag: barnard-account-unbinding:v1",
+      with: "Domain-Tag: barnard-account-binding:v1"
+    )
+    let wrongDomainTagSignature = BarnardCoreSigning.signRecoverable(
+      privateKey: walletPrivateKey,
+      messageHash32: BarnardCoreSigning.computeEip191Digest(
+        text: wrongDomainTagText
+      )
+    )
+    let wrongDomainTagWalletSignature =
+      wrongDomainTagSignature.r
+      + wrongDomainTagSignature.s
+      + [UInt8(wrongDomainTagSignature.v)]
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: wrongDomainTagText,
+        walletSignature: wrongDomainTagWalletSignature,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .invalid
+    )
+
+    let bindingText = try XCTUnwrap(
+      BarnardCoreSigning.buildAccountBindingText(
+        domain: "beid.levarac.org",
+        walletAddress: walletAddress,
+        ownerPublicKey: ownerPublicKey,
+        chainId: 1,
+        nonce: (0x00...0x0f).map(UInt8.init),
+        issuedAt: "2026-07-30T09:00:00Z"
+      )
+    )
+    let bindingSignature = BarnardCoreSigning.signRecoverable(
+      privateKey: walletPrivateKey,
+      messageHash32: BarnardCoreSigning.computeEip191Digest(text: bindingText)
+    )
+    let bindingWalletSignature =
+      bindingSignature.r
+      + bindingSignature.s
+      + [UInt8(bindingSignature.v)]
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: bindingText,
+        walletSignature: bindingWalletSignature,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .invalid
+    )
+
+    let rawDigestSigner = try XCTUnwrap(
+      BarnardCoreSigning.signAccountUnbinding(
+        signerPrivateKey: walletPrivateKey,
+        ownerPublicKey: ownerPublicKey,
+        walletAddress: walletAddress,
+        walletSignature: originalBindingSignature
+      )
+    )
+    let rawDigestWalletSignature =
+      rawDigestSigner.r
+      + rawDigestSigner.s
+      + [UInt8(rawDigestSigner.v)]
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: text,
+        walletSignature: rawDigestWalletSignature,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .invalid
+    )
+
+    let smartWalletMagic = bytes(
+      "6492649264926492649264926492649264926492649264926492649264926492"
+    )
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyAccountUnbinding(
+        text: text,
+        walletSignature: [0xaa] + smartWalletMagic,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey
+      ),
+      .smartWalletUnsupported
     )
   }
 

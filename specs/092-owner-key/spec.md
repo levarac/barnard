@@ -203,6 +203,8 @@ transfer implicitly.
 
 Domain tag: `barnard-account-unbinding:v1`
 
+The owner-key-authorized path remains a Barnard-native message:
+
 ```text
 offset  size  value
 0       28    UTF-8 "barnard-account-unbinding:v1"
@@ -212,17 +214,16 @@ offset  size  value
 total  113
 ```
 
-The digest identifies one exact wallet-binding record. Either the owner key or
-the EOA key controlling `walletAddress` may sign the SHA-256 digest of this
-Barnard-native message. Verification therefore takes an explicit signer kind:
+The digest identifies one exact wallet-binding record. The owner key signs the
+SHA-256 digest of this message. Verification recovers the compressed key and
+requires it to equal `ownerPublicKey`.
 
-- `owner`: the recovered compressed key MUST equal `ownerPublicKey`;
-- `wallet`: the recovered key is decompressed, its Ethereum address is
-  derived, and that address MUST equal `walletAddress`.
-
-The wallet-signing host UX for this reserved lifecycle format is not part of
-v1. It is not the account-binding `personal_sign` ceremony and MUST NOT be
-silently substituted for it.
+The EOA-authorized path MUST NOT sign this raw digest. It uses the canonical
+human-readable account-unbinding text defined below, signs it through
+EIP-191 `personal_sign`, and verifies the recovered Ethereum address against
+`walletAddress`. The two signer paths deliberately retain different message
+formats because owner-key signatures are Barnard-native while wallet
+signatures must remain human-readable.
 
 ## Canonical wallet-binding text
 
@@ -302,6 +303,46 @@ Chain-ID: eip155:1
 Scope: global
 Nonce: 0x000102030405060708090a0b0c0d0e0f
 Issued-At: 2026-07-30T09:00:00Z
+```
+
+## Canonical wallet-authorized unbinding text
+
+An EOA revokes its wallet binding by signing this exact 11-line text:
+
+```text
+{domain} wants to revoke this wallet's binding to a Levarac owner key.
+
+This signature REVOKES a wallet binding and authorizes no transaction.
+
+Domain-Tag: barnard-account-unbinding:v1
+Wallet: 0x{walletAddress lowercase hex}
+Owner-Key: 0x{compressed owner public key lowercase hex}
+Chain-ID: eip155:{chainId unsigned decimal}
+Scope: global
+Nonce: 0x{16-byte nonce lowercase hex}
+Issued-At: {issuedAt}
+```
+
+The canonical encoding rules are identical to the wallet-binding text rules:
+UTF-8, LF only, exact field names and order, no trailing newline, normalized
+lowercase ASCII authority with a canonical optional port, lowercase fixed-size
+hex fields, unsigned 64-bit decimal `chainId`, literal `Scope: global`,
+16-byte `nonce`, and valid RFC 3339 UTC `issuedAt` at second precision. The
+host supplies `nonce` and `issuedAt`; Barnard reads neither randomness nor a
+clock. No Unicode normalization, checksum casing, JSON serialization, or
+locale-sensitive formatting is applied.
+
+The unbinding parser reconstructs the text byte-for-byte and requires the
+`Wallet:` and `Owner-Key:` fields to match the verifier's expected values.
+Binding text, another domain tag, CR, a trailing LF, a reordered field, or a
+noncanonical value is invalid even when the signature matches the altered
+bytes.
+
+For the same example values as the binding ceremony, the EIP-191 digest of the
+430-byte unbinding text is:
+
+```text
+f11e3d04d85d6ac228dde88cebea4ba9554ed06b9c363d5a32f3e4fd89366929
 ```
 
 ## EIP-191 and Ethereum address derivation
@@ -425,13 +466,20 @@ custodial recovery service.
 
 ## Compatibility
 
-- All schemas and APIs in this specification are additive.
-- No existing public schema or on-wire format changes.
+- The wallet-authorized unbinding format and verification semantics are
+  corrected before their first release tag; no previously tagged contract
+  accepts the superseded raw-digest wallet signature.
+- The owner-key-authorized unbinding shape and verification behavior remain
+  unchanged. The canonical wallet text builder and verifier are additive.
+- The holder-held account-unbinding schema is amended before the v0.2.0 tag.
+  No public/on-wire schema or format changes.
 - Existing Advertise, Scan, Central, Peripheral, GATT, Transport, RPID,
   event-signing, and RPID-proof behavior remains unchanged.
 - New domain tags are disjoint from existing Barnard tags.
-- EIP-191 prefixing and Ethereum Keccak keep wallet signatures in a different
-  hash universe from Barnard-native SHA-256 signatures.
+- Wallet-authorized binding and unbinding signatures use EIP-191 plus Ethereum
+  Keccak; owner-key acknowledgements, rotations, and unbindings use
+  Barnard-native SHA-256. No verification path accepts one signature class as
+  the other.
 
 ## Security and privacy
 
@@ -445,11 +493,14 @@ document root explicitly declares holder-held disclosure scope. Public/on-wire
 schemas MUST NOT define a 33-byte compressed-public-key shape, a 20-byte
 address shape, or references into holder-held schemas.
 
-The wallet ceremony has three domain-separation layers:
+The wallet ceremonies have three domain-separation layers:
 
 1. EIP-191 prevents cross-use as a transaction or Barnard-native signature.
-2. `Domain-Tag: barnard-account-binding:v1` prevents cross-protocol reuse.
-3. The visible domain and no-assets statement reduce blind-signing risk.
+2. Distinct `barnard-account-binding:v1` and
+   `barnard-account-unbinding:v1` domain tags prevent cross-protocol and
+   bind-versus-revoke reuse.
+3. The visible domain and explicit non-transaction statements reduce
+   blind-signing risk.
 
 Wallet linkage intentionally connects disclosed event history to a public
 address. Hosts MUST request explicit consent and MUST NOT auto-prompt binding.
@@ -487,6 +538,9 @@ Using a fresh wallet address remains valid.
   no expiry semantics.
 - A binding text without the no-assets statement: rejected because the
   ceremony must remain human-readable and explicitly non-transactional.
+- Raw-digest wallet-authorized unbinding: rejected because `eth_sign`-style
+  blind signing contradicts the readable wallet ceremony; EIP-191
+  `personal_sign` is required.
 
 ## Future work
 
