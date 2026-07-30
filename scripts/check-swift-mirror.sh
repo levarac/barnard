@@ -1,56 +1,44 @@
 #!/usr/bin/env bash
 # Use of this source code is governed by the MIT license in /LICENSE.
 #
-# barnard#56 and #80: packages/swift/barnard mirrors the Flutter-free
-# platform adapters and deterministic BarnardCore sources from
-# packages/dart/barnard/ios/barnard/Sources/barnard (byte-for-byte, not
-# re-implemented) so the two packages cannot silently drift.
-# Fails with a diff if any mirrored file no longer matches its origin.
+# barnard#56, #80, and #81: packages/swift/barnard is the native origin for
+# shared platform adapters and deterministic BarnardCore sources. The Flutter
+# plugin keeps byte-for-byte Dart-package mirrors so pub.dev releases remain
+# self-contained. Fails with a diff if any Dart mirror no longer matches its
+# native origin.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-plugin_dir="$repo_root/packages/dart/barnard/ios/barnard/Sources/barnard"
-package_dir="$repo_root/packages/swift/barnard/Sources"
-
-mirrored_pairs=(
-  "BarnardCrypto.swift|Barnard/BarnardCrypto.swift"
-  "Secp256k1.swift|Barnard/Secp256k1.swift"
-  "BarnardSigning.swift|Barnard/BarnardSigning.swift"
-  "BarnardRpidGenerator.swift|Barnard/BarnardRpidGenerator.swift"
-  "BarnardV2Policy.swift|Barnard/BarnardV2Policy.swift"
-  "BarnardPlatformDependencies.swift|Barnard/BarnardPlatformDependencies.swift"
-  "PrivacyInfo.xcprivacy|Barnard/PrivacyInfo.xcprivacy"
-  "BarnardCore/BarnardCoreCrypto.swift|BarnardCore/BarnardCoreCrypto.swift"
-  "BarnardCore/BarnardCorePolicy.swift|BarnardCore/BarnardCorePolicy.swift"
-  "BarnardCore/BarnardCorePrimitives.swift|BarnardCore/BarnardCorePrimitives.swift"
-  "BarnardCore/BarnardCoreSigning.swift|BarnardCore/BarnardCoreSigning.swift"
-  "BarnardCore/Secp256k1.swift|BarnardCore/Secp256k1.swift"
-)
+origin_dir="$repo_root/packages/swift/barnard/Sources"
+mirror_dir="$repo_root/packages/dart/barnard/ios/barnard/Sources/barnard"
+source "$repo_root/scripts/mirror-manifest.sh"
 
 status=0
-for pair in "${mirrored_pairs[@]}"; do
-  plugin_relative="${pair%%|*}"
-  package_relative="${pair#*|}"
-  plugin_file="$plugin_dir/$plugin_relative"
-  package_file="$package_dir/$package_relative"
-  if [[ ! -f "$plugin_file" ]]; then
-    echo "MISSING plugin source: $plugin_file"
+for pair in "${swift_mirrored_pairs[@]}"; do
+  origin_relative="${pair%%|*}"
+  mirror_relative="${pair#*|}"
+  origin_file="$origin_dir/$origin_relative"
+  mirror_file="$mirror_dir/$mirror_relative"
+  if [[ ! -f "$origin_file" ]]; then
+    echo "MISSING native origin: $origin_file"
     status=1
     continue
   fi
-  if [[ ! -f "$package_file" ]]; then
-    echo "MISSING package source: $package_file"
+  if [[ ! -f "$mirror_file" ]]; then
+    echo "MISSING Dart mirror: $mirror_file"
+    echo "Fix the native origin, then run ./scripts/sync-mirrors.sh; do not edit the Dart mirror directly."
     status=1
     continue
   fi
-  if ! diff -q "$plugin_file" "$package_file" >/dev/null 2>&1; then
-    echo "DRIFT: $plugin_file != $package_file"
-    diff -u "$plugin_file" "$package_file" || true
+  if ! diff -q "$origin_file" "$mirror_file" >/dev/null 2>&1; then
+    echo "DRIFT: Dart mirror $mirror_file differs from native origin $origin_file"
+    echo "Fix the native origin, then run ./scripts/sync-mirrors.sh; do not edit the Dart mirror directly."
+    diff -u "$origin_file" "$mirror_file" || true
     status=1
   fi
 done
 
 if [[ $status -eq 0 ]]; then
-  echo "OK: packages/swift/barnard mirrors match their origin byte-for-byte."
+  echo "OK: Dart Swift mirrors match their native origins byte-for-byte."
 fi
-exit $status
+exit "$status"

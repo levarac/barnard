@@ -68,31 +68,32 @@ See `examples/android-native` for a runnable minimal app.
 
 ## Relationship to the Flutter plugin
 
-This package is currently a **mirror**, not a move, of
-`packages/dart/barnard/android`:
+This package is the **canonical origin** for the shared Kotlin sources also
+shipped inside `packages/dart/barnard/android`. The Flutter plugin keeps a
+referencing mirror copy because pub.dev packages must be self-contained:
 
 - `BarnardCrypto.kt`, `BarnardSigning.kt`, `BarnardV2Policy.kt`, and
-  `BarnardIso8601.kt` are byte-for-byte copies of the Flutter plugin's
-  Flutter-free sources (pure JVM, no Android-framework or Flutter-embedding
-  dependency). `scripts/check-android-mirror.sh` (repo root) fails CI if
-  they drift.
+  `BarnardIso8601.kt` are the native origins for byte-for-byte copies in the
+  Flutter plugin (pure JVM, no Android-framework or Flutter-embedding
+  dependency). `scripts/sync-mirrors.sh` regenerates the copies, and
+  `scripts/check-android-mirror.sh` fails CI if they drift.
 - `BarnardEngine.kt` (Flutter-free port of `BarnardController`) and
   `BarnardIdentity.kt` (Flutter-free port of `BarnardIdentityController`)
-  are new files, not mirrors — the originals are woven into Flutter's
-  method-channel API (`MethodChannel`, `EventChannel`,
+  are native-only files, not mirrored sources. Their Flutter counterparts are
+  woven into the method-channel API (`MethodChannel`, `EventChannel`,
   `PluginRegistry.RequestPermissionsResultListener`) and cannot be copied
-  verbatim. They re-implement the same behavior with a Kotlin-first public
-  API (typed sealed events/callbacks instead of a method-channel
+  verbatim. The native files expose the same behavior through a Kotlin-first
+  public API (typed sealed events/callbacks instead of a method-channel
   dispatcher).
 
-**Why mirror instead of making the Flutter plugin depend on this
+**Why keep a mirror copy instead of making the Flutter plugin depend on this
 package**: the Flutter plugin's Android module resolves its Flutter
 embedding classpath dynamically from the Flutter SDK
 (`packages/dart/barnard/android/build.gradle`); making it depend on a
 sibling standalone Gradle library is possible but nontrivial to wire up
 safely across Flutter's own Gradle plugin, and this repo's CI/tooling here
-has no Flutter toolchain to validate that path end-to-end. Mirroring the
-pure, dependency-free sources with a byte-identical sync check is
-lower-risk for this first slice. Follow-up: evaluate making
-`packages/dart/barnard/android` depend on this package directly (true
-move) once that path is validated against a real Flutter build.
+has no Flutter toolchain to validate that path end-to-end. Synchronizing the
+pure, dependency-free sources from this native origin into the Flutter
+package, with a byte-identical drift check, is lower-risk for this first slice.
+Follow-up: evaluate making `packages/dart/barnard/android` depend on this
+package directly once that path is validated against a real Flutter build.
