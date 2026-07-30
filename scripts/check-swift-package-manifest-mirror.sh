@@ -40,6 +40,7 @@ for target in targets:
     target.pop("path", None)
 
 declarations = {
+    "dependencies": package["dependencies"],
     "platforms": package["platforms"],
     "products": package["products"],
     "targets": targets,
