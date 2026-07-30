@@ -8,6 +8,10 @@
 // purity contract as BarnardCore applies: Swift stdlib only. Callers own all
 // buffers; fixed-size outputs are documented per function. Functions return 0
 // on success and a negative value on invalid arguments.
+//
+// Every parameter named *_utf8 must be well-formed UTF-8. Functions with an
+// Int32 result return -1 for malformed UTF-8; the UInt8 policy predicate
+// treats it as absent and returns 0.
 
 import BarnardCore
 
@@ -16,11 +20,6 @@ private func bytes(_ pointer: UnsafePointer<UInt8>?, _ count: Int32) -> [UInt8]?
   if count == 0 { return [] }
   guard let pointer else { return nil }
   return Array(UnsafeBufferPointer(start: pointer, count: Int(count)))
-}
-
-private func utf8String(_ pointer: UnsafePointer<UInt8>?, _ count: Int32) -> String? {
-  guard let raw = bytes(pointer, count) else { return nil }
-  return String(decoding: raw, as: UTF8.self)
 }
 
 private func strictUtf8String(
@@ -40,32 +39,6 @@ private func write(_ output: [UInt8], _ expectedCount: Int, to pointer: UnsafeMu
   pointer.update(from: output, count: output.count)
 }
 
-/// The C boundary must be total: BarnardCore converts the derived window
-/// index with a trapping UInt32 cast, and a Swift trap is an uncatchable
-/// process abort for a JNI/C host. These guards mirror the core's own input
-/// clamps (see BarnardCoreCrypto.calculateEnin) purely to decide whether the
-/// core call is safe; in-domain results come from the core unchanged.
-private func eninDomain(
-  unixSeconds: Int64,
-  mode: Int32,
-  eninSeconds: Int64,
-  beaconGenesisUnixSeconds: Int64,
-  beaconSlotSeconds: Int64
-) -> (inDomain: Bool, saturated: UInt32) {
-  if mode == 1 {
-    let genesis = max(0, beaconGenesisUnixSeconds)
-    let slot = max(1, beaconSlotSeconds)
-    let elapsed = unixSeconds - genesis
-    if elapsed <= 0 { return (true, 0) }
-    if elapsed / slot > Int64(UInt32.max) { return (false, UInt32.max) }
-    return (true, 0)
-  }
-  if unixSeconds < 0 { return (false, 0) }
-  let effectiveSeconds = min(max(eninSeconds, 12), 3_600)
-  if unixSeconds / effectiveSeconds > Int64(UInt32.max) { return (false, UInt32.max) }
-  return (true, 0)
-}
-
 /// out_tek16: 16 bytes.
 @_cdecl("barnard_core_derive_tek_for_event")
 public func barnard_core_derive_tek_for_event(
@@ -77,7 +50,7 @@ public func barnard_core_derive_tek_for_event(
 ) -> Int32 {
   guard
     let secret = bytes(deviceSecret, deviceSecretLength),
-    let eventCode = utf8String(eventCodeUtf8, eventCodeLength),
+    let eventCode = strictUtf8String(eventCodeUtf8, eventCodeLength),
     let outTek16
   else { return -1 }
   write(
@@ -139,30 +112,19 @@ public func barnard_core_calculate_enin(
   _ beaconGenesisUnixSeconds: Int64,
   _ beaconSlotSeconds: Int64
 ) -> UInt32 {
-  let domain = eninDomain(
+  let coreMode: BarnardCoreEninMode = mode == 1 ? .beaconSlot : .fixedLength
+  let chain = BarnardCoreBeaconChain(
+    chainId: "c-abi",
+    genesisUnixSeconds: beaconGenesisUnixSeconds,
+    slotSeconds: beaconSlotSeconds
+  )
+  if let enin = BarnardCoreCrypto.calculateEninIfRepresentable(
     unixSeconds: unixSeconds,
-    mode: mode,
+    mode: coreMode,
     eninSeconds: eninSeconds,
-    beaconGenesisUnixSeconds: beaconGenesisUnixSeconds,
-    beaconSlotSeconds: beaconSlotSeconds
-  )
-  guard domain.inDomain else { return domain.saturated }
-  if mode == 1 {
-    return BarnardCoreCrypto.calculateEnin(
-      unixSeconds: unixSeconds,
-      mode: .beaconSlot,
-      beaconChain: BarnardCoreBeaconChain(
-        chainId: "c-abi",
-        genesisUnixSeconds: beaconGenesisUnixSeconds,
-        slotSeconds: beaconSlotSeconds
-      )
-    )
-  }
-  return BarnardCoreCrypto.calculateEnin(
-    unixSeconds: unixSeconds,
-    mode: .fixedLength,
-    eninSeconds: eninSeconds
-  )
+    beaconChain: chain
+  ) { return enin }
+  return mode == 1 || unixSeconds >= 0 ? .max : 0
 }
 
 /// Returns 1 and writes out_enin when the window is stable across both reads,
@@ -182,32 +144,25 @@ public func barnard_core_stable_read_enin(
   _ outEnin: UnsafeMutablePointer<UInt32>?
 ) -> Int32 {
   guard let outEnin else { return -1 }
-  for unixSeconds in [startedAtUnixSeconds, completedAtUnixSeconds]
-  where !eninDomain(
-    unixSeconds: unixSeconds,
-    mode: mode,
-    eninSeconds: eninSeconds,
-    beaconGenesisUnixSeconds: beaconGenesisUnixSeconds,
-    beaconSlotSeconds: beaconSlotSeconds
-  ).inDomain {
-    return -1
-  }
   let coreMode: BarnardCoreEninMode = mode == 1 ? .beaconSlot : .fixedLength
   let chain = BarnardCoreBeaconChain(
     chainId: "c-abi",
     genesisUnixSeconds: beaconGenesisUnixSeconds,
     slotSeconds: beaconSlotSeconds
   )
-  guard
-    let enin = BarnardCoreCrypto.stableReadEnin(
-      startedAtUnixSeconds: startedAtUnixSeconds,
-      completedAtUnixSeconds: completedAtUnixSeconds,
-      mode: coreMode,
-      eninSeconds: eninSeconds,
-      beaconChain: chain
-    )
-  else { return 0 }
-  outEnin.pointee = enin
+  guard let startedEnin = BarnardCoreCrypto.calculateEninIfRepresentable(
+    unixSeconds: startedAtUnixSeconds,
+    mode: coreMode,
+    eninSeconds: eninSeconds,
+    beaconChain: chain
+  ), let completedEnin = BarnardCoreCrypto.calculateEninIfRepresentable(
+    unixSeconds: completedAtUnixSeconds,
+    mode: coreMode,
+    eninSeconds: eninSeconds,
+    beaconChain: chain
+  ) else { return -1 }
+  guard startedEnin == completedEnin else { return 0 }
+  outEnin.pointee = completedEnin
   return 1
 }
 
@@ -218,7 +173,7 @@ public func barnard_core_compute_event_code_hash(
   _ eventCodeLength: Int32,
   _ outHash8: UnsafeMutablePointer<UInt8>?
 ) -> Int32 {
-  guard let eventCode = utf8String(eventCodeUtf8, eventCodeLength), let outHash8 else {
+  guard let eventCode = strictUtf8String(eventCodeUtf8, eventCodeLength), let outHash8 else {
     return -1
   }
   write(BarnardCoreCrypto.computeEventCodeHash(eventCode), 8, to: outHash8)
@@ -260,16 +215,20 @@ public func barnard_core_keccak256(
   return 0
 }
 
-/// Computes the EIP-191 personal_sign digest of message_utf8. out_digest32:
-/// 32 bytes. The caller is responsible for supplying UTF-8 canonical text;
-/// the digest operates on the byte sequence exactly as received.
+/// Computes the EIP-191 personal_sign digest of well-formed message_utf8.
+/// out_digest32: 32 bytes. The digest operates on the received UTF-8 byte
+/// sequence exactly as received.
 @_cdecl("barnard_core_eip191_digest")
 public func barnard_core_eip191_digest(
   _ messageUtf8: UnsafePointer<UInt8>?,
   _ messageLength: Int32,
   _ outDigest32: UnsafeMutablePointer<UInt8>?
 ) -> Int32 {
-  guard let message = bytes(messageUtf8, messageLength), let outDigest32 else {
+  guard
+    let message = bytes(messageUtf8, messageLength),
+    strictUtf8String(messageUtf8, messageLength) != nil,
+    let outDigest32
+  else {
     return -1
   }
   write(
@@ -292,7 +251,7 @@ public func barnard_core_derive_signing_keypair(
 ) -> Int32 {
   guard
     let secret = bytes(deviceSecret, deviceSecretLength),
-    let eventCode = utf8String(eventCodeUtf8, eventCodeLength),
+    let eventCode = strictUtf8String(eventCodeUtf8, eventCodeLength),
     let outPrivateKey32,
     let outPublicKeyCompressed33
   else { return -1 }
@@ -495,6 +454,6 @@ public func barnard_core_should_serve_gatt_display_id(
   _ eventCodeUtf8: UnsafePointer<UInt8>?,
   _ eventCodeLength: Int32
 ) -> UInt8 {
-  let eventCode = utf8String(eventCodeUtf8, eventCodeLength)
+  let eventCode = strictUtf8String(eventCodeUtf8, eventCodeLength)
   return BarnardCoreV2Policy.shouldServeGattDisplayId(eventCode: eventCode) ? 1 : 0
 }

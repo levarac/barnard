@@ -97,6 +97,7 @@ jobs:
           swift build --package-path packages/swift/barnard \
             --product BarnardCoreC \
             --swift-sdk "$ANDROID_TRIPLE" \
+            --static-swift-stdlib \
             -c release
       - name: Verify exported C ABI symbols in the Android .so
         run: |
@@ -137,6 +138,38 @@ jobs:
             fi
           done
           echo "OK: all 20 C ABI symbols exported for $ANDROID_TRIPLE"
+
+      - name: Replay issue #80 golden vector through the Android .so
+        # qemu-user executes the aarch64 Android C consumer itself. The Swift
+        # runtime is statically linked into BarnardCoreC so the only runtime
+        # root needed is the NDK's Android sysroot.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes qemu-user
+          so=$(find packages/swift/barnard/.build -name libBarnardCoreC.so | head -1)
+          if [ -z "$so" ]; then
+            echo "libBarnardCoreC.so not found under .build" >&2
+            exit 1
+          fi
+          clang=$(find "$ANDROID_NDK_LATEST_HOME" -name aarch64-linux-android28-clang | head -1)
+          if [ -z "$clang" ]; then
+            echo "aarch64-linux-android28-clang not found in the Android NDK" >&2
+            exit 1
+          fi
+          sysroot="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          "$clang" -fPIE -pie -o /tmp/barnard_core_c_android_proof \
+            packages/swift/barnard/CHostProof/barnard_core_c_host_proof.c
+          cp packages/swift/barnard/CHostProof/barnard_core_c_host_proof.c /tmp/barnard_core_c_android_red.c
+          sed -i 's/51c9263c4fbfc28fb28a76ab0d5d83d6/00c9263c4fbfc28fb28a76ab0d5d83d6/' \
+            /tmp/barnard_core_c_android_red.c
+          "$clang" -fPIE -pie -o /tmp/barnard_core_c_android_red \
+            /tmp/barnard_core_c_android_red.c
+          if qemu-aarch64 -L "$sysroot" /tmp/barnard_core_c_android_red "$so"; then
+            echo "red proof unexpectedly accepted a corrupted golden byte" >&2
+            exit 1
+          fi
+          echo "OK: red proof rejected a corrupted issue #80 golden byte"
+          qemu-aarch64 -L "$sysroot" /tmp/barnard_core_c_android_proof "$so"
 
       - name: C host consumption proof (Linux native, same C ABI)
         # The Android .so cannot execute on the runner; this builds the same
