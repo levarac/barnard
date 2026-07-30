@@ -3,12 +3,23 @@
 public struct BarnardCoreSigningKeyPair {
   public let privateKey: [UInt8]
   public let publicKeyCompressed: [UInt8]
+
+  public init(privateKey: [UInt8], publicKeyCompressed: [UInt8]) {
+    self.privateKey = privateKey
+    self.publicKeyCompressed = publicKeyCompressed
+  }
 }
 
 public struct BarnardCoreRecoverableSignature {
   public let r: [UInt8]
   public let s: [UInt8]
   public let v: Int
+
+  public init(r: [UInt8], s: [UInt8], v: Int) {
+    self.r = r
+    self.s = s
+    self.v = v
+  }
 }
 
 public struct BarnardCoreRpidOwnershipProof {
@@ -21,8 +32,14 @@ public struct BarnardCoreRpidOwnershipProof {
 
 public enum BarnardCoreSigning {
   public static let signingKeyInfo = "barnard-sign"
+  public static let ownerKeyInfo = "barnard-owner"
   public static let rpidProofDomainTag = "barnard-rpid-proof:v1"
   public static let keyBindingDomainTag = "barnard-key-binding:v1"
+  public static let selfProofDomainTag = "barnard-self-proof:v1"
+  public static let walletAcknowledgementDomainTag = "barnard-wallet-ack:v1"
+  public static let accountRotationDomainTag = "barnard-account-rotation:v1"
+  public static let accountUnbindingDomainTag = "barnard-account-unbinding:v1"
+  public static let accountBindingDomainTag = "barnard-account-binding:v1"
 
   public static func deriveSigningKeyPair(
     deviceSecret: [UInt8],
@@ -52,6 +69,86 @@ public enum BarnardCoreSigning {
       privateKey: privateKey.bytes,
       publicKeyCompressed: BarnardCoreSecp256k1.compress(publicPoint)
     )
+  }
+
+  public static func deriveOwnerKeyPair(
+    accountSecret: [UInt8]
+  ) -> BarnardCoreSigningKeyPair {
+    precondition(accountSecret.count == 32, "accountSecret must be 32 bytes")
+    var seed = BarnardCorePrimitives.hkdfSha256(
+      inputKeyMaterial: accountSecret,
+      info: Array(ownerKeyInfo.utf8),
+      outputByteCount: 32
+    )
+    var privateKey = BarnardCoreSecp256k1.Field.reduceOnce(
+      BarnardCoreSecp256k1.UInt256(bytes: seed),
+      BarnardCoreSecp256k1.curveOrder
+    )
+    while privateKey.isZero {
+      seed = BarnardCorePrimitives.sha256(seed)
+      privateKey = BarnardCoreSecp256k1.Field.reduceOnce(
+        BarnardCoreSecp256k1.UInt256(bytes: seed),
+        BarnardCoreSecp256k1.curveOrder
+      )
+    }
+    let publicPoint = BarnardCoreSecp256k1.multiply(
+      privateKey,
+      BarnardCoreSecp256k1.generator
+    )
+    return BarnardCoreSigningKeyPair(
+      privateKey: privateKey.bytes,
+      publicKeyCompressed: BarnardCoreSecp256k1.compress(publicPoint)
+    )
+  }
+
+  public static func serializeUncompressedPublicKey(
+    _ compressedPublicKey: [UInt8]
+  ) -> [UInt8]? {
+    guard
+      compressedPublicKey.count == 33,
+      compressedPublicKey[0] == 0x02 || compressedPublicKey[0] == 0x03
+    else {
+      return nil
+    }
+    let x = BarnardCoreSecp256k1.UInt256(
+      bytes: Array(compressedPublicKey.dropFirst())
+    )
+    guard
+      x < BarnardCoreSecp256k1.fieldPrime,
+      let point = BarnardCoreSecp256k1.decompress(
+        x: x,
+        yIsOdd: compressedPublicKey[0] == 0x03
+      )
+    else {
+      return nil
+    }
+    return BarnardCoreSecp256k1.serializeUncompressed(point)
+  }
+
+  public static func ethereumAddress(
+    publicKeyCompressed: [UInt8]
+  ) -> [UInt8]? {
+    guard
+      let uncompressed = serializeUncompressedPublicKey(publicKeyCompressed),
+      uncompressed.count == 65
+    else {
+      return nil
+    }
+    return Array(
+      BarnardCorePrimitives.keccak256(Array(uncompressed.dropFirst())).suffix(20)
+    )
+  }
+
+  public static func computeEip191Digest(text: String) -> [UInt8] {
+    computeEip191Digest(messageBytes: Array(text.utf8))
+  }
+
+  public static func computeEip191Digest(messageBytes: [UInt8]) -> [UInt8] {
+    let prefix =
+      [UInt8(0x19)]
+      + Array("Ethereum Signed Message:\n".utf8)
+      + Array(String(messageBytes.count).utf8)
+    return BarnardCorePrimitives.keccak256(prefix + messageBytes)
   }
 
   public static func signRecoverable(

@@ -120,8 +120,15 @@ jobs:
             barnard_core_compute_event_code_hash \
             barnard_core_display_id4 \
             barnard_core_sha256 \
+            barnard_core_keccak256 \
+            barnard_core_eip191_digest \
             barnard_core_derive_signing_keypair \
+            barnard_core_derive_owner_keypair \
             barnard_core_sign_recoverable \
+            barnard_core_build_self_proof_message \
+            barnard_core_verify_self_proof \
+            barnard_core_classify_wallet_signature \
+            barnard_core_verify_wallet_binding \
             barnard_core_should_emit_rssi_update \
             barnard_core_should_serve_gatt_display_id; do
             if ! grep -qw "$symbol" /tmp/exported-symbols.txt; then
@@ -129,7 +136,7 @@ jobs:
               exit 1
             fi
           done
-          echo "OK: all 13 C ABI symbols exported for $ANDROID_TRIPLE"
+          echo "OK: all 20 C ABI symbols exported for $ANDROID_TRIPLE"
 
       - name: C host consumption proof (Linux native, same C ABI)
         # The Android .so cannot execute on the runner; this builds the same

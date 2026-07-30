@@ -174,4 +174,9 @@ public enum BarnardCoreCrypto {
   public static func sha256(_ bytes: [UInt8]) -> [UInt8] {
     BarnardCorePrimitives.sha256(bytes)
   }
+
+  /// Ethereum Keccak-256 (legacy Keccak padding, not NIST SHA3-256).
+  public static func keccak256(_ bytes: [UInt8]) -> [UInt8] {
+    BarnardCorePrimitives.keccak256(bytes)
+  }
 }
