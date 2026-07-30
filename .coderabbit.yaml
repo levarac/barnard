@@ -32,8 +32,11 @@ reviews:
         scripts/sync-mirrors.sh.
     - path: "specs/**"
       instructions: |
-        Spec-first repository (Spec Kit discipline). Frozen :v1 message
-        formats must not change shape; propose a :v2 profile instead.
+        Spec-first repository (Spec Kit discipline). A :v1 message format
+        freezes at the release tag that ships it: BEFORE that tag,
+        amendments are legitimate but must update golden vectors, mirrors,
+        and schemas together; AFTER it, shape changes belong in a :v2
+        profile.
         Normative language should use RFC 2119 keywords consistently.
     - path: ".github/workflows/**"
       instructions: |
