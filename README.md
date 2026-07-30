@@ -32,9 +32,9 @@ The repository is organized around a few design principles:
 - The Flutter/Dart and React Native packages expose BLE Scan and Advertise APIs,
   including a GATT-based RPID exchange on iOS and Android.
 - The native Swift and Android packages expose first-class platform APIs and are
-  built and tested directly in CI. Mirror checks make the relationship between
-  their shared crypto, signing, and RPID sources and the Flutter plugin's
-  Flutter-free platform sources verifiable.
+  built and tested directly in CI. They are the canonical origins for shared
+  crypto, signing, and RPID sources; mirror checks verify the Flutter plugin's
+  referencing copies byte-for-byte.
 - Examples cover mock-driven Dart use, real Flutter BLE use, and minimal native
   iOS and Android integrations. The native Android example also contains a
   two-device test-loop script for a device lab.
@@ -53,7 +53,7 @@ and the reason it is kept in the repository.
 ├── examples/     # Runnable integrations; prove each SDK surface in a minimal host application.
 ├── packages/     # Distributable SDK packages; provide native and framework-specific adoption paths.
 ├── schema/       # Versioned JSON Schema; define language-agnostic public shapes before implementation details.
-├── scripts/      # Repository checks; detect drift between native mirrors and their source files.
+├── scripts/      # Repository checks and sync; keep Dart mirrors aligned with native origins.
 ├── specs/        # Feature specifications; record behavior, boundaries, and privacy decisions independently of code.
 └── tools/        # Focused developer utilities; keep one-off protocol and scanner tooling outside SDK packages.
 ```
@@ -74,14 +74,15 @@ packages/
 
 - `packages/swift/barnard/` is a Swift Package Manager library for iOS 14 and
   later. It exists so native iOS apps can use Barnard without a Flutter runtime;
-  its mirrored Flutter-free sources are checked for byte-for-byte drift.
+  its shared Flutter-free sources are the canonical Swift origins.
 - `packages/android/barnard/` is a Gradle library for Android API 24 and later.
   It exists so native Android apps can use typed Kotlin APIs without a Flutter
-  or React Native runtime; its mirrored Flutter-free sources are likewise
-  checked for drift.
+  or React Native runtime; its shared Flutter-free sources are the canonical
+  Kotlin origins.
 - `packages/dart/barnard/` is the Flutter/Dart SDK. It exists for Flutter apps
   that need the shared domain API, a hardware-free `MockBarnard` integration
-  path, or the platform BLE Transport.
+  path, or the platform BLE Transport. Its referencing Swift and Kotlin copies
+  are synchronized from the native origins and checked for byte-for-byte drift.
 - `packages/react-native/barnard/` is the React Native SDK. It exists for React
   Native apps that need a TypeScript API over native iOS and Android BLE
   implementations.
@@ -101,9 +102,10 @@ packages/
 - `tools/` currently contains `barnard-scan`, a small scanner utility. Keeping
   it outside `packages/` prevents a focused developer tool from becoming a
   required SDK dependency.
-- `scripts/` contains the Swift and Android mirror checks. They make the
-  deliberate shared-source relationship between native SDKs and the Flutter
-  plugin verifiable in CI.
+- `scripts/` contains the Swift and Android mirror checks and the native-to-Dart
+  sync helper. They make the deliberate shared-source relationship between
+  native SDK origins and the Flutter plugin's referencing copies verifiable in
+  CI.
 - `.github/` contains the Dart and native SDK workflows. It keeps package
   verification in the repository where changes are reviewed.
 - `.specify/` contains Spec Kit templates, helper scripts, and the project

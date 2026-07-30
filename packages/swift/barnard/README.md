@@ -47,33 +47,34 @@ See `examples/ios-native` for a runnable minimal app.
 
 ## Relationship to the Flutter plugin
 
-This package is currently a **mirror**, not a move, of
-`packages/dart/barnard/ios/barnard`:
+This package is the **canonical origin** for the shared Swift sources also
+shipped inside `packages/dart/barnard/ios/barnard`. The Flutter plugin keeps a
+referencing mirror copy because pub.dev packages must be self-contained:
 
 - The platform adapters (`BarnardCrypto.swift`, `Secp256k1.swift`,
   `BarnardSigning.swift`, `BarnardRpidGenerator.swift`,
   `BarnardV2Policy.swift`, `BarnardPlatformDependencies.swift`, and
-  `PrivacyInfo.xcprivacy`) are byte-for-byte copies of the Flutter plugin's
-  Flutter-free sources.
-- Every source under `Sources/BarnardCore` is also a byte-for-byte copy of the
-  corresponding Flutter plugin source under `Sources/barnard/BarnardCore`.
-  `scripts/check-swift-mirror.sh` (repo root) checks both groups and fails CI
-  if they drift.
+  `PrivacyInfo.xcprivacy`) are the native origins for byte-for-byte copies in
+  the Flutter plugin.
+- Every source under `Sources/BarnardCore` is likewise the native origin for
+  the corresponding Flutter plugin copy under `Sources/barnard/BarnardCore`.
+  `scripts/sync-mirrors.sh` regenerates both groups, and
+  `scripts/check-swift-mirror.sh` fails CI if they drift.
 - `BarnardEngine.swift` (Flutter-free port of `BarnardBleController`) and
   `BarnardIdentity.swift` (Flutter-free port of `BarnardIdentityController`)
-  are new files, not mirrors — the originals are woven into Flutter's
-  method-channel API (`FlutterEventSink`, `FlutterMethodCall`) and cannot be
-  copied verbatim. They re-implement the same behavior with a Swift-first
-  public API (closures/return values instead of a method-channel
-  dispatcher).
+  are native-only files, not mirrored sources. Their Flutter counterparts are
+  woven into the method-channel API (`FlutterEventSink`, `FlutterMethodCall`)
+  and cannot be copied verbatim. The native files expose the same behavior
+  through a Swift-first public API (closures/return values instead of a
+  method-channel dispatcher).
 
-**Why mirror instead of making the Flutter plugin depend on this package**:
-the Flutter plugin ships via a CocoaPods podspec
+**Why keep a mirror copy instead of making the Flutter plugin depend on this
+package**: the Flutter plugin ships via a CocoaPods podspec
 (`packages/dart/barnard/ios/barnard.podspec`); making a CocoaPods pod depend
 on a sibling local SwiftPM package is possible but nontrivial to wire up
 safely, and this repo's CI/tooling here has no Flutter/CocoaPods toolchain
-to validate that path end-to-end. Mirroring the pure, dependency-free
-sources with a byte-identical sync check is lower-risk for this first
-slice. Follow-up: evaluate making `packages/dart/barnard/ios` depend on
-this package directly (true move) once that path is validated against a
-real Flutter build.
+to validate that path end-to-end. Synchronizing the pure, dependency-free
+sources from this native origin into the Flutter package, with a byte-identical
+drift check, is lower-risk for this first slice. Follow-up: evaluate making
+`packages/dart/barnard/ios` depend on this package directly once that path is
+validated against a real Flutter build.

@@ -81,9 +81,9 @@ jobs:
             --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
 
   swift-mirror-sync-check:
-    # packages/swift/barnard mirrors the Flutter-free platform adapters and
-    # BarnardCore sources under packages/dart/barnard/ios; this guards against
-    # drift (see scripts/check-swift-mirror.sh).
+    # packages/swift/barnard is the origin for Flutter-free platform adapters
+    # and BarnardCore sources mirrored under packages/dart/barnard/ios; this
+    # guards against drift (see scripts/check-swift-mirror.sh).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,9 +139,9 @@ jobs:
         run: ./gradlew test
 
   android-mirror-sync-check:
-    # packages/android/barnard mirrors the Flutter-free crypto/signing/RPID
-    # sources under packages/dart/barnard/android; this guards against drift
-    # (see scripts/check-android-mirror.sh).
+    # packages/android/barnard is the origin for Flutter-free
+    # crypto/signing/RPID sources mirrored under packages/dart/barnard/android;
+    # this guards against drift (see scripts/check-android-mirror.sh).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
