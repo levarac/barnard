@@ -5,8 +5,9 @@ JSON Schema definitions for Barnard v1.
 This is the shared source of truth for:
 - Events (detection/state/constraint/error + debug events)
 - Config and capabilities
+- Holder-held owner self-proof records
+- Holder-held wallet binding, owner-key rotation, and unbinding records
 
 Notes
 - Terminology is not translated: **Scan / Advertise / Central / Peripheral / GATT / Transport**
 - `DetectionEvent` is based on receiver-observed facts: `rpid + rssi + timestamp`
-
