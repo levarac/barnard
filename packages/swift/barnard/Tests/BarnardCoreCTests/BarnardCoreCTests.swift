@@ -245,6 +245,7 @@ final class BarnardCoreCTests: XCTestCase {
       Wallet: 0x\(hex(walletAddress))
       Owner-Key: 0x\(hex(ownerPublicKey))
       Chain-ID: eip155:1
+      Scope: global
       Nonce: 0x000102030405060708090a0b0c0d0e0f
       Issued-At: 2026-07-30T09:00:00Z
       """.utf8

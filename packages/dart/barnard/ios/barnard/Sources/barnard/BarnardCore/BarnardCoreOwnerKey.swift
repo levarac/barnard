@@ -64,6 +64,7 @@ public extension BarnardCoreSigning {
       "Wallet: 0x\(lowercaseHex(walletAddress))",
       "Owner-Key: 0x\(lowercaseHex(ownerPublicKey))",
       "Chain-ID: eip155:\(chainId)",
+      "Scope: global",
       "Nonce: 0x\(lowercaseHex(nonce))",
       "Issued-At: \(issuedAt)",
     ].joined(separator: "\n")
@@ -404,13 +405,14 @@ public extension BarnardCoreSigning {
       omittingEmptySubsequences: false
     ).map(String.init)
     guard
-      lines.count == 10,
+      lines.count == 11,
       lines[1].isEmpty,
       lines[2] == "This signature authorizes no transaction and moves no assets.",
       lines[3].isEmpty,
       lines[4] == "Domain-Tag: \(accountBindingDomainTag)",
       lines[5] == "Wallet: 0x\(lowercaseHex(expectedWalletAddress))",
-      lines[6] == "Owner-Key: 0x\(lowercaseHex(expectedOwnerPublicKey))"
+      lines[6] == "Owner-Key: 0x\(lowercaseHex(expectedOwnerPublicKey))",
+      lines[8] == "Scope: global"
     else {
       return false
     }
@@ -437,9 +439,9 @@ public extension BarnardCoreSigning {
 
     let noncePrefix = "Nonce: 0x"
     guard
-      lines[8].hasPrefix(noncePrefix),
+      lines[9].hasPrefix(noncePrefix),
       let nonce = decodeLowercaseHex(
-        String(lines[8].dropFirst(noncePrefix.count))
+        String(lines[9].dropFirst(noncePrefix.count))
       ),
       nonce.count == 16
     else {
@@ -447,10 +449,10 @@ public extension BarnardCoreSigning {
     }
 
     let issuedAtPrefix = "Issued-At: "
-    guard lines[9].hasPrefix(issuedAtPrefix) else {
+    guard lines[10].hasPrefix(issuedAtPrefix) else {
       return false
     }
-    let issuedAt = String(lines[9].dropFirst(issuedAtPrefix.count))
+    let issuedAt = String(lines[10].dropFirst(issuedAtPrefix.count))
 
     guard let reconstructed = buildAccountBindingText(
       domain: domain,

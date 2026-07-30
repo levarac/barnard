@@ -44,7 +44,7 @@
       "x-barnard-byte-length": 33
     },
     "signature": {
-      "description": "65-byte Barnard-native recoverable signature r || s || recoveryId as 0x-prefixed lowercase hex. recoveryId is 0 or 1.",
+      "description": "65-byte Barnard Recoverable secp256k1 Signature Profile v1 value r || s || recoveryId as 0x-prefixed lowercase hex. recoveryId is 0 or 1.",
       "type": "string",
       "pattern": "^0x[0-9a-f]{128}(?:00|01)$",
       "x-barnard-byte-length": 65

@@ -104,13 +104,19 @@ The `AccountSecret` itself is never used directly as a private key.
 
 All four binary message families below use secp256k1 with deterministic
 RFC 6979 signing over `SHA256(message)`. Signers emit low-S signatures.
-Signatures serialize as:
+This 65-byte format is named the **Barnard Recoverable secp256k1 Signature
+Profile v1**. Signatures in this profile serialize as:
 
 ```text
 r (32-byte unsigned big-endian)
 || s (32-byte unsigned big-endian)
 || recoveryId (1 byte, 0x00 or 0x01)
 ```
+
+The Barnard profile is not ES256K. ES256K, as specified by RFC 8812, is a
+64-octet `R || S` ECDSA signature over SHA-256 and has no recovery byte.
+Implementations, schemas, and documentation MUST NOT label a Barnard
+`r || s || recoveryId` signature as ES256K.
 
 Every verifier MUST reject:
 
@@ -147,6 +153,15 @@ the signer, and requires it to equal `ownerPublicKey`.
 
 The self-proof binds control of the owner key to the named event signing key
 for the stated ENIN range. It does not contain TEK, RPIK, or an RPID.
+
+The self-proof maps to the typed-envelope fields as follows: envelope `type`
+is represented by the `barnard-self-proof` domain tag, `protocolVersion` by
+its `:v1` suffix, `eventIdHash` by the same-named message field,
+`signingPubkey` by `eventSigningPublicKey`, the ENIN window by `eninStart` and
+`eninEnd`, and `ownerPubkey` by `ownerPublicKey`. Reporting-layer
+`eventDefinitionDigest` and `reportDigest` fields are deliberately outside
+the self-proof signature scope. The SCITT RFCs listed under References are
+prior art for that separate reporting layer.
 
 ### 2. Wallet acknowledgement
 
@@ -214,8 +229,9 @@ silently substituted for it.
 Open question 2 from the issue is resolved here. v1 includes the drafted
 human-readable authorization statement but omits the unrelated URI, request,
 resource, and expiration fields from full EIP-4361. This is the smallest field
-set that identifies the protocol, account, owner key, chain context, ceremony,
-and issuance time while stating that no transaction is authorized.
+set that identifies the protocol, account, owner key, chain context, global
+scope, ceremony, and issuance time while stating that no transaction is
+authorized.
 
 The exact text is:
 
@@ -228,6 +244,7 @@ Domain-Tag: barnard-account-binding:v1
 Wallet: 0x{walletAddress lowercase hex}
 Owner-Key: 0x{compressed owner public key lowercase hex}
 Chain-ID: eip155:{chainId unsigned decimal}
+Scope: global
 Nonce: 0x{16-byte nonce lowercase hex}
 Issued-At: {issuedAt}
 ```
@@ -251,6 +268,9 @@ Canonical encoding rules are normative:
 - `chainId` is an unsigned 64-bit integer in the range 0 through
   18446744073709551615, emitted in base 10 with no leading zero, except that
   zero is emitted as `0`.
+- `Scope` is the literal ASCII value `global` in v1. A scoped binding requires
+  a future versioned domain tag and MUST NOT be represented by changing this
+  line.
 - `nonce` is exactly 16 bytes and is emitted as `0x` plus 32 lowercase
   hexadecimal digits.
 - `issuedAt` is supplied by the host as a valid proleptic-Gregorian calendar
@@ -279,6 +299,7 @@ Domain-Tag: barnard-account-binding:v1
 Wallet: 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
 Owner-Key: 0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 Chain-ID: eip155:1
+Scope: global
 Nonce: 0x000102030405060708090a0b0c0d0e0f
 Issued-At: 2026-07-30T09:00:00Z
 ```
@@ -461,6 +482,9 @@ Using a fresh wallet address remains valid.
 - Full EIP-4361 login fields: rejected because this is an endorsement, not an
   authentication session; unused URI/resource/expiration fields add canonical
   inputs without improving the binding.
+- An `expiresAt` binding field: rejected because a binding is a long-lived,
+  idempotent fact, revocation occurs through account unbinding, and v1 defines
+  no expiry semantics.
 - A binding text without the no-assets statement: rejected because the
   ceremony must remain human-readable and explicitly non-transactional.
 
@@ -468,9 +492,20 @@ Using a fresh wallet address remains valid.
 
 - ERC-1271/6492 verification through the verifier port.
 - EIP-712 binding under `barnard-account-binding:v2`.
+- A versioned COSE/CBOR interoperability profile in v2.
 - Host UX for account rotation and wallet-authorized unbinding.
 - Presentation-time challenge-response.
 - Post-quantum migration through versioned domain tags and rotation records.
+
+## References
+
+- [RFC 8812: CBOR Object Signing and Encryption (COSE) and JSON Object
+  Signing and Encryption (JOSE) Registrations for
+  secp256k1](https://www.rfc-editor.org/rfc/rfc8812.html)
+- [RFC 9942: An Information Model for Supply Chain Integrity,
+  Transparency, and Trust](https://www.rfc-editor.org/rfc/rfc9942.html)
+- [RFC 9943: An Architecture for Trustworthy and Transparent Digital Supply
+  Chains](https://www.rfc-editor.org/rfc/rfc9943.html)
 
 ## Validation
 

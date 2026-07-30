@@ -54,6 +54,7 @@ def message(
                 "959f2815b16f81798"
             ),
             f"Chain-ID: eip155:{chain_id}",
+            "Scope: global",
             "Nonce: 0x000102030405060708090a0b0c0d0e0f",
             f"Issued-At: {issued_at}",
         ]
@@ -93,6 +94,18 @@ def main() -> int:
         message(issued_at="2026-02-31T09:00:00Z"),
         message(issued_at="1900-02-29T09:00:00Z"),
         message(issued_at="2026-04-31T09:00:00Z"),
+        message().replace("\nScope: global", ""),
+        message().replace("Scope: global", "Scope: event"),
+        message().replace(
+            (
+                "\nScope: global"
+                "\nNonce: 0x000102030405060708090a0b0c0d0e0f"
+            ),
+            (
+                "\nNonce: 0x000102030405060708090a0b0c0d0e0f"
+                "\nScope: global"
+            ),
+        ),
         message() + "\n",
         message().replace("\n", "\r\n"),
     ]

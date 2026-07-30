@@ -35,14 +35,15 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
       Wallet: 0x14791697260e4c9a71f18484c9f997b308e59325
       Owner-Key: 0x03879beac8b548009124867a99a358aeb34ff42f957f868bbc83339568b16d9c67
       Chain-ID: eip155:1
+      Scope: global
       Nonce: 0x000102030405060708090a0b0c0d0e0f
       Issued-At: 2026-07-30T09:00:00Z
       """
     )
-    XCTAssertEqual(Array(text.utf8).count, 393)
+    XCTAssertEqual(Array(text.utf8).count, 407)
     XCTAssertEqual(
       hex(BarnardCoreSigning.computeEip191Digest(text: text)),
-      "ab50a5d7394456bc06b6b5d93af6fa22b433b1a48340a8aac8c35ce3791ffb50"
+      "1aad6c43694a0e64bf3994959907b7392a590a1e7139bc9f52a86dc71709dc44"
     )
     XCTAssertFalse(text.hasSuffix("\n"))
 
@@ -405,6 +406,58 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
         walletSignature: walletSignature,
         signature: walletSigner
       )
+    )
+  }
+
+  func testWalletBindingRejectsNonGlobalScopeWithMatchingSignatures() throws {
+    let ownerPrivateKey = scalarTwo
+    let ownerPublicKey = compressedPublicKey(privateKey: ownerPrivateKey)
+    let walletAddress = try XCTUnwrap(
+      BarnardCoreSigning.ethereumAddress(
+        publicKeyCompressed: generatorCompressed
+      )
+    )
+    let canonicalText = try XCTUnwrap(
+      BarnardCoreSigning.buildAccountBindingText(
+        domain: "beid.levarac.org",
+        walletAddress: walletAddress,
+        ownerPublicKey: ownerPublicKey,
+        chainId: 1,
+        nonce: (0x00...0x0f).map(UInt8.init),
+        issuedAt: "2026-07-30T09:00:00Z"
+      )
+    )
+    let alteredScopeText = canonicalText.replacingOccurrences(
+      of: "Scope: global",
+      with: "Scope: event"
+    )
+    let alteredScopeEip191Signature = BarnardCoreSigning.signRecoverable(
+      privateKey: scalarOne,
+      messageHash32: BarnardCoreSigning.computeEip191Digest(
+        text: alteredScopeText
+      )
+    )
+    let alteredScopeWalletSignature =
+      alteredScopeEip191Signature.r
+      + alteredScopeEip191Signature.s
+      + [UInt8(alteredScopeEip191Signature.v + 27)]
+    let alteredScopeAcknowledgement = try XCTUnwrap(
+      BarnardCoreSigning.signWalletAcknowledgement(
+        ownerPrivateKey: ownerPrivateKey,
+        walletAddress: walletAddress,
+        walletSignature: alteredScopeWalletSignature
+      )
+    )
+
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyWalletBinding(
+        text: alteredScopeText,
+        walletSignature: alteredScopeWalletSignature,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey,
+        acknowledgement: alteredScopeAcknowledgement
+      ),
+      .invalid
     )
   }
 

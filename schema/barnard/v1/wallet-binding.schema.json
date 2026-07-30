@@ -35,7 +35,7 @@
       "x-barnard-byte-length": 20
     },
     "BarnardRecoverableSignature": {
-      "description": "65-byte Barnard-native signature r || s || recoveryId as 0x-prefixed lowercase hex. recoveryId is 0 or 1.",
+      "description": "65-byte Barnard Recoverable secp256k1 Signature Profile v1 value r || s || recoveryId as 0x-prefixed lowercase hex. recoveryId is 0 or 1.",
       "type": "string",
       "pattern": "^0x[0-9a-f]{128}(?:00|01)$",
       "x-barnard-byte-length": 65
@@ -49,7 +49,7 @@
     "BindingMessage": {
       "description": "Canonical UTF-8 account-binding text with LF line endings and no trailing newline.",
       "type": "string",
-      "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})? wants to bind this wallet to a Levarac owner key\\.\\n\\nThis signature authorizes no transaction and moves no assets\\.\\n\\nDomain-Tag: barnard-account-binding:v1\\nWallet: 0x[0-9a-f]{40}\\nOwner-Key: 0x(?:02|03)[0-9a-f]{64}\\nChain-ID: eip155:(?:0|[1-9][0-9]*)\\nNonce: 0x[0-9a-f]{32}\\nIssued-At: [0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])",
+      "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})? wants to bind this wallet to a Levarac owner key\\.\\n\\nThis signature authorizes no transaction and moves no assets\\.\\n\\nDomain-Tag: barnard-account-binding:v1\\nWallet: 0x[0-9a-f]{40}\\nOwner-Key: 0x(?:02|03)[0-9a-f]{64}\\nChain-ID: eip155:(?:0|[1-9][0-9]*)\\nScope: global\\nNonce: 0x[0-9a-f]{32}\\nIssued-At: [0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])",
       "allOf": [
         {
           "description": "The optional decimal port is canonical and in the 0...65535 range.",
