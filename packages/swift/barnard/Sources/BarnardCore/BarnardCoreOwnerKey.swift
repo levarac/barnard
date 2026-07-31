@@ -12,11 +12,6 @@ public enum BarnardCoreWalletBindingVerification: Int32 {
   case smartWalletUnsupported = 2
 }
 
-public enum BarnardCoreAccountUnbindingSigner: Int32 {
-  case owner = 0
-  case wallet = 1
-}
-
 public enum BarnardCoreWalletVerifierVerdict: Equatable {
   case valid(verifiedAtUnixSeconds: Int64)
   case invalid(verifiedAtUnixSeconds: Int64)
@@ -308,13 +303,13 @@ public extension BarnardCoreSigning {
   }
 
   static func signAccountUnbinding(
-    signerPrivateKey: [UInt8],
+    ownerPrivateKey: [UInt8],
     ownerPublicKey: [UInt8],
     walletAddress: [UInt8],
     walletSignature: [UInt8]
   ) -> BarnardCoreRecoverableSignature? {
     guard
-      isValidPrivateKey(signerPrivateKey),
+      publicKey(forPrivateKey: ownerPrivateKey) == ownerPublicKey,
       let message = buildAccountUnbindingMessage(
         ownerPublicKey: ownerPublicKey,
         walletAddress: walletAddress,
@@ -324,37 +319,31 @@ public extension BarnardCoreSigning {
       return nil
     }
     return signRecoverable(
-      privateKey: signerPrivateKey,
+      privateKey: ownerPrivateKey,
       messageHash32: BarnardCorePrimitives.sha256(message)
     )
   }
 
   static func verifyAccountUnbinding(
-    signer: BarnardCoreAccountUnbindingSigner,
     ownerPublicKey: [UInt8],
     walletAddress: [UInt8],
     walletSignature: [UInt8],
     signature: BarnardCoreRecoverableSignature
   ) -> Bool {
-    switch signer {
-    case .owner:
-      guard
-        let message = buildAccountUnbindingMessage(
-          ownerPublicKey: ownerPublicKey,
-          walletAddress: walletAddress,
-          walletSignature: walletSignature
-        ),
-        let recoveredPublicKey = strictRecoveredPublicKey(
-          signature,
-          messageHash32: BarnardCorePrimitives.sha256(message)
-        )
-      else {
-        return false
-      }
-      return recoveredPublicKey == ownerPublicKey
-    case .wallet:
+    guard
+      let message = buildAccountUnbindingMessage(
+        ownerPublicKey: ownerPublicKey,
+        walletAddress: walletAddress,
+        walletSignature: walletSignature
+      )
+    else {
       return false
     }
+    return verifyNativeSignature(
+      signature,
+      message: message,
+      expectedPublicKey: ownerPublicKey
+    )
   }
 
   static func verifyAccountUnbinding(

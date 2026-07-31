@@ -422,7 +422,7 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
 
     let ownerSignature = try XCTUnwrap(
       BarnardCoreSigning.signAccountUnbinding(
-        signerPrivateKey: scalarOne,
+        ownerPrivateKey: scalarOne,
         ownerPublicKey: generatorCompressed,
         walletAddress: walletAddress,
         walletSignature: walletSignature
@@ -430,20 +430,18 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
     )
     XCTAssertTrue(
       BarnardCoreSigning.verifyAccountUnbinding(
-        signer: .owner,
         ownerPublicKey: generatorCompressed,
         walletAddress: walletAddress,
         walletSignature: walletSignature,
         signature: ownerSignature
       )
     )
-    XCTAssertFalse(
-      BarnardCoreSigning.verifyAccountUnbinding(
-        signer: .wallet,
+    XCTAssertNil(
+      BarnardCoreSigning.signAccountUnbinding(
+        ownerPrivateKey: walletPrivateKey,
         ownerPublicKey: generatorCompressed,
         walletAddress: walletAddress,
-        walletSignature: walletSignature,
-        signature: ownerSignature
+        walletSignature: walletSignature
       )
     )
   }
@@ -484,6 +482,57 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
         expectedOwnerPublicKey: ownerPublicKey
       ),
       .valid
+    )
+
+    func walletSignature(for candidate: String) -> [UInt8] {
+      let signature = BarnardCoreSigning.signRecoverable(
+        privateKey: walletPrivateKey,
+        messageHash32: BarnardCoreSigning.computeEip191Digest(text: candidate)
+      )
+      return signature.r + signature.s + [UInt8(signature.v + 27)]
+    }
+
+    func assertUnbindingRejected(
+      _ candidate: String,
+      file: StaticString = #filePath,
+      line: UInt = #line
+    ) {
+      XCTAssertEqual(
+        BarnardCoreSigning.verifyAccountUnbinding(
+          text: candidate,
+          walletSignature: walletSignature(for: candidate),
+          expectedWalletAddress: walletAddress,
+          expectedOwnerPublicKey: ownerPublicKey
+        ),
+        .invalid,
+        file: file,
+        line: line
+      )
+    }
+
+    assertUnbindingRejected(
+      text.replacingOccurrences(of: "\n", with: "\r\n")
+    )
+
+    var wrongLineCount = text.split(
+      separator: "\n",
+      omittingEmptySubsequences: false
+    ).map(String.init)
+    wrongLineCount.remove(at: 1)
+    assertUnbindingRejected(wrongLineCount.joined(separator: "\n"))
+
+    var reorderedFields = text.split(
+      separator: "\n",
+      omittingEmptySubsequences: false
+    ).map(String.init)
+    reorderedFields.swapAt(5, 6)
+    assertUnbindingRejected(reorderedFields.joined(separator: "\n"))
+
+    assertUnbindingRejected(
+      text.replacingOccurrences(
+        of: "This signature REVOKES a wallet binding and authorizes no transaction.",
+        with: "This signature authorizes no transaction and moves no assets."
+      )
     )
 
     var rawRecoveryIdSignature = walletSigner
@@ -578,26 +627,31 @@ final class BarnardOwnerKeyMessageTests: XCTestCase {
       .invalid
     )
 
-    let rawDigestSigner = try XCTUnwrap(
+    let unbindingAcknowledgement = try XCTUnwrap(
+      BarnardCoreSigning.signWalletAcknowledgement(
+        ownerPrivateKey: scalarTwo,
+        walletAddress: walletAddress,
+        walletSignature: walletSigner
+      )
+    )
+    XCTAssertEqual(
+      BarnardCoreSigning.verifyWalletBinding(
+        text: text,
+        walletSignature: walletSigner,
+        expectedWalletAddress: walletAddress,
+        expectedOwnerPublicKey: ownerPublicKey,
+        acknowledgement: unbindingAcknowledgement
+      ),
+      .invalid
+    )
+
+    XCTAssertNil(
       BarnardCoreSigning.signAccountUnbinding(
-        signerPrivateKey: walletPrivateKey,
+        ownerPrivateKey: walletPrivateKey,
         ownerPublicKey: ownerPublicKey,
         walletAddress: walletAddress,
         walletSignature: originalBindingSignature
       )
-    )
-    let rawDigestWalletSignature =
-      rawDigestSigner.r
-      + rawDigestSigner.s
-      + [UInt8(rawDigestSigner.v)]
-    XCTAssertEqual(
-      BarnardCoreSigning.verifyAccountUnbinding(
-        text: text,
-        walletSignature: rawDigestWalletSignature,
-        expectedWalletAddress: walletAddress,
-        expectedOwnerPublicKey: ownerPublicKey
-      ),
-      .invalid
     )
 
     let smartWalletMagic = bytes(

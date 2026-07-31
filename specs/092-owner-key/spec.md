@@ -216,7 +216,10 @@ total  113
 
 The digest identifies one exact wallet-binding record. The owner key signs the
 SHA-256 digest of this message. Verification recovers the compressed key and
-requires it to equal `ownerPublicKey`.
+requires it to equal `ownerPublicKey`. The BarnardCore signer is owner-only:
+it accepts `ownerPrivateKey`, requires that key to derive `ownerPublicKey`,
+and rejects a mismatched key rather than minting an unverifiable signature.
+The corresponding verifier has no signer-kind parameter.
 
 The EOA-authorized path MUST NOT sign this raw digest. It uses the canonical
 human-readable account-unbinding text defined below, signs it through
@@ -224,6 +227,16 @@ EIP-191 `personal_sign`, and verifies the recovered Ethereum address against
 `walletAddress`. The two signer paths deliberately retain different message
 formats because owner-key signatures are Barnard-native while wallet
 signatures must remain human-readable.
+
+The two paths also have deliberately different revocation granularity. An
+owner-key-authorized unbinding revokes one exact binding record, identified by
+`walletSignatureHash`. The wallet-authorized ceremony carries no wallet
+signature hash and revokes at `(walletAddress, ownerPublicKey, chainId)`
+granularity. A valid wallet-authorized unbinding therefore revokes the binding
+fact for that tuple, not merely one encoding or signature of it. This follows
+from treating a binding as an idempotent, long-lived fact: repeating the same
+binding ceremony MUST NOT bypass an existing revocation by producing different
+signature bytes.
 
 ## Canonical wallet-binding text
 
@@ -413,6 +426,36 @@ canonical text, wallet signature, expected 20-byte wallet address, expected
 9. Only if the canonical binding and both signatures pass, return `valid`.
 
 The API does not aggregate endorsements and does not query RPC.
+
+## Wallet-authorized unbinding verification
+
+`verifyAccountUnbinding` verifies one wallet-authorized unbinding ceremony
+only. It takes the byte-exact canonical unbinding text, wallet signature,
+expected 20-byte wallet address, and expected 33-byte owner public key.
+
+1. Parse the supplied text under the canonical unbinding grammar, reconstruct
+   it byte-for-byte, and require its `Wallet:` and `Owner-Key:` fields to equal
+   `expectedWalletAddress` and `expectedOwnerPublicKey`. Reject any
+   noncanonical text, field mismatch, CR, trailing LF, binding statement, or
+   binding domain tag before treating the signature as a revocation.
+2. Classify the wallet signature.
+   - `smartWalletUnsupported` returns an unverified smart-wallet result.
+   - `invalid` returns an invalid-shape result.
+3. Parse `r || s || v` from the 65-byte signature.
+4. Normalize `v = 27` to recovery ID 0 and `v = 28` to recovery ID 1. Raw
+   `v = 0` and `v = 1` are also accepted. Reject every other value.
+5. Require valid non-zero `r` and `s` scalars and low-S.
+6. Compute the EIP-191 digest and recover the public key with the existing
+   recovery primitive. Recovery IDs 2 and 3 remain unsupported deliberately.
+7. Derive the recovered Ethereum address and compare it byte-for-byte with
+   `expectedWalletAddress`.
+8. Only if the canonical unbinding and wallet signature pass, return `valid`.
+
+The wallet-signed unbinding has no owner-acknowledgement step. A conforming
+verifier MUST NOT require an owner signature or owner cooperation: a wallet
+can unilaterally revoke its binding to an owner key.
+
+The API does not aggregate revocations and does not query RPC.
 
 ## Smart-wallet verifier port
 
