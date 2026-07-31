@@ -62,7 +62,7 @@ dependencies {
 mavenPublishing {
     coordinates("org.levarac", "barnard", version.toString())
 
-    publishToMavenCentral()
+    publishToMavenCentral(automaticRelease = true)
     if (providers.gradleProperty("signingInMemoryKey").isPresent) {
         signAllPublications()
     }

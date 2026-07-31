@@ -168,8 +168,17 @@ jobs:
         run: ./gradlew assembleDebug assembleRelease
       - name: gradle test (crypto/TEK/RPID + signing + engine/identity unit tests)
         run: ./gradlew test
-      - name: gradle Maven-local publication dry run
-        run: ./gradlew publishToMavenLocal
+      - name: gradle Maven-local publication and POM validation
+        run: |
+          ./gradlew publishToMavenLocal -Dmaven.repo.local="$GITHUB_WORKSPACE/.m2/repository"
+          version="$(git describe --tags --match 'v[0-9]*' --abbrev=0 | sed 's/^v//')"
+          pom="$GITHUB_WORKSPACE/.m2/repository/org/levarac/barnard/$version/barnard-$version.pom"
+          test -f "$pom"
+          grep -F '<groupId>org.levarac</groupId>' "$pom"
+          grep -F '<artifactId>barnard</artifactId>' "$pom"
+          grep -F "<version>$version</version>" "$pom"
+          grep -F '<name>MIT License</name>' "$pom"
+          grep -F '<connection>scm:git:git://github.com/levarac/barnard.git</connection>' "$pom"
 
   android-mirror-sync-check:
     # packages/android/barnard is the origin for Flutter-free

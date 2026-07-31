@@ -23,12 +23,13 @@ Central**, choose that release tag in **Run workflow**, and run it. The workflow
 
 After the workflow succeeds, open [Maven Central](https://central.sonatype.com/)
 and verify that the deployment contains the expected version, POM metadata, AAR,
-sources JAR, javadoc JAR, and signatures before publishing the deployment there.
+sources JAR, javadoc JAR, and signatures. The workflow automatically releases
+the validated deployment; no further Central Portal publish action is required.
 
 For a local fallback, put `mavenCentralUsername`, `mavenCentralPassword`,
 `signingInMemoryKey`, and `signingInMemoryKeyPassword` in
 `~/.gradle/gradle.properties`. Then run the manual Maven Central publish command
-from `packages/android/barnard`.
+from `packages/android/barnard`; it uses the same automatic release behavior.
 
 Revisit whole-monorepo versioning if repository size grows enough to hurt
 consumer fetches or if platforms genuinely need divergent versioning. At that
