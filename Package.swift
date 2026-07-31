@@ -47,7 +47,7 @@ let package = Package(
         ),
         .testTarget(
             name: "BarnardCoreCTests",
-            dependencies: ["BarnardCoreC"],
+            dependencies: ["BarnardCore", "BarnardCoreC"],
             path: "packages/swift/barnard/Tests/BarnardCoreCTests"
         )
     ]
