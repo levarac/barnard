@@ -1,16 +1,42 @@
 name: Native SDK CI
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.coderabbit.yaml'
+      - 'LICENSE'
+      - '.gitignore'
   push:
-    branches: [ main ]
+    branches: [ main, "release/**" ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.coderabbit.yaml'
+      - 'LICENSE'
+      - '.gitignore'
 
 jobs:
+  schema-privacy-invariant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce schema privacy invariant
+        run: |
+          python3 scripts/check-schema-privacy-invariant.py --self-test
+          python3 scripts/check-wallet-binding-schema.py
+
   swift-package:
     # Flutter-free: builds/tests packages/swift/barnard directly. No Flutter
     # toolchain is installed in this job (barnard#56 acceptance criterion:
     # "CI validates each first-class SDK surface independently").
     runs-on: macos-15
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: packages/swift/barnard
@@ -81,16 +107,18 @@ jobs:
             --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
 
   swift-mirror-sync-check:
-    # packages/swift/barnard mirrors the Flutter-free platform adapters and
-    # BarnardCore sources under packages/dart/barnard/ios; this guards against
-    # drift (see scripts/check-swift-mirror.sh).
+    # packages/swift/barnard is the origin for Flutter-free platform adapters
+    # and BarnardCore sources mirrored under packages/dart/barnard/ios; this
+    # guards against drift (see scripts/check-swift-mirror.sh).
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-swift-mirror.sh
 
   ios-native-example:
     runs-on: macos-15
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: examples/ios-native
@@ -123,6 +151,7 @@ jobs:
     # acceptance criterion: "CI validates each first-class SDK surface
     # independently").
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: packages/android/barnard
@@ -139,16 +168,18 @@ jobs:
         run: ./gradlew test
 
   android-mirror-sync-check:
-    # packages/android/barnard mirrors the Flutter-free crypto/signing/RPID
-    # sources under packages/dart/barnard/android; this guards against drift
-    # (see scripts/check-android-mirror.sh).
+    # packages/android/barnard is the origin for Flutter-free
+    # crypto/signing/RPID sources mirrored under packages/dart/barnard/android;
+    # this guards against drift (see scripts/check-android-mirror.sh).
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-android-mirror.sh
 
   android-native-example:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: examples/android-native

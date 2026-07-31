@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v1/self-proof.schema.json",
+  "title": "Barnard Self-Proof Record (v1)",
+  "description": "Holder-held owner-key binding for one event signing key and ENIN range. This record is disclosed point-to-point and is never public or on-wire.",
+  "x-barnard-disclosure-scope": "holder-held",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "self-proof"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "eventIdHash": {
+      "description": "32-byte event identifier hash as 0x-prefixed lowercase hex.",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$",
+      "x-barnard-byte-length": 32
+    },
+    "eventSigningPublicKey": {
+      "description": "33-byte compressed SEC1 event signing public key as 0x-prefixed lowercase hex.",
+      "type": "string",
+      "pattern": "^0x(?:02|03)[0-9a-f]{64}$",
+      "x-barnard-byte-length": 33
+    },
+    "eninStart": {
+      "description": "Inclusive unsigned ENIN range start.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "eninEnd": {
+      "description": "Inclusive unsigned ENIN range end. It must be greater than or equal to eninStart.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "ownerPublicKey": {
+      "description": "33-byte compressed SEC1 owner public key as 0x-prefixed lowercase hex.",
+      "type": "string",
+      "pattern": "^0x(?:02|03)[0-9a-f]{64}$",
+      "x-barnard-byte-length": 33
+    },
+    "signature": {
+      "description": "65-byte Barnard Recoverable secp256k1 Signature Profile v1 value r || s || recoveryId as 0x-prefixed lowercase hex. recoveryId is 0 or 1.",
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{128}(?:00|01)$",
+      "x-barnard-byte-length": 65
+    }
+  },
+  "required": [
+    "type",
+    "schemaVersion",
+    "eventIdHash",
+    "eventSigningPublicKey",
+    "eninStart",
+    "eninEnd",
+    "ownerPublicKey",
+    "signature"
+  ]
+}

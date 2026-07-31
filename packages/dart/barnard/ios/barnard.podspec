@@ -11,7 +11,7 @@ Barnard BLE Transport for Flutter (GATT-first RPID).
                        DESC
   s.homepage         = 'https://github.com/levarac/barnard'
   s.license          = { :file => '../LICENSE' }
-  s.author           = { 'Your Company' => 'email@example.com' }
+  s.author           = { 'Levarac' => 'https://github.com/levarac/barnard/issues' }
   s.source           = { :path => '.' }
   s.source_files = 'barnard/Sources/barnard/**/*'
   s.dependency 'Flutter'

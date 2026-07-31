@@ -29,6 +29,9 @@ typedef int32_t (*display_id4_fn)(const uint8_t *, uint8_t *);
 typedef int32_t (*sha256_fn)(const uint8_t *, int32_t, uint8_t *);
 typedef int32_t (*derive_signing_keypair_fn)(
     const uint8_t *, int32_t, const uint8_t *, int32_t, uint8_t *, uint8_t *);
+typedef int32_t (*derive_owner_keypair_fn)(const uint8_t *, uint8_t *, uint8_t *);
+typedef int32_t (*keccak256_fn)(const uint8_t *, int32_t, uint8_t *);
+typedef int32_t (*eip191_digest_fn)(const uint8_t *, int32_t, uint8_t *);
 typedef int32_t (*sign_recoverable_fn)(
     const uint8_t *, const uint8_t *, uint8_t *, uint8_t *, int32_t *);
 typedef uint8_t (*should_emit_rssi_update_fn)(uint32_t, uint32_t);
@@ -106,6 +109,11 @@ int main(int argc, char **argv) {
   sha256_fn sha256 = (sha256_fn)must_sym(handle, "barnard_core_sha256");
   derive_signing_keypair_fn derive_signing_keypair =
       (derive_signing_keypair_fn)must_sym(handle, "barnard_core_derive_signing_keypair");
+  derive_owner_keypair_fn derive_owner_keypair =
+      (derive_owner_keypair_fn)must_sym(handle, "barnard_core_derive_owner_keypair");
+  keccak256_fn keccak256 = (keccak256_fn)must_sym(handle, "barnard_core_keccak256");
+  eip191_digest_fn eip191_digest =
+      (eip191_digest_fn)must_sym(handle, "barnard_core_eip191_digest");
   sign_recoverable_fn sign_recoverable =
       (sign_recoverable_fn)must_sym(handle, "barnard_core_sign_recoverable");
   should_emit_rssi_update_fn should_emit_rssi_update =
@@ -181,6 +189,29 @@ int main(int argc, char **argv) {
   expect_hex("signing_s", s, 32,
              "51760b12ac9be31472f61ca68574e7d1c950ca68504d7dd37bff1bba97e3e7d8");
   expect_i32("signing_v", v, 0);
+
+  uint8_t account_secret[32] = {0};
+  uint8_t owner_private_key[32], owner_public_key[33], digest[32];
+  if (derive_owner_keypair(account_secret, owner_private_key, owner_public_key) != 0) {
+    fprintf(stderr, "owner-key vector call returned an error\n");
+    return 2;
+  }
+  if (keccak256((const uint8_t *)"abc", 3, digest) != 0) {
+    fprintf(stderr, "Keccak-256 vector call returned an error\n");
+    return 2;
+  }
+  expect_hex("owner_private_key", owner_private_key, 32,
+             "46cbfd04992339fab4937354a6f24c115a238f4bd133a8c43b18162ab986bf27");
+  expect_hex("owner_public_key", owner_public_key, 33,
+             "03351e5165d083f53425fc4a51e7228d53e88eb2899bcb6a83368a8aafaa1de5f4");
+  expect_hex("keccak256", digest, 32,
+             "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45");
+  if (eip191_digest((const uint8_t *)"Hello World", 11, digest) != 0) {
+    fprintf(stderr, "EIP-191 vector call returned an error\n");
+    return 2;
+  }
+  expect_hex("eip191_digest", digest, 32,
+             "a1de988600a42c4b4ab089b619297c17d53cffae5d5120d82d8a92d0bb3b78f2");
 
   stable = 0;
   expect_i32("stable_enin_status", stable_read_enin(899, 899, 0, 300, 0, 0, &stable), 1);

@@ -1,5 +1,9 @@
 name: Swift Android Cross-Compile
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Locks in what the issue #78 spike proved manually: BarnardCore (and its C ABI
 # surface, BarnardCoreC) cross-compiles for aarch64-android with the official
 # Swift Android SDK, and the exported C symbols stay present in the .so.
@@ -22,7 +26,7 @@ on:
       - "packages/swift/**"
       - ".github/workflows/swift-android.yml"
   push:
-    branches: [ main ]
+    branches: [ main, "release/**" ]
     paths:
       - "Package.swift"
       - "packages/swift/**"
@@ -93,6 +97,7 @@ jobs:
           swift build --package-path packages/swift/barnard \
             --product BarnardCoreC \
             --swift-sdk "$ANDROID_TRIPLE" \
+            --static-swift-stdlib \
             -c release
       - name: Verify exported C ABI symbols in the Android .so
         run: |
@@ -116,8 +121,15 @@ jobs:
             barnard_core_compute_event_code_hash \
             barnard_core_display_id4 \
             barnard_core_sha256 \
+            barnard_core_keccak256 \
+            barnard_core_eip191_digest \
             barnard_core_derive_signing_keypair \
+            barnard_core_derive_owner_keypair \
             barnard_core_sign_recoverable \
+            barnard_core_build_self_proof_message \
+            barnard_core_verify_self_proof \
+            barnard_core_classify_wallet_signature \
+            barnard_core_verify_wallet_binding \
             barnard_core_should_emit_rssi_update \
             barnard_core_should_serve_gatt_display_id; do
             if ! grep -qw "$symbol" /tmp/exported-symbols.txt; then
@@ -125,9 +137,25 @@ jobs:
               exit 1
             fi
           done
-          echo "OK: all 13 C ABI symbols exported for $ANDROID_TRIPLE"
+          echo "OK: all 20 C ABI symbols exported for $ANDROID_TRIPLE"
 
-      - name: C host consumption proof (Linux native, same C ABI)
+      - name: Reject dynamic Swift runtime dependencies in the Android .so
+        # Runtime execution is deferred to the device lab; this cheap guard
+        # ensures the Android artifact does not require libswift*.so at load time.
+        run: |
+          so=$(find packages/swift/barnard/.build -name libBarnardCoreC.so | head -1)
+          readelf=$(find "$ANDROID_NDK_LATEST_HOME" -name llvm-readelf | head -1)
+          if [ -z "$so" ] || [ -z "$readelf" ]; then
+            echo "Android .so or llvm-readelf not found" >&2
+            exit 1
+          fi
+          "$readelf" -d "$so" | tee /tmp/barnard-corec-needed.txt
+          if grep -E 'Shared library: \[libswift[^]]*\.so\]' /tmp/barnard-corec-needed.txt; then
+            echo "BarnardCoreC must not retain dynamic Swift runtime dependencies" >&2
+            exit 1
+          fi
+
+      - name: C ABI vector replay (Linux native)
         # The Android .so cannot execute on the runner; this builds the same
         # BarnardCoreC product for the Linux host with the same toolchain and
         # replays the issue #80 golden vector through dlopen + the C ABI.
