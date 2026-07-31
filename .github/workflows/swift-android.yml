@@ -97,6 +97,7 @@ jobs:
           swift build --package-path packages/swift/barnard \
             --product BarnardCoreC \
             --swift-sdk "$ANDROID_TRIPLE" \
+            --static-swift-stdlib \
             -c release
       - name: Verify exported C ABI symbols in the Android .so
         run: |
@@ -138,7 +139,23 @@ jobs:
           done
           echo "OK: all 20 C ABI symbols exported for $ANDROID_TRIPLE"
 
-      - name: C host consumption proof (Linux native, same C ABI)
+      - name: Reject dynamic Swift runtime dependencies in the Android .so
+        # Runtime execution is deferred to the device lab; this cheap guard
+        # ensures the Android artifact does not require libswift*.so at load time.
+        run: |
+          so=$(find packages/swift/barnard/.build -name libBarnardCoreC.so | head -1)
+          readelf=$(find "$ANDROID_NDK_LATEST_HOME" -name llvm-readelf | head -1)
+          if [ -z "$so" ] || [ -z "$readelf" ]; then
+            echo "Android .so or llvm-readelf not found" >&2
+            exit 1
+          fi
+          "$readelf" -d "$so" | tee /tmp/barnard-corec-needed.txt
+          if grep -E 'Shared library: \[libswift[^]]*\.so\]' /tmp/barnard-corec-needed.txt; then
+            echo "BarnardCoreC must not retain dynamic Swift runtime dependencies" >&2
+            exit 1
+          fi
+
+      - name: C ABI vector replay (Linux native)
         # The Android .so cannot execute on the runner; this builds the same
         # BarnardCoreC product for the Linux host with the same toolchain and
         # replays the issue #80 golden vector through dlopen + the C ABI.

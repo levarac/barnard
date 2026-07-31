@@ -62,6 +62,35 @@ public enum BarnardCoreKeyManager {
 }
 
 public enum BarnardCoreCrypto {
+  /// Calculates ENIN without trapping when an input cannot fit in `UInt32`.
+  ///
+  /// This is the boundary-safe counterpart to `calculateEnin`. It shares the
+  /// fixed-length clamps and beacon-chain normalization used by the core
+  /// calculation, so foreign-function callers do not need to duplicate them.
+  public static func calculateEninIfRepresentable(
+    unixSeconds: Int64,
+    mode: BarnardCoreEninMode = .fixedLength,
+    eninSeconds: Int64 = 300,
+    beaconChain: BarnardCoreBeaconChain = .ethereumMainnet
+  ) -> UInt32? {
+    let window: Int64
+    switch mode {
+    case .fixedLength:
+      guard unixSeconds >= 0 else { return nil }
+      let effectiveSeconds = min(max(eninSeconds, 12), 3_600)
+      window = unixSeconds / effectiveSeconds
+    case .beaconSlot:
+      let (elapsed, overflow) = unixSeconds.subtractingReportingOverflow(
+        beaconChain.effectiveGenesisUnixSeconds
+      )
+      guard !overflow else { return 0 }
+      guard elapsed > 0 else { return 0 }
+      window = elapsed / beaconChain.effectiveSlotSeconds
+    }
+    guard window <= Int64(UInt32.max) else { return nil }
+    return UInt32(window)
+  }
+
   public static func deriveTekForEvent(
     deviceSecret: [UInt8],
     eventCode: String
@@ -111,17 +140,15 @@ public enum BarnardCoreCrypto {
     eninSeconds: Int64 = 300,
     beaconChain: BarnardCoreBeaconChain = .ethereumMainnet
   ) -> UInt32 {
-    switch mode {
-    case .fixedLength:
-      let effectiveSeconds = min(max(eninSeconds, 12), 3_600)
-      return UInt32(unixSeconds / effectiveSeconds)
-    case .beaconSlot:
-      let elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds
-      if elapsed <= 0 {
-        return 0
-      }
-      return UInt32(elapsed / beaconChain.effectiveSlotSeconds)
+    guard let result = calculateEninIfRepresentable(
+      unixSeconds: unixSeconds,
+      mode: mode,
+      eninSeconds: eninSeconds,
+      beaconChain: beaconChain
+    ) else {
+      preconditionFailure("ENIN input is outside the UInt32 representable domain")
     }
+    return result
   }
 
   public static func stableReadEnin(

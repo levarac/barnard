@@ -2,6 +2,7 @@
 
 import Foundation
 import XCTest
+import BarnardCore
 @testable import BarnardCoreC
 
 /// Replays the issue #80 golden behavior vector (BarnardBehaviorVectorTests)
@@ -115,6 +116,86 @@ final class BarnardCoreCTests: XCTestCase {
     XCTAssertEqual(barnard_core_stable_read_enin(899, .max, 0, 300, 0, 0, &enin), -1)
     XCTAssertEqual(barnard_core_stable_read_enin(-1, -1, 1, 300, 0, 12, &enin), 1)
     XCTAssertEqual(enin, 0)
+  }
+
+  func testBeaconSlotMinimumTimestampHasStableZeroCAbiWindow() {
+    XCTAssertEqual(barnard_core_calculate_enin(.min, 1, 300, 1, 12), 0)
+
+    var enin: UInt32 = .max
+    XCTAssertEqual(barnard_core_stable_read_enin(.min, .min, 1, 300, 1, 12, &enin), 1)
+    XCTAssertEqual(enin, 0)
+  }
+
+  func testCAbiEninUsesCoreNonTrappingDomainGuard() {
+    let cases: [(Int64, Int32, Int64, Int64, Int64, UInt32)] = [
+      (1_700_000_123, 0, 300, 0, 0, 5_666_667),
+      (-1, 0, 300, 0, 0, 0),
+      (.max, 0, 300, 0, 0, .max),
+      (-400, 1, 300, 0, 12, 0),
+      (.max, 1, 300, 0, 1, .max),
+    ]
+
+    for (unixSeconds, mode, eninSeconds, genesis, slot, expectedCValue) in cases {
+      let coreMode: BarnardCoreEninMode = mode == 1 ? .beaconSlot : .fixedLength
+      let coreValue = BarnardCoreCrypto.calculateEninIfRepresentable(
+        unixSeconds: unixSeconds,
+        mode: coreMode,
+        eninSeconds: eninSeconds,
+        beaconChain: BarnardCoreBeaconChain(
+          chainId: "c-abi-test",
+          genesisUnixSeconds: genesis,
+          slotSeconds: slot
+        )
+      )
+      XCTAssertEqual(
+        barnard_core_calculate_enin(unixSeconds, mode, eninSeconds, genesis, slot),
+        coreValue ?? expectedCValue
+      )
+    }
+  }
+
+  func testUtf8InputsRejectMalformedSequences() {
+    let malformed: [UInt8] = [0xc3, 0x28]
+    let secret = [UInt8](repeating: 0, count: 32)
+    var output = [UInt8](repeating: 0, count: 33)
+    var privateKey = [UInt8](repeating: 0, count: 32)
+
+    XCTAssertEqual(
+      barnard_core_derive_tek_for_event(secret, 32, malformed, Int32(malformed.count), &output),
+      -1
+    )
+    XCTAssertEqual(
+      barnard_core_compute_event_code_hash(malformed, Int32(malformed.count), &output),
+      -1
+    )
+    XCTAssertEqual(
+      barnard_core_derive_signing_keypair(
+        secret, 32, malformed, Int32(malformed.count), &privateKey, &output
+      ),
+      -1
+    )
+    XCTAssertEqual(barnard_core_should_serve_gatt_display_id(malformed, Int32(malformed.count)), 0)
+    XCTAssertEqual(
+      barnard_core_eip191_digest(malformed, Int32(malformed.count), &output),
+      -1
+    )
+    let walletAddress = [UInt8](repeating: 0, count: 20)
+    let publicKey = [UInt8](repeating: 0, count: 33)
+    let scalar = [UInt8](repeating: 0, count: 32)
+    XCTAssertEqual(
+      barnard_core_verify_wallet_binding(
+        malformed,
+        Int32(malformed.count),
+        [],
+        0,
+        walletAddress,
+        publicKey,
+        scalar,
+        scalar,
+        0
+      ),
+      -1
+    )
   }
 
   func testOwnerKeyCAbiMatchesGoldenVectorsAndVerifiesProofs() {

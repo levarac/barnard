@@ -42,7 +42,7 @@ let package = Package(
         ),
         .testTarget(
             name: "BarnardCoreCTests",
-            dependencies: ["BarnardCoreC"]
+            dependencies: ["BarnardCore", "BarnardCoreC"]
         )
     ]
 )
