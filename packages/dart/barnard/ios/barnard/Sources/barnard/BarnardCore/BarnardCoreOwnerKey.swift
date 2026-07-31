@@ -335,15 +335,15 @@ public extension BarnardCoreSigning {
         ownerPublicKey: ownerPublicKey,
         walletAddress: walletAddress,
         walletSignature: walletSignature
-      ),
-      let recoveredPublicKey = strictRecoveredPublicKey(
-        signature,
-        messageHash32: BarnardCorePrimitives.sha256(message)
       )
     else {
       return false
     }
-    return recoveredPublicKey == ownerPublicKey
+    return verifyNativeSignature(
+      signature,
+      message: message,
+      expectedPublicKey: ownerPublicKey
+    )
   }
 
   static func verifyAccountUnbinding(
