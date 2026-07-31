@@ -1,0 +1,49 @@
+name: Publish Maven Central
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-maven-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/android/barnard
+    env:
+      MAVEN_CENTRAL_TOKEN_B64: ${{ secrets.MAVEN_CENTRAL_TOKEN_B64 }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.ORG_GRADLE_PROJECT_signingInMemoryKey }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.ORG_GRADLE_PROJECT_signingInMemoryKeyPassword }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Configure Maven Central credentials
+        run: |
+          token="$(printf '%s' "$MAVEN_CENTRAL_TOKEN_B64" | base64 --decode)"
+          username="${token%%:*}"
+          password="${token#*:}"
+          if [ "$username" = "$token" ] || [ -z "$username" ] || [ -z "$password" ]; then
+            echo "MAVEN_CENTRAL_TOKEN_B64 must decode to username:password" >&2
+            exit 1
+          fi
+          printf '::add-mask::%s\n' "$username"
+          printf '::add-mask::%s\n' "$password"
+          {
+            echo "ORG_GRADLE_PROJECT_mavenCentralUsername=$username"
+            echo "ORG_GRADLE_PROJECT_mavenCentralPassword=$password"
+          } >> "$GITHUB_ENV"
+      - name: Publish release to Maven Central
+        run: ./gradlew publishToMavenCentral

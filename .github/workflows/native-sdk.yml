@@ -166,6 +166,8 @@ jobs:
         run: ./gradlew assembleDebug assembleRelease
       - name: gradle test (crypto/TEK/RPID + signing + engine/identity unit tests)
         run: ./gradlew test
+      - name: gradle Maven-local publication dry run
+        run: ./gradlew publishToMavenLocal
 
   android-mirror-sync-check:
     # packages/android/barnard is the origin for Flutter-free
