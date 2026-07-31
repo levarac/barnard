@@ -80,7 +80,10 @@ public enum BarnardCoreCrypto {
       let effectiveSeconds = min(max(eninSeconds, 12), 3_600)
       window = unixSeconds / effectiveSeconds
     case .beaconSlot:
-      let elapsed = unixSeconds - beaconChain.effectiveGenesisUnixSeconds
+      let (elapsed, overflow) = unixSeconds.subtractingReportingOverflow(
+        beaconChain.effectiveGenesisUnixSeconds
+      )
+      guard !overflow else { return 0 }
       guard elapsed > 0 else { return 0 }
       window = elapsed / beaconChain.effectiveSlotSeconds
     }

@@ -192,9 +192,12 @@ int main(int argc, char **argv) {
 
   uint8_t account_secret[32] = {0};
   uint8_t owner_private_key[32], owner_public_key[33], digest[32];
-  if (derive_owner_keypair(account_secret, owner_private_key, owner_public_key) != 0 ||
-      keccak256((const uint8_t *)"abc", 3, digest) != 0) {
+  if (derive_owner_keypair(account_secret, owner_private_key, owner_public_key) != 0) {
     fprintf(stderr, "owner-key vector call returned an error\n");
+    return 2;
+  }
+  if (keccak256((const uint8_t *)"abc", 3, digest) != 0) {
+    fprintf(stderr, "Keccak-256 vector call returned an error\n");
     return 2;
   }
   expect_hex("owner_private_key", owner_private_key, 32,
