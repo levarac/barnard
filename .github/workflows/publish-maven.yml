@@ -45,7 +45,7 @@ jobs:
           java-version: "17"
       - name: Configure Maven Central credentials
         run: |
-          token="$(printf '%s' "$MAVEN_CENTRAL_TOKEN_B64" | base64 --decode)"
+          token="$(printf '%s' "$MAVEN_CENTRAL_TOKEN_B64" | tr -d '[:space:]' | base64 --decode)"
           username="${token%%:*}"
           password="${token#*:}"
           if [ "$username" = "$token" ] || [ -z "$username" ] || [ -z "$password" ]; then
