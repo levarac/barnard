@@ -37,6 +37,8 @@ final class BarnardExampleModel: ObservableObject {
       append("error: \(error.code) \(error.message)")
     case .constraint(let constraint):
       append("constraint: \(constraint.code) \(constraint.message ?? "")")
+    case .eventInfoHint(let hint):
+      append("event_info_hint: name=\(hint.eventInfo.eventDisplayName) additionalNamesOmitted=\(hint.additionalNamesOmitted) additionalEventsOmitted=\(hint.additionalEventsOmitted)")
     }
   }
 
