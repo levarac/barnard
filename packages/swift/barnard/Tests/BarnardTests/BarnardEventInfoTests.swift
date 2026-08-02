@@ -109,6 +109,9 @@ final class BarnardEventInfoTests: XCTestCase {
     retries.recordSemanticUnavailable(UUID())
     retries.clearAll()
     XCTAssertTrue(retries.canStart(peer, now: 0))
+
+    retries.recordSemanticUnavailable(peer, now: 0)
+    XCTAssertTrue(retries.canStart(peer, now: 300))
   }
 
   func testCodecAcceptsExactBoundsAndRejectsAdjacentValues() throws {

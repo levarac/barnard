@@ -176,8 +176,9 @@ public class BarnardEventInfoDiscoverySession(startedAtMs: Long) {
         private set
     public var additionalEventsOmitted: Boolean = false
         private set
-    public val retainedHashCount: Int get() = namesByHash.size
+    public val retainedHashCount: Int get() = synchronized(this) { namesByHash.size }
 
+    @Synchronized
     public fun observe(info: BarnardEventInfo, nowMs: Long): BarnardEventInfoDiscoveryObservation {
         if (nowMs - startedAtMs >= 300_000L) {
             startedAtMs = nowMs
@@ -203,28 +204,50 @@ public class BarnardEventInfoRetryBudget {
     private val attempts = mutableMapOf<String, Int>()
     private val retryAfterMs = mutableMapOf<String, Long>()
     private val semanticUnavailable = mutableSetOf<String>()
+    private val lastSeenMs = mutableMapOf<String, Long>()
 
-    public fun canStart(peer: String, nowMs: Long): Boolean =
-        peer !in semanticUnavailable && (attempts[peer] ?: 0) < 2 && nowMs >= (retryAfterMs[peer] ?: 0L)
+    @Synchronized
+    public fun canStart(peer: String, nowMs: Long): Boolean {
+        prune(nowMs)
+        lastSeenMs[peer] = nowMs
+        return peer !in semanticUnavailable && (attempts[peer] ?: 0) < 2 && nowMs >= (retryAfterMs[peer] ?: 0L)
+    }
 
+    @Synchronized
     public fun recordRecoverableFailure(peer: String, nowMs: Long): Long? {
+        prune(nowMs)
+        lastSeenMs[peer] = nowMs
         val count = (attempts[peer] ?: 0) + 1
         attempts[peer] = count
         if (count >= 2) return null
         return (nowMs + 30_000L).also { retryAfterMs[peer] = it }
     }
 
-    public fun recordSemanticUnavailable(peer: String) { semanticUnavailable += peer }
+    @Synchronized
+    public fun recordSemanticUnavailable(peer: String, nowMs: Long = System.currentTimeMillis()) {
+        prune(nowMs)
+        lastSeenMs[peer] = nowMs
+        semanticUnavailable += peer
+    }
 
+    @Synchronized
     public fun clear(peer: String) {
         attempts.remove(peer)
         retryAfterMs.remove(peer)
         semanticUnavailable.remove(peer)
+        lastSeenMs.remove(peer)
     }
 
+    @Synchronized
     public fun clearAll() {
         attempts.clear()
         retryAfterMs.clear()
         semanticUnavailable.clear()
+        lastSeenMs.clear()
+    }
+
+    private fun prune(nowMs: Long) {
+        val stalePeers = lastSeenMs.filterValues { seenAt -> nowMs >= seenAt && nowMs - seenAt >= 300_000L }.keys
+        stalePeers.forEach(::clear)
     }
 }

@@ -106,6 +106,9 @@ class BarnardEventInfoTest {
         retries.recordSemanticUnavailable("CC:DD")
         retries.clearAll()
         assertEquals(true, retries.canStart(peer, 0L))
+
+        retries.recordSemanticUnavailable(peer, 0L)
+        assertEquals(true, retries.canStart(peer, 300_000L))
     }
 
     @Test

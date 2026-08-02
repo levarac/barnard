@@ -225,12 +225,17 @@ public final class BarnardEventInfoRetryBudget {
   private var attempts: [UUID: Int] = [:]
   private var retryAfter: [UUID: TimeInterval] = [:]
   private var semanticUnavailable: Set<UUID> = []
+  private var lastSeen: [UUID: TimeInterval] = [:]
 
   public init() {}
   public func canStart(_ peer: UUID, now: TimeInterval) -> Bool {
-    !semanticUnavailable.contains(peer) && (attempts[peer] ?? 0) < 2 && now >= (retryAfter[peer] ?? 0)
+    prune(now: now)
+    lastSeen[peer] = now
+    return !semanticUnavailable.contains(peer) && (attempts[peer] ?? 0) < 2 && now >= (retryAfter[peer] ?? 0)
   }
   @discardableResult public func recordRecoverableFailure(_ peer: UUID, now: TimeInterval) -> TimeInterval? {
+    prune(now: now)
+    lastSeen[peer] = now
     let next = (attempts[peer] ?? 0) + 1
     attempts[peer] = next
     guard next < 2 else { return nil }
@@ -238,15 +243,27 @@ public final class BarnardEventInfoRetryBudget {
     retryAfter[peer] = deadline
     return deadline
   }
-  public func recordSemanticUnavailable(_ peer: UUID) { semanticUnavailable.insert(peer) }
+  public func recordSemanticUnavailable(_ peer: UUID, now: TimeInterval = Date().timeIntervalSince1970) {
+    prune(now: now)
+    lastSeen[peer] = now
+    semanticUnavailable.insert(peer)
+  }
   public func clear(_ peer: UUID) {
     attempts.removeValue(forKey: peer)
     retryAfter.removeValue(forKey: peer)
     semanticUnavailable.remove(peer)
+    lastSeen.removeValue(forKey: peer)
   }
   public func clearAll() {
     attempts.removeAll()
     retryAfter.removeAll()
     semanticUnavailable.removeAll()
+    lastSeen.removeAll()
+  }
+  private func prune(now: TimeInterval) {
+    let stalePeers = lastSeen.compactMap { peer, seenAt in
+      now >= seenAt && now - seenAt >= 300 ? peer : nil
+    }
+    stalePeers.forEach(clear)
   }
 }

@@ -124,7 +124,8 @@ public class BarnardEngine(private val appContext: Context) {
     private var eventInfoServePolicy = BarnardEventInfoServePolicy()
     @Volatile
     private var eventInfoDisplayName: String? = null
-    private data class EventInfoSnapshot(val value: ByteArray, var lastRequestAtMs: Long)
+    private data class EventInfoSnapshot(val value: ByteArray, @Volatile var lastRequestAtMs: Long)
+    private val eventInfoStateLock = Any()
     private val eventInfoConnectionEpochs: MutableMap<String, Long> = ConcurrentHashMap()
     private val eventInfoSnapshots: MutableMap<String, EventInfoSnapshot> = ConcurrentHashMap()
     private val eventInfoRetryBudget = BarnardEventInfoRetryBudget()
@@ -393,8 +394,10 @@ public class BarnardEngine(private val appContext: Context) {
 
     public fun startScan(allowDuplicates: Boolean = true) {
         if (!isScanning) {
-            eventInfoRetryBudget.clearAll()
-            eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
+            synchronized(eventInfoStateLock) {
+                eventInfoRetryBudget.clearAll()
+                eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
+            }
         }
         this.allowDuplicates = allowDuplicates
         startScanInternal()
@@ -590,8 +593,10 @@ public class BarnardEngine(private val appContext: Context) {
         resolutionBackoffUntilMs.clear()
         pendingBoundaryRetryDevices.clear()
         boundaryRetryBudget.clearAll()
-        eventInfoRetryBudget.clearAll()
-        eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
+        synchronized(eventInfoStateLock) {
+            eventInfoRetryBudget.clearAll()
+            eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
+        }
         peripheralReadValues.clear()
         knownPeers.clear()
 
@@ -691,8 +696,10 @@ public class BarnardEngine(private val appContext: Context) {
         isAdvertising = false
         gattServer?.close()
         gattServer = null
-        eventInfoConnectionEpochs.clear()
-        eventInfoSnapshots.clear()
+        synchronized(eventInfoStateLock) {
+            eventInfoConnectionEpochs.clear()
+            eventInfoSnapshots.clear()
+        }
         emitState("advertise_stop")
         emitDebug("info", "advertise_stop", null)
     }
@@ -817,7 +824,9 @@ public class BarnardEngine(private val appContext: Context) {
     }
 
     private fun emitEventInfoHint(address: String, eventInfo: BarnardEventInfo) {
-        val observation = eventInfoDiscoverySession.observe(eventInfo, System.currentTimeMillis())
+        val observation = synchronized(eventInfoStateLock) {
+            eventInfoDiscoverySession.observe(eventInfo, System.currentTimeMillis())
+        }
         val hint = BarnardEventInfoHintEvent(
             peripheralId = address,
             eventInfo = eventInfo,
@@ -1637,9 +1646,11 @@ public class BarnardEngine(private val appContext: Context) {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             val address = device.address ?: return
-            eventInfoSnapshots.keys.removeAll { it.startsWith("$address:") }
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
-                eventInfoConnectionEpochs[address] = (eventInfoConnectionEpochs[address] ?: 0L) + 1L
+            synchronized(eventInfoStateLock) {
+                eventInfoSnapshots.keys.removeAll { it.startsWith("$address:") }
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    eventInfoConnectionEpochs[address] = (eventInfoConnectionEpochs[address] ?: 0L) + 1L
+                }
             }
         }
 
@@ -1737,39 +1748,41 @@ public class BarnardEngine(private val appContext: Context) {
 
     @SuppressLint("MissingPermission")
     private fun respondEventInfoRead(server: BluetoothGattServer, device: BluetoothDevice, requestId: Int, offset: Int) {
-        val now = System.currentTimeMillis()
-        eventInfoSnapshots.entries.removeIf { now - it.value.lastRequestAtMs > 30_000L }
-        val address = device.address ?: ""
-        val key = "$address:${eventInfoConnectionEpochs[address] ?: 0L}"
-        if (offset == 0) {
-            val payload = try {
-                BarnardEventInfoCodec.payloadIfServing(
-                    eventInfoServePolicy,
-                    eventCode,
-                    eventInfoDisplayName,
-                    getEventCodeHash(),
-                )
-            } catch (_: IllegalArgumentException) {
-                null
+        synchronized(eventInfoStateLock) {
+            val now = System.currentTimeMillis()
+            eventInfoSnapshots.entries.removeIf { now - it.value.lastRequestAtMs > 30_000L }
+            val address = device.address ?: ""
+            val key = "$address:${eventInfoConnectionEpochs[address] ?: 0L}"
+            if (offset == 0) {
+                val payload = try {
+                    BarnardEventInfoCodec.payloadIfServing(
+                        eventInfoServePolicy,
+                        eventCode,
+                        eventInfoDisplayName,
+                        getEventCodeHash(),
+                    )
+                } catch (_: IllegalArgumentException) {
+                    null
+                }
+                if (payload == null) {
+                    server.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
+                    return
+                }
+                eventInfoSnapshots[key] = EventInfoSnapshot(payload, now)
             }
-            if (payload == null) {
-                server.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
+            val snapshot = eventInfoSnapshots[key]
+            if (snapshot == null) {
+                server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
                 return
             }
-            eventInfoSnapshots[key] = EventInfoSnapshot(payload, now)
+            if (offset > snapshot.value.size) {
+                eventInfoSnapshots.remove(key)
+                server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
+                return
+            }
+            val slice = if (offset == snapshot.value.size) ByteArray(0) else snapshot.value.copyOfRange(offset, snapshot.value.size)
+            server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+            if (offset == snapshot.value.size) eventInfoSnapshots.remove(key) else snapshot.lastRequestAtMs = now
         }
-        val snapshot = eventInfoSnapshots[key]
-        if (snapshot == null) {
-            server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
-            return
-        }
-        if (offset > snapshot.value.size) {
-            eventInfoSnapshots.remove(key)
-            server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
-            return
-        }
-        val slice = if (offset == snapshot.value.size) ByteArray(0) else snapshot.value.copyOfRange(offset, snapshot.value.size)
-        server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
-        if (offset == snapshot.value.size) eventInfoSnapshots.remove(key) else snapshot.lastRequestAtMs = now
     }
 }
