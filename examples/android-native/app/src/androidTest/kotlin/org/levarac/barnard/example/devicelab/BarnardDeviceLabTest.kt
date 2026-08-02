@@ -184,6 +184,9 @@ class BarnardScannerDeviceLabTest {
                     is BarnardEvent.Error -> marker(
                         "BARNARD_EVT error code=${event.error.code} message=${event.error.message}",
                     )
+                    is BarnardEvent.EventInfoHint -> marker(
+                        "BARNARD_EVT event_info_hint name=${event.hint.eventInfo.eventDisplayName}",
+                    )
                 }
             }
         }
