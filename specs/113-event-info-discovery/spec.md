@@ -18,6 +18,10 @@ Discovery and admission remain separate. The event-info payload never carries
 the raw event code, never causes an automatic join, and never establishes that
 the serving Peripheral is an organizer.
 
+The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
+this document are to be interpreted as described in RFC 2119 and RFC 8174 when,
+and only when, they appear in all capitals.
+
 ## Goals
 
 - Define byte-exact, versioned, bounded TLV encoding for `B005 event-info`.
@@ -110,10 +114,10 @@ a new format version. It MUST NOT be introduced as an unknown TLV under v1.
 
 ### 2. Organizer-designated Peripherals serve event-info
 
-**Recommendation:** serving is disabled by default. Only a locally
-organizer-designated Peripheral serves event-info, and only while its host
-considers the named event active. Ordinary joined participant devices do not
-serve it.
+**Recommendation:** serving MUST be disabled by default. A Peripheral MUST
+serve event-info only when its host has locally designated it as an organizer
+device and considers the named event active. A joined participant Peripheral
+that is not organizer-designated MUST NOT serve event-info.
 
 **Rationale:** making every participant a venue beacon would disclose the
 event's existence and name wherever attendees travel. Explicit designation
@@ -132,8 +136,8 @@ identifier to the wire.
 
 ### 3. Event-info is an unauthenticated hint
 
-**Recommendation:** a Central treats every parsed payload as an
-unauthenticated discovery hint. It may show the candidate event and shorten a
+**Recommendation:** a Central MUST treat every parsed payload as an
+unauthenticated discovery hint. It MAY show the candidate event and shorten a
 discovery wait, but MUST require user confirmation before joining and MUST NOT
 use event-info to suppress a directly observed event or peer.
 
@@ -177,9 +181,9 @@ linkability tradeoff described in issue #64.
 ### 5. Reserve an ignorable census extension
 
 **Recommendation:** TLV type `0x10` is reserved for the issue #82 space census.
-It is not emitted by this specification. All v1 readers skip well-formed
-unknown TLVs, including `0x10`, while continuing to require and parse the event
-display name and EventCodeHash.
+A v1 emitter MUST NOT emit it under this specification. All v1 readers MUST
+skip well-formed unknown TLVs, including `0x10`, while continuing to require
+and parse the event display name and EventCodeHash.
 
 **Rationale:** a length-delimited extension can ride the same bounded GATT
 value without changing the advertisement or breaking v1 readers. Reserving
@@ -204,14 +208,15 @@ The event-info characteristic uses the Bluetooth base UUID:
 0000B005-0000-1000-8000-00805F9B34FB
 ```
 
-It has the `Read` property only. It has no `Write`, `Write Without Response`,
-`Notify`, or `Indicate` property. Its maximum complete value is 512 bytes.
+It MUST have the `Read` property only and MUST NOT have `Write`, `Write Without
+Response`, `Notify`, or `Indicate`. Its maximum complete value MUST be 512
+bytes.
 
-A Peripheral implementation that supports this specification includes `B005`
-in `B001` even when serving is currently disabled. Discovering the
+A Peripheral implementation that supports this specification MUST include
+`B005` in `B001` even when serving is currently disabled. Discovering the
 characteristic therefore reveals implementation capability, not whether an
-event is active. When the serve policy is false, a read returns GATT
-`Read Not Permitted` and no value.
+event is active. When the serve policy is false, an offset-zero read MUST
+return GATT `Read Not Permitted` and no value.
 
 ## Wire format
 
@@ -263,7 +268,7 @@ Unicode scalar value, contains no U+0000 through U+001F or U+007F control
 characters, and occupies at most 64 bytes after NFC normalization. Emitters
 MUST normalize before measuring and encoding. Parsers MUST reject invalid
 UTF-8, non-NFC text, forbidden controls, or an out-of-range byte length. Hosts
-render it as untrusted plain text, never markup.
+MUST render it as untrusted plain text and MUST NOT interpret it as markup.
 
 `eventCodeHash` uses the exact event-code string supplied to the existing
 Barnard B004 derivation. No trimming, case conversion, or Unicode
@@ -281,21 +286,51 @@ MUST prevent B005 from being served.
 ### Long-read snapshot behavior
 
 The 512-byte bound allows a future census to exceed one ATT response. A
-Peripheral MUST construct one immutable payload snapshot when it receives the
-offset-zero read and use the same bytes for continuation reads belonging to
-that Central's read transaction. For each valid offset from zero through the
-payload length, it returns the suffix beginning at that offset, limited by the
-platform's negotiated response size. An offset greater than the payload
-length returns GATT `Invalid Offset`.
+Peripheral MUST maintain at most one active immutable B005 snapshot per
+connected Central. The snapshot key MUST include the platform's Central or
+connection identity; a snapshot MUST NOT be shared across Centrals or reused
+after that Central reconnects. On Apple platforms the key includes the
+`CBCentral` identifier plus a local connection epoch. On Android it includes
+the `BluetoothDevice` identity plus a local GATT-server connection epoch. The
+epoch changes after disconnect/reconnect. These keys are observer-local state
+and MUST NOT be transmitted.
 
-The Peripheral MUST NOT splice a changed display name, hash, or future census
-into an in-progress long read. It may replace the snapshot after the read
-completes, fails, disconnects, or times out under a bounded platform policy.
+The callback sequence defines the application-level read transaction:
+
+1. Each accepted offset-zero request starts a new transaction. The Peripheral
+   MUST re-evaluate the serve policy, construct one complete canonical payload,
+   and replace any older snapshot for that same connected Central. A repeated
+   offset-zero request therefore starts a new transaction; it does not append
+   to or continue the older one.
+2. A nonzero request is a continuation only when that connected Central has an
+   active snapshot. The Peripheral MUST use the captured bytes even if the
+   current event metadata or serve policy has changed. A nonzero request with
+   no active snapshot MUST return GATT `Invalid Offset`.
+3. For each valid offset from zero through the payload length, the Peripheral
+   MUST return the snapshot suffix beginning at that offset, limited by the
+   platform's negotiated response size. An offset equal to the payload length
+   returns an empty successful value and completes the transaction. An offset
+   greater than the payload length returns GATT `Invalid Offset` and terminates
+   the transaction.
+4. The transaction completes and the Peripheral MUST delete its snapshot when
+   it successfully handles an offset equal to the payload length, a response
+   fails, the Central disconnects, a new offset-zero request replaces it, or
+   no request for that snapshot arrives for 30 seconds. The inactivity timer
+   resets after each valid continuation request. This timeout is the required
+   completion mechanism on platforms that provide offset callbacks but no
+   explicit signal that the Central accepted the final response.
+
+Concurrent Centrals MUST have isolated snapshots and MAY observe different
+canonical payload versions when event state changes between their offset-zero
+requests. The Peripheral MUST NOT splice a changed display name, hash, or
+future census into any one snapshot. Snapshot storage MUST remain bounded by
+one value of at most 512 bytes per connected Central and MUST be released under
+the lifecycle above.
 
 ## Serve policy
 
-`B005` serves bytes only when all of these conditions are true at the start of
-an offset-zero read:
+`B005` MUST serve bytes only when all of these conditions are true at the start
+of an offset-zero read:
 
 1. The host explicitly marks this Peripheral as organizer-designated.
 2. The host marks the event active for discovery.
@@ -304,55 +339,63 @@ an offset-zero read:
 5. The `0x02 eventCodeHash` equals the current non-empty B004 value.
 6. The complete canonical payload is no more than 512 bytes.
 
-Organizer designation and event-active state default to false and are not
-derived from membership, RPID, displayId, or proximity. Disabling either state
-MUST prevent new offset-zero reads immediately. Existing snapshots may finish
-under the bounded long-read policy so a Central never receives mixed bytes.
+Organizer designation and event-active state MUST default to false and MUST
+NOT be derived from membership, RPID, displayId, or proximity. Disabling either
+state MUST prevent new offset-zero reads immediately. Existing snapshots MUST
+remain readable under the bounded long-read policy so a Central never receives
+mixed bytes.
 
 The v1 payload has no start time, end time, or TTL. Those fields would still be
 unauthenticated, would require clock and skew semantics, and are unnecessary
-when deliberate organizer devices control serving. Hosts stop serving when an
-event is no longer active. Readers nevertheless assume that any received
-payload can be stale or replayed.
+when deliberate organizer devices control serving. Hosts MUST stop accepting
+new offset-zero reads when an event is no longer active. Readers MUST
+nevertheless assume that any received payload can be stale or replayed.
 
 ## Central behavior
 
 The discovery and existing peer-resolution paths are independent:
 
-1. A Central directly observes a `B001` advertisement and connects to its
-   Peripheral.
-2. If `B005` is present, the Central may read it whether or not it already has
+1. A Central MUST directly observe a `B001` advertisement before it treats a
+   B005 read as a nearby hint.
+2. If `B005` is present, the Central MAY read it whether or not it already has
    an event code.
-3. A valid payload produces an unauthenticated event discovery hint containing
-   the name and hash. A malformed value, unsupported format version,
-   `Read Not Permitted`, or missing `B005` produces no event-info hint.
-4. The host renders any hint as untrusted text and requires the user to
-   confirm before joining.
-5. When the host later obtains an event code out of band, it computes the B004
-   hash and may compare it with the hint before presenting the join action.
-6. Existing B004/B002/B003 same-event peer resolution continues under its
-   current rules. B005 absence, failure, or mismatch MUST NOT suppress a
-   directly observed advertisement or an otherwise valid existing
-   same-event detection.
+3. The Central MUST treat a valid payload as an unauthenticated event discovery
+   hint containing the name and hash. It MUST NOT synthesize an event-info hint
+   from a malformed value, unsupported format version, `Read Not Permitted`, or
+   missing `B005`.
+4. The host MUST render any hint as untrusted plain text and MUST require the
+   user to confirm before joining.
+5. When the host later obtains an event code out of band, it MUST use the B004
+   derivation and MAY compare the result with the hint before presenting the
+   join action.
+6. A conforming implementation MUST preserve existing B004/B002/B003
+   same-event peer resolution under its current rules. B005 absence, failure,
+   or mismatch MUST NOT suppress a directly observed advertisement or an
+   otherwise valid existing same-event detection.
 
-A Central may deduplicate simultaneous hints with the same 8-byte hash for a
-bounded discovery session. This is observer-local state and MUST NOT be
-transmitted. Hash equality is not authentication and hash inequality does not
-prove that either event is legitimate.
+A Central MAY deduplicate simultaneous hints only when both the 8-byte hash
+and canonical event-display-name bytes match within a bounded discovery
+session. It MUST retain every distinct canonical name associated with one hash
+and MUST surface that conflict rather than silently discarding or selecting a
+name. Deduplication is observer-local state and MUST NOT be transmitted. Hash
+equality is not authentication and hash inequality does not prove that either
+event is legitimate.
 
 ## Compatibility
 
-- `B005` is additive to the existing `B001` service. `B002`, `B003`, and
-  `B004` UUIDs, values, properties, and behavior do not change.
-- Older Centrals ignore the unknown `B005` characteristic and continue the
-  existing same-event flow.
-- New Centrals treat a Peripheral without `B005` as event-info unavailable and
-  continue direct observation and existing peer resolution.
-- The advertisement remains unchanged, preserving the current 31-byte budget.
-- Unknown TLVs are length-delimited and skipped by v1 readers. The reserved
-  `0x10` census TLV can therefore be added later without changing v1's required
+- Implementations MUST add `B005` without changing the existing `B001`
+  service UUID or the `B002`, `B003`, and `B004` UUIDs, values, properties, or
+  behavior.
+- A new Central MUST treat a Peripheral without `B005` as event-info
+  unavailable and MUST continue direct observation and existing peer
+  resolution. Older Centrals naturally ignore the unknown characteristic and
+  continue the existing same-event flow.
+- Implementations MUST NOT change the advertisement, preserving the current
+  31-byte budget.
+- v1 readers MUST skip structurally valid unknown TLVs. The reserved `0x10`
+  census TLV can therefore be added later without changing v1's required
   fields or their semantics.
-- No public JSON shape or schema changes in this specification.
+- This specification defines no public JSON shape or schema change.
 
 ## Security and privacy
 
@@ -365,7 +408,8 @@ The following risks are inherent and normative host behavior contains rather
 than eliminates them:
 
 - **Public readability:** any nearby Central can read the event name and hash.
-  Organizers enable serving only when public event visibility is appropriate.
+  Organizers SHOULD enable serving only when public event visibility is
+  appropriate.
 - **Event-level linkability:** reusing an event code reuses its eight-byte hash.
   Hosts SHOULD use a fresh, high-entropy code for each event, including each
   recurrence, so observations cannot be linked across events by a reused hash.
@@ -373,18 +417,18 @@ than eliminates them:
   them with B005 or B004. Hosts SHOULD generate high-entropy event codes and
   MUST NOT treat hashing as encryption.
 - **Spoofing and tampering:** there is no signature or authenticated channel.
-  Hosts label the result as nearby/unverified, render the name as plain text,
-  and require user confirmation plus normal admission checks.
+  Hosts MUST label the result as nearby/unverified, MUST render the name as
+  plain text, and MUST require user confirmation plus normal admission checks.
 - **Replay:** a scanner or malicious Peripheral can replay old event-info.
-  Hosts do not infer freshness from a successful read and organizer devices
-  stop serving promptly when the event ends.
+  Hosts MUST NOT infer freshness from a successful read, and organizer devices
+  MUST stop accepting new offset-zero reads promptly when the event ends.
 - **Conflicting hints:** two Peripherals can serve the same hash with different
-  names or the same name with different hashes. A Central preserves direct
-  observations, may show the conflict, and MUST NOT silently choose one as
+  names or the same name with different hashes. A Central MUST preserve direct
+  observations, MAY show the conflict, and MUST NOT silently choose one as
   authenticated.
 - **Census abuse:** a future `0x10` value remains an unauthenticated hint. It
-  may shorten discovery only when consistent with direct observation and must
-  never suppress an observed event, matching issue #82.
+  MAY shorten discovery only when consistent with direct observation and MUST
+  NOT suppress an observed event, matching issue #82.
 
 The raw event code MUST NOT appear in the payload, debug-local-name substitute,
 unknown v1 extension, or organizer designation. The payload MUST NOT carry a
@@ -392,18 +436,23 @@ new stable identifier to compensate for the absence of the code.
 
 ## Errors and retry behavior
 
-- A Peripheral returns `Read Not Permitted` when the serve policy is false.
-- A Peripheral returns `Invalid Offset` when a continuation offset exceeds
-  the immutable snapshot length.
-- A Central treats a missing characteristic, denied read, connection failure,
-  timeout, malformed payload, unsupported version, or invalid UTF-8 as
-  event-info unavailable, not as evidence that no event exists.
-- Retrying a failed connection or read follows the existing bounded GATT retry
-  and backoff policy. This specification adds no unbounded retry loop.
-- Parsers allocate no more than the 512-byte payload cap. Future census and
-  mock implementations must preserve an explicit count/size cap and bounded
-  retention.
-- A B005 failure does not change B004/B002/B003 retry or detection behavior.
+- A Peripheral MUST return `Read Not Permitted` for an offset-zero request that
+  cannot start a snapshot because the serve policy is false. Continuation
+  requests for an accepted snapshot MUST use its captured bytes until the
+  transaction completes, fails, disconnects, is replaced by offset zero, or
+  reaches the 30-second inactivity timeout.
+- A Peripheral MUST return `Invalid Offset` when a nonzero request has no
+  active snapshot or its offset exceeds the immutable snapshot length.
+- A Central MUST treat a missing characteristic, denied read, connection
+  failure, timeout, malformed payload, unsupported version, or invalid UTF-8
+  as event-info unavailable, not as evidence that no event exists.
+- A Central SHOULD retry a failed connection or read only under the existing
+  bounded GATT retry and backoff policy. This specification adds no unbounded
+  retry loop.
+- Parsers MUST allocate no more than the 512-byte payload cap. Future census
+  and mock implementations MUST preserve an explicit count/size cap and
+  bounded retention.
+- A B005 failure MUST NOT change B004/B002/B003 retry or detection behavior.
 
 ## Golden vectors
 
@@ -480,7 +529,7 @@ same fixtures and observable behavior:
 7. Mirror public behavior, reason/error names, maximum lengths, Unicode NFC
    rules, unknown-TLV skipping, and retry outcomes across Swift and Android.
 8. Regenerate or synchronize any repository-owned derived mirrors in the
-   implementation PR; do not hand-edit generated copies.
+   implementation PR; implementations MUST NOT hand-edit generated copies.
 
 Parity tests include byte-for-byte serialization, parsing, unknown `0x10`
 skipping, ordering and duplicate rejection, all boundary lengths, malformed
@@ -524,8 +573,8 @@ commit, timestamps, and raw B005 bytes for each run.
    an older Peripheral. Verify existing B004/B002/B003 same-event detection
    remains functional in both compatibility directions.
 
-Device-lab evidence must name the exact builds and devices. Emulator,
-simulator, mock Transport, and unit-vector evidence supplement but do not
+Device-lab evidence MUST name the exact builds and devices. Emulator,
+simulator, mock Transport, and unit-vector evidence supplement but MUST NOT
 replace the two-device runs required by issue #72.
 
 ## Rejected alternatives
@@ -565,6 +614,10 @@ replace the two-device runs required by issue #72.
 - Issue #82: space census carried by event-info.
 - Issue #64: existing displayId linkability and collision tradeoffs.
 - Issue #72: real-device coverage required for GATT-level changes.
+- [RFC 2119: Key words for use in RFCs to Indicate Requirement
+  Levels](https://www.rfc-editor.org/rfc/rfc2119).
+- [RFC 8174: Ambiguity of Uppercase vs Lowercase in RFC 2119 Key
+  Words](https://www.rfc-editor.org/rfc/rfc8174).
 - Bluetooth Core Specification, Vol 3, Part G: Attribute Protocol and Generic
   Attribute Profile.
 
