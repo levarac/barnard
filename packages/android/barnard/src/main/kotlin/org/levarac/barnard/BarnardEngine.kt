@@ -1748,7 +1748,8 @@ public class BarnardEngine(private val appContext: Context) {
 
     @SuppressLint("MissingPermission")
     private fun respondEventInfoRead(server: BluetoothGattServer, device: BluetoothDevice, requestId: Int, offset: Int) {
-        synchronized(eventInfoStateLock) {
+        data class Outcome(val status: Int, val value: ByteArray?)
+        val outcome = synchronized(eventInfoStateLock) {
             val now = System.currentTimeMillis()
             eventInfoSnapshots.entries.removeIf { now - it.value.lastRequestAtMs > 30_000L }
             val address = device.address ?: ""
@@ -1765,24 +1766,22 @@ public class BarnardEngine(private val appContext: Context) {
                     null
                 }
                 if (payload == null) {
-                    server.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
-                    return
+                    return@synchronized Outcome(BluetoothGatt.GATT_READ_NOT_PERMITTED, null)
                 }
                 eventInfoSnapshots[key] = EventInfoSnapshot(payload, now)
             }
             val snapshot = eventInfoSnapshots[key]
             if (snapshot == null) {
-                server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
-                return
+                return@synchronized Outcome(BluetoothGatt.GATT_INVALID_OFFSET, null)
             }
             if (offset > snapshot.value.size) {
                 eventInfoSnapshots.remove(key)
-                server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
-                return
+                return@synchronized Outcome(BluetoothGatt.GATT_INVALID_OFFSET, null)
             }
             val slice = if (offset == snapshot.value.size) ByteArray(0) else snapshot.value.copyOfRange(offset, snapshot.value.size)
-            server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
             if (offset == snapshot.value.size) eventInfoSnapshots.remove(key) else snapshot.lastRequestAtMs = now
+            Outcome(BluetoothGatt.GATT_SUCCESS, slice)
         }
+        server.sendResponse(device, requestId, outcome.status, offset, outcome.value)
     }
 }

@@ -222,6 +222,7 @@ public final class BarnardEventInfoDiscoverySession {
 /// B005's bounded connection/read retry policy. Semantic unavailability is
 /// terminal for the session; transport failures get one retry after 30s.
 public final class BarnardEventInfoRetryBudget {
+  private let lock = NSLock()
   private var attempts: [UUID: Int] = [:]
   private var retryAfter: [UUID: TimeInterval] = [:]
   private var semanticUnavailable: Set<UUID> = []
@@ -229,41 +230,57 @@ public final class BarnardEventInfoRetryBudget {
 
   public init() {}
   public func canStart(_ peer: UUID, now: TimeInterval) -> Bool {
-    prune(now: now)
-    lastSeen[peer] = now
-    return !semanticUnavailable.contains(peer) && (attempts[peer] ?? 0) < 2 && now >= (retryAfter[peer] ?? 0)
+    synchronized {
+      prune(now: now)
+      lastSeen[peer] = now
+      return !semanticUnavailable.contains(peer) && (attempts[peer] ?? 0) < 2 && now >= (retryAfter[peer] ?? 0)
+    }
   }
   @discardableResult public func recordRecoverableFailure(_ peer: UUID, now: TimeInterval) -> TimeInterval? {
-    prune(now: now)
-    lastSeen[peer] = now
-    let next = (attempts[peer] ?? 0) + 1
-    attempts[peer] = next
-    guard next < 2 else { return nil }
-    let deadline = now + 30
-    retryAfter[peer] = deadline
-    return deadline
+    synchronized {
+      prune(now: now)
+      lastSeen[peer] = now
+      let next = (attempts[peer] ?? 0) + 1
+      attempts[peer] = next
+      guard next < 2 else { return nil }
+      let deadline = now + 30
+      retryAfter[peer] = deadline
+      return deadline
+    }
   }
   public func recordSemanticUnavailable(_ peer: UUID, now: TimeInterval = Date().timeIntervalSince1970) {
-    prune(now: now)
-    lastSeen[peer] = now
-    semanticUnavailable.insert(peer)
+    synchronized {
+      prune(now: now)
+      lastSeen[peer] = now
+      semanticUnavailable.insert(peer)
+    }
   }
   public func clear(_ peer: UUID) {
+    synchronized { remove(peer) }
+  }
+  public func clearAll() {
+    synchronized {
+      attempts.removeAll()
+      retryAfter.removeAll()
+      semanticUnavailable.removeAll()
+      lastSeen.removeAll()
+    }
+  }
+  private func synchronized<T>(_ body: () -> T) -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    return body()
+  }
+  private func remove(_ peer: UUID) {
     attempts.removeValue(forKey: peer)
     retryAfter.removeValue(forKey: peer)
     semanticUnavailable.remove(peer)
     lastSeen.removeValue(forKey: peer)
   }
-  public func clearAll() {
-    attempts.removeAll()
-    retryAfter.removeAll()
-    semanticUnavailable.removeAll()
-    lastSeen.removeAll()
-  }
   private func prune(now: TimeInterval) {
     let stalePeers = lastSeen.compactMap { peer, seenAt in
       now >= seenAt && now - seenAt >= 300 ? peer : nil
     }
-    stalePeers.forEach(clear)
+    stalePeers.forEach(remove)
   }
 }
