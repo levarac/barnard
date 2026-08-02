@@ -472,12 +472,15 @@ new stable identifier to compensate for the absence of the code.
   bounded GATT policy. For B005, Swift and Android MUST apply the same limits:
   one active GATT exchange, a 20-entry connection queue, an eight-second
   exchange timeout, a ten-second per-peer connection cooldown, and at most two
-  B005 read attempts per Peripheral per five-minute discovery session. A
-  recoverable connection or transport failure MAY use the second attempt only
-  after a 30-second backoff. A missing B005, `Read Not Permitted`, unsupported
+  B005 attempts per Peripheral per five-minute discovery session. Each attempt
+  starts when connection establishment begins and includes the characteristic
+  read; every failed connection or read consumes one attempt. A recoverable
+  connection or transport failure MAY use the second attempt only after a
+  30-second backoff. A missing B005, `Read Not Permitted`, unsupported
   format version, or structurally invalid payload is a semantic result and
   MUST NOT be retried automatically within that session. Backoff MUST NOT
-  increase beyond 30 seconds for B005, and no third attempt is permitted.
+  increase beyond 30 seconds for B005, and no third connection or read attempt
+  is permitted.
 - Stopping Scan, stopping discovery, resetting the engine, disabling
   Bluetooth, disconnecting the Peripheral, or reaching the eight-second
   timeout MUST cancel pending B005 work, clear its per-connection state, and
@@ -572,7 +575,8 @@ offsets. They also inject more than four names for one hash, more than 32
 hashes, and events past the five-minute boundary to verify deterministic
 overflow markers, eviction, and bounded memory. Retry fixtures verify the
 eight-second timeout, 20-entry queue, ten/30-second delays, two-attempt limit,
-semantic no-retry cases, and cancellation on every stop/reset path.
+pre-read connection and read failures, rejection of a third connection or read
+attempt, semantic no-retry cases, and cancellation on every stop/reset path.
 
 ## Two-device real-BLE verification plan
 
