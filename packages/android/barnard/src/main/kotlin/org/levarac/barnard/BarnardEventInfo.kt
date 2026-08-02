@@ -12,15 +12,20 @@ import java.text.Normalizer
 public class BarnardEventInfo(
     public val eventDisplayName: String,
     eventCodeHash: ByteArray,
+    census: ByteArray? = null,
 ) {
     public val eventCodeHash: ByteArray = eventCodeHash.copyOf()
+    /** Reserved for the optional 0x10 census extension. v1 leaves it absent. */
+    public val census: ByteArray? = census?.copyOf()
 
     override fun equals(other: Any?): Boolean =
         other is BarnardEventInfo &&
             eventDisplayName == other.eventDisplayName &&
-            eventCodeHash.contentEquals(other.eventCodeHash)
+            eventCodeHash.contentEquals(other.eventCodeHash) &&
+            census.contentEquals(other.census)
 
-    override fun hashCode(): Int = 31 * eventDisplayName.hashCode() + eventCodeHash.contentHashCode()
+    override fun hashCode(): Int =
+        31 * (31 * eventDisplayName.hashCode() + eventCodeHash.contentHashCode()) + census.contentHashCode()
 }
 
 /** Kotlin mirror of Swift's [BarnardEventInfoError] reasons. */
@@ -166,6 +171,7 @@ public object BarnardEventInfoCodec {
 public data class BarnardEventInfoDiscoveryObservation(
     val additionalNamesOmitted: Boolean,
     val additionalEventsOmitted: Boolean,
+    val shouldEmitGenericHint: Boolean,
 )
 
 /** Bounded, observer-local state for one five-minute B005 discovery session. */
@@ -189,13 +195,21 @@ public class BarnardEventInfoDiscoverySession(startedAtMs: Long) {
         val hash = info.eventCodeHash.toHex()
         val name = info.eventDisplayName
         val names = namesByHash[hash]
+        var overflowedThisObservation = false
         when {
             names != null && name !in names && names.size >= 4 -> additionalNamesOmitted = true
             names != null -> names += name
-            namesByHash.size >= 32 -> additionalEventsOmitted = true
+            namesByHash.size >= 32 -> {
+                additionalEventsOmitted = true
+                overflowedThisObservation = true
+            }
             else -> namesByHash[hash] = mutableSetOf(name)
         }
-        return BarnardEventInfoDiscoveryObservation(additionalNamesOmitted, additionalEventsOmitted)
+        return BarnardEventInfoDiscoveryObservation(
+            additionalNamesOmitted,
+            additionalEventsOmitted,
+            overflowedThisObservation,
+        )
     }
 }
 
@@ -221,6 +235,15 @@ public class BarnardEventInfoRetryBudget {
         attempts[peer] = count
         if (count >= 2) return null
         return (nowMs + 30_000L).also { retryAfterMs[peer] = it }
+    }
+
+    /** A successful B005 read still consumes one of the two session attempts. */
+    @Synchronized
+    public fun recordSuccessfulAttempt(peer: String, nowMs: Long) {
+        prune(nowMs)
+        lastSeenMs[peer] = nowMs
+        attempts[peer] = (attempts[peer] ?: 0) + 1
+        retryAfterMs.remove(peer)
     }
 
     @Synchronized
