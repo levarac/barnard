@@ -148,6 +148,7 @@ public final class BarnardEngine: NSObject {
   private let rpidCharacteristicUUID = CBUUID(string: "0000B002-0000-1000-8000-00805F9B34FB")
   private let displayIdCharacteristicUUID = CBUUID(string: "0000B003-0000-1000-8000-00805F9B34FB")
   private let eventCodeHashCharacteristicUUID = CBUUID(string: "0000B004-0000-1000-8000-00805F9B34FB")
+  private let eventInfoCharacteristicUUID = CBUUID(string: "0000B005-0000-1000-8000-00805F9B34FB")
   private let localName = "BNRD"
   private let unavailableRssi = 127
 
@@ -188,11 +189,16 @@ public final class BarnardEngine: NSObject {
   private var rpidCharacteristic: CBMutableCharacteristic?
   private var displayIdCharacteristic: CBMutableCharacteristic?
   private var eventCodeHashCharacteristic: CBMutableCharacteristic?
+  private var eventInfoCharacteristic: CBMutableCharacteristic?
 
   // MARK: - State
 
   private var isScanning = false
   private var isAdvertising = false
+  private var eventInfoServePolicy = BarnardEventInfoServePolicy()
+  private var eventInfoDisplayName: String?
+  private struct EventInfoSnapshot { var value: Data; var lastRequest: Date }
+  private var eventInfoSnapshots: [UUID: EventInfoSnapshot] = [:]
   private var shouldStartScanWhenReady = false
   private var shouldStartAdvertiseWhenReady = false
   private var allowDuplicates = true
@@ -445,6 +451,20 @@ public final class BarnardEngine: NSObject {
       "eninSeconds": self.eninSeconds,
       "beaconChain": beaconChainInfo().chainId,
     ])
+  }
+
+  /// Sets B005's host-local serving state. Both booleans default to false and
+  /// are never placed on wire.
+  public func configureEventInfoServing(
+    organizerDesignated: Bool = false,
+    eventActiveForDiscovery: Bool = false,
+    eventDisplayName: String? = nil
+  ) {
+    eventInfoServePolicy = BarnardEventInfoServePolicy(
+      organizerDesignated: organizerDesignated,
+      eventActiveForDiscovery: eventActiveForDiscovery
+    )
+    eventInfoDisplayName = eventDisplayName
   }
 
   public func getCurrentEventCode() -> String? {
@@ -727,6 +747,7 @@ public final class BarnardEngine: NSObject {
     rpidCharacteristic = nil
     displayIdCharacteristic = nil
     eventCodeHashCharacteristic = nil
+    eventInfoCharacteristic = nil
 
     buildAndAddGattService()
 
@@ -759,17 +780,24 @@ public final class BarnardEngine: NSObject {
       value: nil,
       permissions: [.readable]
     )
+    let eventInfoCh = CBMutableCharacteristic(
+      type: eventInfoCharacteristicUUID,
+      properties: [.read],
+      value: nil,
+      permissions: [.readable]
+    )
 
     let svc = CBMutableService(type: discoveryServiceUUID, primary: true)
-    svc.characteristics = [rpidCh, displayIdCh, eventCodeHashCh]
+    svc.characteristics = [rpidCh, displayIdCh, eventCodeHashCh, eventInfoCh]
     manager.add(svc)
 
     rpidCharacteristic = rpidCh
     displayIdCharacteristic = displayIdCh
     eventCodeHashCharacteristic = eventCodeHashCh
+    eventInfoCharacteristic = eventInfoCh
 
     emitDebug(level: "info", name: "gatt_service_added", data: [
-      "characteristics": ["RPID", "displayId", "EventCodeHash"],
+      "characteristics": ["RPID", "displayId", "EventCodeHash", "eventInfo"],
     ])
   }
 
@@ -939,8 +967,17 @@ public final class BarnardEngine: NSObject {
     }
     peripheralCharacteristics[id] = charMap
 
-    // Step 1: EventCodeHash. B004 gates B002/B003 exchange.
-    guard let eventCodeHashCh = charMap[eventCodeHashCharacteristicUUID] else {
+    // B005 is intentionally independent of the B004 same-event gate.
+    if let eventInfo = charMap[eventInfoCharacteristicUUID] {
+      peripheral.readValue(for: eventInfo)
+      return
+    }
+    readEventCodeHash(for: peripheral)
+  }
+
+  private func readEventCodeHash(for peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    guard let eventCodeHashCh = peripheralCharacteristics[id]?[eventCodeHashCharacteristicUUID] else {
       markGattResolutionFailed(id, reason: "b004_missing", recoverable: true)
       emitDebug(level: "warn", name: "gatt_b004_missing", data: [
         "id": id.uuidString,
@@ -1165,6 +1202,8 @@ public final class BarnardEngine: NSObject {
       return "B003_displayId"
     case eventCodeHashCharacteristicUUID:
       return "B004_eventCodeHash"
+    case eventInfoCharacteristicUUID:
+      return "B005_eventInfo"
     default:
       return uuid.uuidString
     }
@@ -1340,7 +1379,7 @@ extension BarnardEngine: CBPeripheralDelegate {
       return
     }
     peripheral.discoverCharacteristics(
-      [rpidCharacteristicUUID, displayIdCharacteristicUUID, eventCodeHashCharacteristicUUID],
+      [rpidCharacteristicUUID, displayIdCharacteristicUUID, eventCodeHashCharacteristicUUID, eventInfoCharacteristicUUID],
       for: svc
     )
   }
@@ -1366,6 +1405,11 @@ extension BarnardEngine: CBPeripheralDelegate {
     // Distinguish B003 read failure (still emit detection with null) from
     // B002 read failure (drop the detection — no RPID, nothing to emit).
     if let error = error {
+      if characteristic.uuid == eventInfoCharacteristicUUID {
+        emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString])
+        readEventCodeHash(for: peripheral)
+        return
+      }
       if characteristic.uuid == displayIdCharacteristicUUID {
         emitDebug(level: "warn", name: "gatt_b003_read_failed", data: [
           "id": id.uuidString,
@@ -1416,6 +1460,18 @@ extension BarnardEngine: CBPeripheralDelegate {
     let value = characteristic.value ?? Data()
 
     switch characteristic.uuid {
+    case eventInfoCharacteristicUUID:
+      do {
+        let hint = try BarnardEventInfoCodec.parse(value)
+        emitDebug(level: "info", name: "gatt_event_info_hint", data: [
+          "id": id.uuidString,
+          "displayName": hint.eventDisplayName,
+          "eventCodeHash": hint.eventCodeHash.hexString,
+        ])
+      } catch {
+        emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString])
+      }
+      readEventCodeHash(for: peripheral)
     case eventCodeHashCharacteristicUUID:
       peripheralReadValues[id]?.eventCodeHash = value
       let matches = eventCodeHashMatches(value)
@@ -1538,9 +1594,51 @@ extension BarnardEngine: CBPeripheralManagerDelegate {
         debugName: "gatt_respond_event_code_hash",
         debugData: ["isEmpty": hash.isEmpty]
       )
+    case eventInfoCharacteristicUUID:
+      respondEventInfoRead(peripheral, request: request)
 
     default:
       peripheral.respond(to: request, withResult: .attributeNotFound)
+    }
+  }
+
+  private func respondEventInfoRead(_ peripheral: CBPeripheralManager, request: CBATTRequest) {
+    let id = request.central.identifier
+    let now = Date()
+    eventInfoSnapshots = eventInfoSnapshots.filter { now.timeIntervalSince($0.value.lastRequest) <= 30 }
+    if request.offset == 0 {
+      do {
+        guard let value = try BarnardEventInfoCodec.payloadIfServing(
+          policy: eventInfoServePolicy,
+          eventCode: rpid.eventCode,
+          eventDisplayName: eventInfoDisplayName,
+          b004EventCodeHash: rpid.getEventCodeHash()
+        ) else {
+          peripheral.respond(to: request, withResult: .readNotPermitted)
+          return
+        }
+        eventInfoSnapshots[id] = EventInfoSnapshot(value: value, lastRequest: now)
+      } catch {
+        peripheral.respond(to: request, withResult: .readNotPermitted)
+        return
+      }
+    }
+    guard var snapshot = eventInfoSnapshots[id] else {
+      peripheral.respond(to: request, withResult: .invalidOffset)
+      return
+    }
+    guard request.offset <= snapshot.value.count else {
+      eventInfoSnapshots.removeValue(forKey: id)
+      peripheral.respond(to: request, withResult: .invalidOffset)
+      return
+    }
+    request.value = snapshot.value.subdata(in: request.offset..<snapshot.value.count)
+    peripheral.respond(to: request, withResult: .success)
+    if request.offset == snapshot.value.count {
+      eventInfoSnapshots.removeValue(forKey: id)
+    } else {
+      snapshot.lastRequest = now
+      eventInfoSnapshots[id] = snapshot
     }
   }
 

@@ -94,6 +94,7 @@ public class BarnardEngine(private val appContext: Context) {
     private val rpidCharUuid: UUID = UUID.fromString("0000B002-0000-1000-8000-00805F9B34FB")
     private val displayIdCharUuid: UUID = UUID.fromString("0000B003-0000-1000-8000-00805F9B34FB")
     private val eventCodeHashCharUuid: UUID = UUID.fromString("0000B004-0000-1000-8000-00805F9B34FB")
+    private val eventInfoCharUuid: UUID = UUID.fromString("0000B005-0000-1000-8000-00805F9B34FB")
 
     // MARK: - Bluetooth
 
@@ -118,6 +119,11 @@ public class BarnardEngine(private val appContext: Context) {
     // MARK: - Event Mode
 
     private var eventCode: String? = null
+    private var eventInfoServePolicy = BarnardEventInfoServePolicy()
+    private var eventInfoDisplayName: String? = null
+    private data class EventInfoSnapshot(val value: ByteArray, var lastRequestAtMs: Long)
+    private val eventInfoConnectionEpochs: MutableMap<String, Long> = mutableMapOf()
+    private val eventInfoSnapshots: MutableMap<String, EventInfoSnapshot> = mutableMapOf()
     @Volatile
     private var currentTek: ByteArray = ByteArray(16)
 
@@ -277,6 +283,16 @@ public class BarnardEngine(private val appContext: Context) {
             "eninSeconds" to this.eninSeconds,
             "beaconChain" to this.beaconChain.chainId,
         ))
+    }
+
+    /** Sets B005 serving state. This is local host state and defaults to off. */
+    public fun configureEventInfoServing(
+        organizerDesignated: Boolean = false,
+        eventActiveForDiscovery: Boolean = false,
+        eventDisplayName: String? = null,
+    ) {
+        eventInfoServePolicy = BarnardEventInfoServePolicy(organizerDesignated, eventActiveForDiscovery)
+        eventInfoDisplayName = eventDisplayName
     }
 
     public fun getCurrentEventCode(): String? = eventCode
@@ -720,10 +736,17 @@ public class BarnardEngine(private val appContext: Context) {
         )
         service.addCharacteristic(eventCodeHashCh)
 
+        val eventInfoCh = BluetoothGattCharacteristic(
+            eventInfoCharUuid,
+            BluetoothGattCharacteristic.PROPERTY_READ,
+            BluetoothGattCharacteristic.PERMISSION_READ,
+        )
+        service.addCharacteristic(eventInfoCh)
+
         server.addService(service)
         gattServer = server
         emitDebug("info", "gatt_server_started", mapOf(
-            "characteristics" to listOf("RPID", "displayId", "EventCodeHash")
+            "characteristics" to listOf("RPID", "displayId", "EventCodeHash", "eventInfo")
         ))
     }
 
@@ -1323,7 +1346,17 @@ public class BarnardEngine(private val appContext: Context) {
                 return
             }
 
-            // v2 flow: B004 gates B002 -> B003
+            // B005 is read before, but never gated by, B004 same-event resolution.
+            val eventInfoCh = svc.getCharacteristic(eventInfoCharUuid)
+            if (eventInfoCh != null && hasConnectPermission()) {
+                gatt.readCharacteristic(eventInfoCh)
+                return
+            }
+            readB004ForResolution(gatt, svc)
+        }
+
+        @SuppressLint("MissingPermission")
+        private fun readB004ForResolution(gatt: BluetoothGatt, svc: BluetoothGattService) {
             val eventCodeHashCh = svc.getCharacteristic(eventCodeHashCharUuid)
             if (eventCodeHashCh != null && hasConnectPermission()) {
                 gatt.readCharacteristic(eventCodeHashCh)
@@ -1365,6 +1398,11 @@ public class BarnardEngine(private val appContext: Context) {
             // v2 failure policy: B003 read failure keeps the detection flow alive
             // with detectedDisplayId=null. B002/B004 failures still drop.
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                if (uuid == eventInfoCharUuid) {
+                    emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address))
+                    readB004ForResolution(gatt, svc)
+                    return
+                }
                 if (uuid == displayIdCharUuid) {
                     emitDebug("warn", "gatt_b003_read_failed", mapOf(
                         "address" to address,
@@ -1389,6 +1427,19 @@ public class BarnardEngine(private val appContext: Context) {
             }
 
             when (uuid) {
+                eventInfoCharUuid -> {
+                    try {
+                        val hint = BarnardEventInfoCodec.parse(value)
+                        emitDebug("info", "gatt_event_info_hint", mapOf(
+                            "address" to address,
+                            "displayName" to hint.eventDisplayName,
+                            "eventCodeHash" to hint.eventCodeHash.toHex(),
+                        ))
+                    } catch (_: IllegalArgumentException) {
+                        emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address))
+                    }
+                    readB004ForResolution(gatt, svc)
+                }
                 eventCodeHashCharUuid -> {
                     peripheralReadValues[address]?.eventCodeHash = value
                     val matches = eventCodeHashMatches(value)
@@ -1511,6 +1562,13 @@ public class BarnardEngine(private val appContext: Context) {
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         @SuppressLint("MissingPermission")
+        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            val address = device.address ?: return
+            eventInfoConnectionEpochs[address] = (eventInfoConnectionEpochs[address] ?: 0L) + 1L
+            eventInfoSnapshots.keys.removeAll { it.startsWith("$address:") }
+        }
+
+        @SuppressLint("MissingPermission")
         override fun onCharacteristicReadRequest(
             device: BluetoothDevice,
             requestId: Int,
@@ -1571,6 +1629,10 @@ public class BarnardEngine(private val appContext: Context) {
                     ))
                 }
 
+                eventInfoCharUuid -> {
+                    respondEventInfoRead(server, device, requestId, offset)
+                }
+
                 else -> {
                     server.sendResponse(device, requestId, BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, offset, null)
                 }
@@ -1596,5 +1658,43 @@ public class BarnardEngine(private val appContext: Context) {
                 "uuid" to characteristic.uuid.toString(),
             ))
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun respondEventInfoRead(server: BluetoothGattServer, device: BluetoothDevice, requestId: Int, offset: Int) {
+        val now = System.currentTimeMillis()
+        eventInfoSnapshots.entries.removeIf { now - it.value.lastRequestAtMs > 30_000L }
+        val address = device.address ?: ""
+        val key = "$address:${eventInfoConnectionEpochs[address] ?: 0L}"
+        if (offset == 0) {
+            val payload = try {
+                BarnardEventInfoCodec.payloadIfServing(
+                    eventInfoServePolicy,
+                    eventCode,
+                    eventInfoDisplayName,
+                    getEventCodeHash(),
+                )
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+            if (payload == null) {
+                server.sendResponse(device, requestId, BluetoothGatt.GATT_READ_NOT_PERMITTED, offset, null)
+                return
+            }
+            eventInfoSnapshots[key] = EventInfoSnapshot(payload, now)
+        }
+        val snapshot = eventInfoSnapshots[key]
+        if (snapshot == null) {
+            server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
+            return
+        }
+        if (offset > snapshot.value.size) {
+            eventInfoSnapshots.remove(key)
+            server.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
+            return
+        }
+        val slice = if (offset == snapshot.value.size) ByteArray(0) else snapshot.value.copyOfRange(offset, snapshot.value.size)
+        server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+        if (offset == snapshot.value.size) eventInfoSnapshots.remove(key) else snapshot.lastRequestAtMs = now
     }
 }
