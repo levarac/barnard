@@ -375,11 +375,33 @@ The discovery and existing peer-resolution paths are independent:
 
 A Central MAY deduplicate simultaneous hints only when both the 8-byte hash
 and canonical event-display-name bytes match within a bounded discovery
-session. It MUST retain every distinct canonical name associated with one hash
-and MUST surface that conflict rather than silently discarding or selecting a
-name. Deduplication is observer-local state and MUST NOT be transmitted. Hash
-equality is not authentication and hash inequality does not prove that either
-event is legitimate.
+session. It MUST retain distinct canonical names only within the bounds below
+and MUST surface every multiple-name condition as a conflict rather than
+silently selecting a name. Deduplication is observer-local state and MUST NOT
+be transmitted. Hash equality is not authentication and hash inequality does
+not prove that either event is legitimate.
+
+A discovery session starts when the host starts walk-up event discovery and
+MUST end when the host stops discovery or five minutes elapse, whichever comes
+first. A longer scan MUST roll into a new session after purging the old
+session's event-info state. Within one session, the Central MUST enforce all of
+these retention bounds:
+
+- at most 32 distinct event-code hashes;
+- at most four distinct canonical display-name values per hash; and
+- at most 256 display-name bytes per hash, which follows from the four-name and
+  64-byte name limits.
+
+When a fifth distinct name is observed for one retained hash, the Central MUST
+set an `additionalNamesOmitted` conflict marker and MUST NOT retain the new
+name bytes. It MAY retain the first four names for diagnostics, but MUST NOT
+present any retained name as selected, authenticated, or the complete set.
+When a 33rd distinct hash is observed, the Central MUST set an
+`additionalEventsOmitted` marker, MUST surface a generic additional-unverified-
+event observation, and MUST NOT retain that hash or name. Overflow handling
+MUST NOT suppress the underlying direct advertisement observation or claim
+that the retained candidates are complete. Both markers and all retained
+event-info state are observer-local, bounded to the session, and untransmitted.
 
 ## Compatibility
 
@@ -447,8 +469,20 @@ new stable identifier to compensate for the absence of the code.
   failure, timeout, malformed payload, unsupported version, or invalid UTF-8
   as event-info unavailable, not as evidence that no event exists.
 - A Central SHOULD retry a failed connection or read only under the existing
-  bounded GATT retry and backoff policy. This specification adds no unbounded
-  retry loop.
+  bounded GATT policy. For B005, Swift and Android MUST apply the same limits:
+  one active GATT exchange, a 20-entry connection queue, an eight-second
+  exchange timeout, a ten-second per-peer connection cooldown, and at most two
+  B005 read attempts per Peripheral per five-minute discovery session. A
+  recoverable connection or transport failure MAY use the second attempt only
+  after a 30-second backoff. A missing B005, `Read Not Permitted`, unsupported
+  format version, or structurally invalid payload is a semantic result and
+  MUST NOT be retried automatically within that session. Backoff MUST NOT
+  increase beyond 30 seconds for B005, and no third attempt is permitted.
+- Stopping Scan, stopping discovery, resetting the engine, disabling
+  Bluetooth, disconnecting the Peripheral, or reaching the eight-second
+  timeout MUST cancel pending B005 work, clear its per-connection state, and
+  release the active connection slot. A B005 attempt MUST share, not bypass,
+  the existing connection queue and watchdog.
 - Parsers MUST allocate no more than the 512-byte payload cap. Future census
   and mock implementations MUST preserve an explicit count/size cap and
   bounded retention.
@@ -534,7 +568,11 @@ same fixtures and observable behavior:
 Parity tests include byte-for-byte serialization, parsing, unknown `0x10`
 skipping, ordering and duplicate rejection, all boundary lengths, malformed
 UTF-8, non-NFC input, hash/B004 mismatch, disabled serving, and long-read
-offsets.
+offsets. They also inject more than four names for one hash, more than 32
+hashes, and events past the five-minute boundary to verify deterministic
+overflow markers, eviction, and bounded memory. Retry fixtures verify the
+eight-second timeout, 20-entry queue, ten/30-second delays, two-attempt limit,
+semantic no-retry cases, and cancellation on every stop/reset path.
 
 ## Two-device real-BLE verification plan
 
