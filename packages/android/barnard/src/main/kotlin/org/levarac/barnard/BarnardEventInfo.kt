@@ -174,6 +174,12 @@ public data class BarnardEventInfoDiscoveryObservation(
     val shouldEmitGenericHint: Boolean,
 )
 
+/** Replaces an overflowed B005 hint with a marker that has no parsed data. */
+internal fun eventInfoForDiscoveryHint(
+    eventInfo: BarnardEventInfo,
+    shouldEmitGenericHint: Boolean,
+): BarnardEventInfo = if (shouldEmitGenericHint) BarnardEventInfo("", ByteArray(0)) else eventInfo
+
 /** Bounded, observer-local state for one five-minute B005 discovery session. */
 public class BarnardEventInfoDiscoverySession(startedAtMs: Long) {
     private var startedAtMs = startedAtMs

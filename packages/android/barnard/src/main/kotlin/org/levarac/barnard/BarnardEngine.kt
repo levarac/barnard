@@ -832,7 +832,7 @@ public class BarnardEngine(private val appContext: Context) {
         }
         val hint = BarnardEventInfoHintEvent(
             peripheralId = address,
-            eventInfo = if (observation.shouldEmitGenericHint) null else eventInfo,
+            eventInfo = eventInfoForDiscoveryHint(eventInfo, observation.shouldEmitGenericHint),
             additionalNamesOmitted = observation.additionalNamesOmitted,
             additionalEventsOmitted = observation.additionalEventsOmitted,
         )

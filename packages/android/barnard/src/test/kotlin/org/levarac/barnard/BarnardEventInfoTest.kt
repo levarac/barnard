@@ -88,6 +88,12 @@ class BarnardEventInfoTest {
         assertEquals(true, overflow.additionalEventsOmitted)
         assertEquals(true, overflow.shouldEmitGenericHint)
         assertEquals(32, session.retainedHashCount)
+        val genericHint = eventInfoForDiscoveryHint(
+            BarnardEventInfo("Overflow", ByteArray(8) { 0xff.toByte() }),
+            overflow.shouldEmitGenericHint,
+        )
+        assertEquals("", genericHint.eventDisplayName)
+        assertArrayEquals(ByteArray(0), genericHint.eventCodeHash)
 
         val names = BarnardEventInfoDiscoverySession(0L)
         val hash = ByteArray(8) { 0x42 }

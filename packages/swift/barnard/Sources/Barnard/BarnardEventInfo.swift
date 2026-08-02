@@ -186,6 +186,14 @@ public struct BarnardEventInfoDiscoveryObservation: Equatable {
   public let shouldEmitGenericHint: Bool
 }
 
+/// Replaces an overflowed B005 hint with a marker that has no parsed data.
+func eventInfoForDiscoveryHint(
+  _ eventInfo: BarnardEventInfo,
+  shouldEmitGenericHint: Bool
+) -> BarnardEventInfo {
+  shouldEmitGenericHint ? BarnardEventInfo(eventDisplayName: "", eventCodeHash: Data()) : eventInfo
+}
+
 /// Bounded, observer-local retention for one five-minute discovery session.
 public final class BarnardEventInfoDiscoverySession {
   private var startedAt: TimeInterval

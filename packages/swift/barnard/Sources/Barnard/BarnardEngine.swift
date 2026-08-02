@@ -118,8 +118,8 @@ public struct BarnardConstraintEvent {
 
 public struct BarnardEventInfoHintEvent {
   public let peripheralId: UUID
-  /// Nil for an overflow marker. Hosts must not retain hint data past the discovery session.
-  public let eventInfo: BarnardEventInfo?
+  /// Empty for an overflow marker. Hosts must not retain hint data past the discovery session.
+  public let eventInfo: BarnardEventInfo
   public let additionalNamesOmitted: Bool
   public let additionalEventsOmitted: Bool
 }
@@ -1167,7 +1167,10 @@ public final class BarnardEngine: NSObject {
     let observation = eventInfoDiscoverySession.observe(eventInfo, now: Date().timeIntervalSince1970)
     onEvent?(.eventInfoHint(BarnardEventInfoHintEvent(
       peripheralId: peripheralId,
-      eventInfo: observation.shouldEmitGenericHint ? nil : eventInfo,
+      eventInfo: eventInfoForDiscoveryHint(
+        eventInfo,
+        shouldEmitGenericHint: observation.shouldEmitGenericHint
+      ),
       additionalNamesOmitted: observation.additionalNamesOmitted,
       additionalEventsOmitted: observation.additionalEventsOmitted
     )))

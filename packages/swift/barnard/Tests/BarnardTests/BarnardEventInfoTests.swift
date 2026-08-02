@@ -81,6 +81,12 @@ final class BarnardEventInfoTests: XCTestCase {
     XCTAssertTrue(overflow.additionalEventsOmitted)
     XCTAssertTrue(overflow.shouldEmitGenericHint)
     XCTAssertEqual(session.retainedHashCount, 32)
+    let genericHint = eventInfoForDiscoveryHint(
+      BarnardEventInfo(eventDisplayName: "Overflow", eventCodeHash: Data(repeating: 0xff, count: 8)),
+      shouldEmitGenericHint: overflow.shouldEmitGenericHint
+    )
+    XCTAssertEqual(genericHint.eventDisplayName, "")
+    XCTAssertEqual(genericHint.eventCodeHash, Data())
 
     let names = BarnardEventInfoDiscoverySession(startedAt: 0)
     let hash = Data(repeating: 0x42, count: 8)
