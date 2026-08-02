@@ -14,18 +14,25 @@ public class BarnardEventInfo(
     eventCodeHash: ByteArray,
     census: ByteArray? = null,
 ) {
-    public val eventCodeHash: ByteArray = eventCodeHash.copyOf()
-    /** Reserved for the optional 0x10 census extension. v1 leaves it absent. */
-    public val census: ByteArray? = census?.copyOf()
+    private val eventCodeHashBytes: ByteArray = eventCodeHash.copyOf()
+    private val censusBytes: ByteArray? = census?.copyOf()
+
+    /** Returns a defensive copy; mutating it cannot affect equality or hashing. */
+    public val eventCodeHash: ByteArray
+        get() = eventCodeHashBytes.copyOf()
+
+    /** Reserved for the optional 0x10 census extension. v1 leaves it absent. Returns a defensive copy. */
+    public val census: ByteArray?
+        get() = censusBytes?.copyOf()
 
     override fun equals(other: Any?): Boolean =
         other is BarnardEventInfo &&
             eventDisplayName == other.eventDisplayName &&
-            eventCodeHash.contentEquals(other.eventCodeHash) &&
-            census.contentEquals(other.census)
+            eventCodeHashBytes.contentEquals(other.eventCodeHashBytes) &&
+            censusBytes.contentEquals(other.censusBytes)
 
     override fun hashCode(): Int =
-        31 * (31 * eventDisplayName.hashCode() + eventCodeHash.contentHashCode()) + census.contentHashCode()
+        31 * (31 * eventDisplayName.hashCode() + eventCodeHashBytes.contentHashCode()) + censusBytes.contentHashCode()
 }
 
 /** Kotlin mirror of Swift's [BarnardEventInfoError] reasons. */

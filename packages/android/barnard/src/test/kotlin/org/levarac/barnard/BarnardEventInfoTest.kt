@@ -175,6 +175,21 @@ class BarnardEventInfoTest {
             BarnardEventInfo("Event", ByteArray(8) { 0x42 }),
             BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01)),
         )
+        assertEquals(
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x02)),
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x02)),
+        )
+        assertNotEquals(
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x02)),
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x03)),
+        )
+        // Mutating an accessor's returned array must not affect equality or hashing.
+        val defensive = BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01))
+        val expectedHash = defensive.hashCode()
+        defensive.eventCodeHash[0] = 0x00
+        defensive.census!![0] = 0x7f
+        assertEquals(expectedHash, defensive.hashCode())
+        assertEquals(BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01)), defensive)
         val failure = assertThrows(BarnardEventInfoException::class.java) {
             BarnardEventInfoCodec.parse(ByteArray(15))
         }

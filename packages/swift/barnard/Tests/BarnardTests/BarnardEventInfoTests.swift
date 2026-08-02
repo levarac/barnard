@@ -154,6 +154,14 @@ final class BarnardEventInfoTests: XCTestCase {
       BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash),
       BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01]))
     )
+    XCTAssertEqual(
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x02])),
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x02]))
+    )
+    XCTAssertNotEqual(
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x02])),
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x03]))
+    )
   }
 
   private func b005Payload(totalLength: Int) -> Data {
