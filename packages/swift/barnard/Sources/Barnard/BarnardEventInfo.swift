@@ -7,10 +7,13 @@ import Foundation
 public struct BarnardEventInfo: Equatable {
   public let eventDisplayName: String
   public let eventCodeHash: Data
+  /// Reserved for the optional `0x10` census extension. v1 leaves it absent.
+  public let census: Data?
 
-  public init(eventDisplayName: String, eventCodeHash: Data) {
+  public init(eventDisplayName: String, eventCodeHash: Data, census: Data? = nil) {
     self.eventDisplayName = eventDisplayName
     self.eventCodeHash = eventCodeHash
+    self.census = census
   }
 }
 

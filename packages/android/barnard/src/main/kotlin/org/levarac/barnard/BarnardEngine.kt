@@ -36,6 +36,7 @@ import android.util.Base64
 import android.util.Log
 import org.levarac.barnard.BarnardCrypto.toHex
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "BarnardEngine"
 
@@ -119,11 +120,15 @@ public class BarnardEngine(private val appContext: Context) {
     // MARK: - Event Mode
 
     private var eventCode: String? = null
+    @Volatile
     private var eventInfoServePolicy = BarnardEventInfoServePolicy()
+    @Volatile
     private var eventInfoDisplayName: String? = null
     private data class EventInfoSnapshot(val value: ByteArray, var lastRequestAtMs: Long)
-    private val eventInfoConnectionEpochs: MutableMap<String, Long> = mutableMapOf()
-    private val eventInfoSnapshots: MutableMap<String, EventInfoSnapshot> = mutableMapOf()
+    private val eventInfoConnectionEpochs: MutableMap<String, Long> = ConcurrentHashMap()
+    private val eventInfoSnapshots: MutableMap<String, EventInfoSnapshot> = ConcurrentHashMap()
+    private val eventInfoRetryBudget = BarnardEventInfoRetryBudget()
+    private var eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
     @Volatile
     private var currentTek: ByteArray = ByteArray(16)
 
@@ -387,6 +392,10 @@ public class BarnardEngine(private val appContext: Context) {
     }
 
     public fun startScan(allowDuplicates: Boolean = true) {
+        if (!isScanning) {
+            eventInfoRetryBudget.clearAll()
+            eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
+        }
         this.allowDuplicates = allowDuplicates
         startScanInternal()
     }
@@ -581,6 +590,8 @@ public class BarnardEngine(private val appContext: Context) {
         resolutionBackoffUntilMs.clear()
         pendingBoundaryRetryDevices.clear()
         boundaryRetryBudget.clearAll()
+        eventInfoRetryBudget.clearAll()
+        eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
         peripheralReadValues.clear()
         knownPeers.clear()
 
@@ -803,6 +814,17 @@ public class BarnardEngine(private val appContext: Context) {
     private fun emitError(code: String, message: String, recoverable: Boolean? = null) {
         val error = BarnardErrorEvent(code = code, message = message, recoverable = recoverable)
         mainHandler.post { onEvent?.invoke(BarnardEvent.Error(error)) }
+    }
+
+    private fun emitEventInfoHint(address: String, eventInfo: BarnardEventInfo) {
+        val observation = eventInfoDiscoverySession.observe(eventInfo, System.currentTimeMillis())
+        val hint = BarnardEventInfoHintEvent(
+            peripheralId = address,
+            eventInfo = eventInfo,
+            additionalNamesOmitted = observation.additionalNamesOmitted,
+            additionalEventsOmitted = observation.additionalEventsOmitted,
+        )
+        mainHandler.post { onEvent?.invoke(BarnardEvent.EventInfoHint(hint)) }
     }
 
     /**
@@ -1349,11 +1371,6 @@ public class BarnardEngine(private val appContext: Context) {
                 return
             }
 
-            // B005 is read before, but never gated by, B004 same-event resolution.
-            val eventInfoCh = svc.getCharacteristic(eventInfoCharUuid)
-            if (eventInfoCh != null && hasConnectPermission()) {
-                if (gatt.readCharacteristic(eventInfoCh)) return
-            }
             readB004ForResolution(gatt, svc)
         }
 
@@ -1378,6 +1395,40 @@ public class BarnardEngine(private val appContext: Context) {
                     "address" to (gatt.device?.address ?: "")
                 ))
                 finishConnection(gatt)
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        private fun readEventInfoAfterResolution(gatt: BluetoothGatt, svc: BluetoothGattService) {
+            val address = gatt.device?.address ?: ""
+            val eventInfoCh = svc.getCharacteristic(eventInfoCharUuid)
+            if (eventInfoCh == null || !hasConnectPermission()) {
+                eventInfoRetryBudget.recordSemanticUnavailable(address)
+                emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address, "reason" to "missing"))
+                finishConnection(gatt)
+                return
+            }
+            if (!eventInfoRetryBudget.canStart(address, System.currentTimeMillis())) {
+                finishConnection(gatt)
+                return
+            }
+            if (!gatt.readCharacteristic(eventInfoCh)) retryEventInfoRead(gatt, "read_not_started")
+        }
+
+        private fun retryEventInfoRead(gatt: BluetoothGatt, reason: String) {
+            val address = gatt.device?.address ?: ""
+            val nowMs = System.currentTimeMillis()
+            val deadlineMs = eventInfoRetryBudget.recordRecoverableFailure(address, nowMs)
+            emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address, "reason" to reason))
+            val device = gatt.device
+            finishConnection(gatt)
+            if (deadlineMs != null && device != null) {
+                mainHandler.postDelayed({
+                    if (isScanning) {
+                        lastConnectAttemptAtMs.remove(address)
+                        enqueueConnect(device)
+                    }
+                }, deadlineMs - nowMs)
             }
         }
 
@@ -1407,8 +1458,13 @@ public class BarnardEngine(private val appContext: Context) {
             // with detectedDisplayId=null. B002/B004 failures still drop.
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 if (uuid == eventInfoCharUuid) {
-                    emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address))
-                    readB004ForResolution(gatt, svc)
+                    if (status == BluetoothGatt.GATT_READ_NOT_PERMITTED) {
+                        eventInfoRetryBudget.recordSemanticUnavailable(address)
+                        emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address, "reason" to "read_not_permitted"))
+                        finishConnection(gatt)
+                    } else {
+                        retryEventInfoRead(gatt, "status=$status")
+                    }
                     return
                 }
                 if (uuid == displayIdCharUuid) {
@@ -1442,10 +1498,13 @@ public class BarnardEngine(private val appContext: Context) {
                             "address" to address,
                             "eventCodeHash" to hint.eventCodeHash.toHex(),
                         ) + if (isDebugBuild()) mapOf("displayName" to hint.eventDisplayName) else emptyMap())
+                        eventInfoRetryBudget.clear(address)
+                        emitEventInfoHint(address, hint)
                     } catch (_: IllegalArgumentException) {
+                        eventInfoRetryBudget.recordSemanticUnavailable(address)
                         emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address))
                     }
-                    readB004ForResolution(gatt, svc)
+                    finishConnection(gatt)
                 }
                 eventCodeHashCharUuid -> {
                     peripheralReadValues[address]?.eventCodeHash = value
@@ -1467,7 +1526,7 @@ public class BarnardEngine(private val appContext: Context) {
                             "address" to address,
                             "bytes" to value.size
                         ))
-                        finishConnection(gatt)
+                        readEventInfoAfterResolution(gatt, svc)
                         return
                     }
                     val rpidCh = svc.getCharacteristic(rpidCharUuid)
@@ -1480,7 +1539,7 @@ public class BarnardEngine(private val appContext: Context) {
                             reason = "b002_missing",
                             recoverable = true
                         )
-                        finishConnection(gatt)
+                        readEventInfoAfterResolution(gatt, svc)
                     }
                 }
 
@@ -1561,7 +1620,8 @@ public class BarnardEngine(private val appContext: Context) {
                 }
             }
 
-            finishConnection(gatt)
+            val svc = gatt.getService(serviceUuid)
+            if (svc == null) finishConnection(gatt) else readEventInfoAfterResolution(gatt, svc)
         }
     }
 
@@ -1574,8 +1634,6 @@ public class BarnardEngine(private val appContext: Context) {
             eventInfoSnapshots.keys.removeAll { it.startsWith("$address:") }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 eventInfoConnectionEpochs[address] = (eventInfoConnectionEpochs[address] ?: 0L) + 1L
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                eventInfoConnectionEpochs.remove(address)
             }
         }
 

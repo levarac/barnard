@@ -116,12 +116,20 @@ public struct BarnardConstraintEvent {
   public let message: String?
 }
 
+public struct BarnardEventInfoHintEvent {
+  public let peripheralId: UUID
+  public let eventInfo: BarnardEventInfo
+  public let additionalNamesOmitted: Bool
+  public let additionalEventsOmitted: Bool
+}
+
 public enum BarnardEvent {
   case state(BarnardState)
   case constraint(BarnardConstraintEvent)
   case error(BarnardErrorEvent)
   case detection(BarnardDetectionEvent)
   case rssiUpdate(BarnardRssiUpdateEvent)
+  case eventInfoHint(BarnardEventInfoHintEvent)
 }
 
 public struct BarnardDebugEvent {
@@ -199,11 +207,11 @@ public final class BarnardEngine: NSObject {
   private var eventInfoDisplayName: String?
   private struct EventInfoSnapshot {
     var value: Data
-    var eventDisplayName: String?
-    var eventCodeHash: Data
     var lastRequest: Date
   }
   private var eventInfoSnapshots: [UUID: EventInfoSnapshot] = [:]
+  private let eventInfoRetryBudget = BarnardEventInfoRetryBudget()
+  private var eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(startedAt: Date().timeIntervalSince1970)
   private var shouldStartScanWhenReady = false
   private var shouldStartAdvertiseWhenReady = false
   private var allowDuplicates = true
@@ -535,6 +543,10 @@ public final class BarnardEngine: NSObject {
   }
 
   public func startScan(allowDuplicates: Bool = true) {
+    if !isScanning {
+      eventInfoRetryBudget.clearAll()
+      eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(startedAt: Date().timeIntervalSince1970)
+    }
     self.allowDuplicates = allowDuplicates
     startScanInternal()
   }
@@ -682,6 +694,8 @@ public final class BarnardEngine: NSObject {
     peripheralCharacteristics.removeAll()
     peripheralReadValues.removeAll()
     b004ReadRetries.removeAll()
+    eventInfoRetryBudget.clearAll()
+    eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(startedAt: Date().timeIntervalSince1970)
     lastDiscoveryNameById.removeAll()
     knownPeers.removeAll()
 
@@ -974,11 +988,6 @@ public final class BarnardEngine: NSObject {
     }
     peripheralCharacteristics[id] = charMap
 
-    // B005 is intentionally independent of the B004 same-event gate.
-    if let eventInfo = charMap[eventInfoCharacteristicUUID] {
-      peripheral.readValue(for: eventInfo)
-      return
-    }
     readEventCodeHash(for: peripheral)
   }
 
@@ -1005,7 +1014,7 @@ public final class BarnardEngine: NSObject {
       let rpidCh = charMap[rpidCharacteristicUUID]
     else {
       markGattResolutionFailed(id, reason: "b002_missing", recoverable: true)
-      finishConnection(peripheral)
+      readEventInfoAfterResolution(for: peripheral)
       return
     }
     peripheralReadValues[id]?.rpidReadStartedAt = Date()
@@ -1072,7 +1081,36 @@ public final class BarnardEngine: NSObject {
       }
     }
 
+    readEventInfoAfterResolution(for: peripheral)
+  }
+
+  private func readEventInfoAfterResolution(for peripheral: CBPeripheral) {
+    let id = peripheral.identifier
+    guard let eventInfo = peripheralCharacteristics[id]?[eventInfoCharacteristicUUID] else {
+      eventInfoRetryBudget.recordSemanticUnavailable(id)
+      emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString, "reason": "missing"])
+      finishConnection(peripheral)
+      return
+    }
+    guard eventInfoRetryBudget.canStart(id, now: Date().timeIntervalSince1970) else {
+      finishConnection(peripheral)
+      return
+    }
+    peripheral.readValue(for: eventInfo)
+  }
+
+  private func retryEventInfoRead(for peripheral: CBPeripheral, error: Error) {
+    let id = peripheral.identifier
+    let now = Date().timeIntervalSince1970
+    let deadline = eventInfoRetryBudget.recordRecoverableFailure(id, now: now)
+    emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString, "error": error.localizedDescription])
     finishConnection(peripheral)
+    guard let deadline else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + max(0, deadline - now)) { [weak self, weak peripheral] in
+      guard let self, let peripheral, self.isScanning else { return }
+      self.lastConnectAttemptAt.removeValue(forKey: id)
+      self.enqueueConnect(peripheral)
+    }
   }
 
   private func finishConnection(_ peripheral: CBPeripheral) {
@@ -1121,6 +1159,16 @@ public final class BarnardEngine: NSObject {
 
   private func emitError(code: String, message: String, recoverable: Bool? = nil) {
     onEvent?(.error(BarnardErrorEvent(code: code, message: message, recoverable: recoverable)))
+  }
+
+  private func emitEventInfoHint(peripheralId: UUID, eventInfo: BarnardEventInfo) {
+    let observation = eventInfoDiscoverySession.observe(eventInfo, now: Date().timeIntervalSince1970)
+    onEvent?(.eventInfoHint(BarnardEventInfoHintEvent(
+      peripheralId: peripheralId,
+      eventInfo: eventInfo,
+      additionalNamesOmitted: observation.additionalNamesOmitted,
+      additionalEventsOmitted: observation.additionalEventsOmitted
+    )))
   }
 
   /// Emit v2 detection event. Byte fields are lowercase hex.
@@ -1413,8 +1461,13 @@ extension BarnardEngine: CBPeripheralDelegate {
     // B002 read failure (drop the detection — no RPID, nothing to emit).
     if let error = error {
       if characteristic.uuid == eventInfoCharacteristicUUID {
-        emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString])
-        readEventCodeHash(for: peripheral)
+        if let attError = error as? CBATTError, attError.code == .readNotPermitted {
+          eventInfoRetryBudget.recordSemanticUnavailable(id)
+          emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString, "reason": "read_not_permitted"])
+          finishConnection(peripheral)
+        } else {
+          retryEventInfoRead(for: peripheral, error: error)
+        }
         return
       }
       if characteristic.uuid == displayIdCharacteristicUUID {
@@ -1478,10 +1531,13 @@ extension BarnardEngine: CBPeripheralDelegate {
         data["displayName"] = hint.eventDisplayName
         #endif
         emitDebug(level: "info", name: "gatt_event_info_hint", data: data)
+        eventInfoRetryBudget.clear(id)
+        emitEventInfoHint(peripheralId: id, eventInfo: hint)
       } catch {
+        eventInfoRetryBudget.recordSemanticUnavailable(id)
         emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString])
       }
-      readEventCodeHash(for: peripheral)
+      finishConnection(peripheral)
     case eventCodeHashCharacteristicUUID:
       peripheralReadValues[id]?.eventCodeHash = value
       let matches = eventCodeHashMatches(value)
@@ -1502,7 +1558,7 @@ extension BarnardEngine: CBPeripheralDelegate {
           "id": id.uuidString,
           "bytes": value.count,
         ])
-        finishConnection(peripheral)
+        readEventInfoAfterResolution(for: peripheral)
         return
       }
       readRpidCharacteristic(for: peripheral)
@@ -1629,8 +1685,6 @@ extension BarnardEngine: CBPeripheralManagerDelegate {
         }
         eventInfoSnapshots[id] = EventInfoSnapshot(
           value: value,
-          eventDisplayName: eventInfoDisplayName,
-          eventCodeHash: rpid.getEventCodeHash(),
           lastRequest: now
         )
       } catch {
@@ -1639,13 +1693,6 @@ extension BarnardEngine: CBPeripheralManagerDelegate {
       }
     }
     guard var snapshot = eventInfoSnapshots[id] else {
-      peripheral.respond(to: request, withResult: .invalidOffset)
-      return
-    }
-    guard snapshot.eventDisplayName == eventInfoDisplayName,
-      snapshot.eventCodeHash == rpid.getEventCodeHash()
-    else {
-      eventInfoSnapshots.removeValue(forKey: id)
       peripheral.respond(to: request, withResult: .invalidOffset)
       return
     }

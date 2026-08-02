@@ -103,6 +103,30 @@ final class BarnardEventInfoTests: XCTestCase {
     retries.recordSemanticUnavailable(peer)
     XCTAssertFalse(retries.canStart(peer, now: 999))
   }
+
+  func testCodecAcceptsExactBoundsAndRejectsAdjacentValues() throws {
+    XCTAssertNoThrow(try BarnardEventInfoCodec.validateEventDisplayName(String(repeating: "a", count: 64)))
+    XCTAssertThrowsError(try BarnardEventInfoCodec.validateEventDisplayName(String(repeating: "a", count: 65)))
+    XCTAssertNoThrow(try BarnardEventInfoCodec.validateEventDisplayName("a"))
+
+    XCTAssertNoThrow(try BarnardEventInfoCodec.parse(b005Payload(totalLength: 16)))
+    XCTAssertThrowsError(try BarnardEventInfoCodec.parse(Data(repeating: 0, count: 15)))
+    XCTAssertNoThrow(try BarnardEventInfoCodec.parse(b005Payload(totalLength: 512)))
+    XCTAssertThrowsError(try BarnardEventInfoCodec.parse(Data(repeating: 0, count: 513)))
+  }
+
+  private func b005Payload(totalLength: Int) -> Data {
+    var payload = Data([1, 0x01, 0x00, 0x01, 0x61, 0x02, 0x00, 0x08])
+    payload.append(Data(repeating: 0x42, count: 8))
+    let extensionLength = totalLength - payload.count - 3
+    if extensionLength > 0 {
+      payload.append(0x10)
+      payload.append(UInt8((extensionLength >> 8) & 0xff))
+      payload.append(UInt8(extensionLength & 0xff))
+      payload.append(Data(repeating: 0, count: extensionLength))
+    }
+    return payload
+  }
 }
 
 private extension Data {

@@ -13,7 +13,32 @@ public class BarnardEventInfo(
     eventCodeHash: ByteArray,
 ) {
     public val eventCodeHash: ByteArray = eventCodeHash.copyOf()
+
+    override fun equals(other: Any?): Boolean =
+        other is BarnardEventInfo &&
+            eventDisplayName == other.eventDisplayName &&
+            eventCodeHash.contentEquals(other.eventCodeHash)
+
+    override fun hashCode(): Int = 31 * eventDisplayName.hashCode() + eventCodeHash.contentHashCode()
 }
+
+/** Kotlin mirror of Swift's [BarnardEventInfoError] reasons. */
+public enum class BarnardEventInfoError {
+    INVALID_PAYLOAD_LENGTH,
+    UNSUPPORTED_FORMAT_VERSION,
+    TRUNCATED_TLV,
+    ZERO_TLV_TYPE,
+    UNORDERED_TLV_TYPES,
+    MISSING_DISPLAY_NAME,
+    MISSING_EVENT_CODE_HASH,
+    INVALID_DISPLAY_NAME,
+    INVALID_EVENT_CODE_HASH,
+    EVENT_CODE_HASH_MISMATCH,
+}
+
+public class BarnardEventInfoException(
+    public val reason: BarnardEventInfoError,
+) : IllegalArgumentException(reason.name)
 
 /** Local serving state only; neither flag is present in B005 bytes. */
 public data class BarnardEventInfoServePolicy(
@@ -49,9 +74,7 @@ public object BarnardEventInfoCodec {
     public fun serialize(eventCode: String, eventDisplayName: String, b004EventCodeHash: ByteArray): ByteArray {
         val displayNameBytes = canonicalDisplayNameBytes(eventDisplayName)
         val eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
-        require(eventCodeHash.size == 8 && eventCodeHash.contentEquals(b004EventCodeHash)) {
-            "B005 EventCodeHash must equal B004"
-        }
+        requireEventInfo(eventCodeHash.size == 8 && eventCodeHash.contentEquals(b004EventCodeHash), BarnardEventInfoError.EVENT_CODE_HASH_MISMATCH)
         val payload = ByteBuffer.allocate(1 + 3 + displayNameBytes.size + 3 + eventCodeHash.size)
             .put(FORMAT_VERSION.toByte())
             .put(0x01)
@@ -61,50 +84,50 @@ public object BarnardEventInfoCodec {
             .putShort(eventCodeHash.size.toShort())
             .put(eventCodeHash)
             .array()
-        require(payload.size in 16..MAXIMUM_PAYLOAD_BYTES) { "B005 payload length is invalid" }
+        requireEventInfo(payload.size in 16..MAXIMUM_PAYLOAD_BYTES, BarnardEventInfoError.INVALID_PAYLOAD_LENGTH)
         return payload
     }
 
     @JvmStatic
     public fun parse(payload: ByteArray): BarnardEventInfo {
-        require(payload.size in 16..MAXIMUM_PAYLOAD_BYTES) { "B005 payload length is invalid" }
-        require((payload[0].toInt() and 0xff) == FORMAT_VERSION) { "Unsupported B005 format version" }
+        requireEventInfo(payload.size in 16..MAXIMUM_PAYLOAD_BYTES, BarnardEventInfoError.INVALID_PAYLOAD_LENGTH)
+        requireEventInfo((payload[0].toInt() and 0xff) == FORMAT_VERSION, BarnardEventInfoError.UNSUPPORTED_FORMAT_VERSION)
         var offset = 1
         var previousType = 0
         var displayName: String? = null
         var eventCodeHash: ByteArray? = null
         while (offset < payload.size) {
-            require(offset + 3 <= payload.size) { "Truncated B005 TLV header" }
+            requireEventInfo(offset + 3 <= payload.size, BarnardEventInfoError.TRUNCATED_TLV)
             val type = payload[offset].toInt() and 0xff
             val length = ((payload[offset + 1].toInt() and 0xff) shl 8) or (payload[offset + 2].toInt() and 0xff)
             offset += 3
-            require(type != 0) { "B005 TLV type zero is invalid" }
-            require(type > previousType) { "B005 TLV types must be strictly ordered" }
+            requireEventInfo(type != 0, BarnardEventInfoError.ZERO_TLV_TYPE)
+            requireEventInfo(type > previousType, BarnardEventInfoError.UNORDERED_TLV_TYPES)
             previousType = type
-            require(length <= payload.size - offset) { "Truncated B005 TLV value" }
+            requireEventInfo(length <= payload.size - offset, BarnardEventInfoError.TRUNCATED_TLV)
             val value = payload.copyOfRange(offset, offset + length)
             offset += length
             when (type) {
                 0x01 -> {
-                    require(displayName == null) { "Duplicate B005 display name" }
+                    requireEventInfo(displayName == null, BarnardEventInfoError.UNORDERED_TLV_TYPES)
                     displayName = validatedDisplayName(value)
                 }
                 0x02 -> {
-                    require(eventCodeHash == null && value.size == 8) { "Invalid B005 EventCodeHash" }
+                    requireEventInfo(eventCodeHash == null && value.size == 8, BarnardEventInfoError.INVALID_EVENT_CODE_HASH)
                     eventCodeHash = value
                 }
             }
         }
-        require(displayName != null) { "B005 display name is required" }
-        require(eventCodeHash != null) { "B005 EventCodeHash is required" }
-        return BarnardEventInfo(displayName, eventCodeHash)
+        val resolvedDisplayName = displayName ?: throw BarnardEventInfoException(BarnardEventInfoError.MISSING_DISPLAY_NAME)
+        val resolvedEventCodeHash = eventCodeHash ?: throw BarnardEventInfoException(BarnardEventInfoError.MISSING_EVENT_CODE_HASH)
+        return BarnardEventInfo(resolvedDisplayName, resolvedEventCodeHash)
     }
 
     private fun canonicalDisplayNameBytes(displayName: String): ByteArray {
-        require(Normalizer.normalize(displayName, Normalizer.Form.NFC) == displayName) { "B005 display name must be NFC" }
+        requireEventInfo(Normalizer.normalize(displayName, Normalizer.Form.NFC) == displayName, BarnardEventInfoError.INVALID_DISPLAY_NAME)
         val bytes = displayName.toByteArray(StandardCharsets.UTF_8)
-        require(bytes.size in 1..MAXIMUM_DISPLAY_NAME_BYTES) { "B005 display name length is invalid" }
-        require(displayName.codePoints().allMatch { it > 0x1f && it != 0x7f }) { "B005 display name contains a control" }
+        requireEventInfo(bytes.size in 1..MAXIMUM_DISPLAY_NAME_BYTES, BarnardEventInfoError.INVALID_DISPLAY_NAME)
+        requireEventInfo(displayName.codePoints().allMatch { it > 0x1f && it != 0x7f }, BarnardEventInfoError.INVALID_DISPLAY_NAME)
         return bytes
     }
 
@@ -116,10 +139,14 @@ public object BarnardEventInfoCodec {
                 .decode(ByteBuffer.wrap(bytes))
                 .toString()
         } catch (_: Exception) {
-            throw IllegalArgumentException("B005 display name is not valid UTF-8")
+            throw BarnardEventInfoException(BarnardEventInfoError.INVALID_DISPLAY_NAME)
         }
         canonicalDisplayNameBytes(displayName)
         return displayName
+    }
+
+    private fun requireEventInfo(condition: Boolean, reason: BarnardEventInfoError) {
+        if (!condition) throw BarnardEventInfoException(reason)
     }
 }
 

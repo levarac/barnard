@@ -100,6 +100,47 @@ class BarnardEventInfoTest {
         retries.recordSemanticUnavailable(peer)
         assertEquals(false, retries.canStart(peer, 999_000L))
     }
+
+    @Test
+    fun codecAcceptsExactBoundsAndRejectsAdjacentValues() {
+        BarnardEventInfoCodec.validateEventDisplayName("a".repeat(64))
+        assertThrows(IllegalArgumentException::class.java) {
+            BarnardEventInfoCodec.validateEventDisplayName("a".repeat(65))
+        }
+        BarnardEventInfoCodec.validateEventDisplayName("a")
+
+        BarnardEventInfoCodec.parse(b005Payload(16))
+        assertThrows(IllegalArgumentException::class.java) {
+            BarnardEventInfoCodec.parse(ByteArray(15))
+        }
+        BarnardEventInfoCodec.parse(b005Payload(512))
+        assertThrows(IllegalArgumentException::class.java) {
+            BarnardEventInfoCodec.parse(ByteArray(513))
+        }
+    }
+
+    @Test
+    fun eventInfoUsesValueEqualityAndTypedParseReasons() {
+        assertEquals(
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }),
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }),
+        )
+        val failure = assertThrows(BarnardEventInfoException::class.java) {
+            BarnardEventInfoCodec.parse(ByteArray(15))
+        }
+        assertEquals(BarnardEventInfoError.INVALID_PAYLOAD_LENGTH, failure.reason)
+    }
+}
+
+private fun b005Payload(totalLength: Int): ByteArray {
+    val payload = mutableListOf(1, 0x01, 0x00, 0x01, 0x61, 0x02, 0x00, 0x08)
+    payload += List(8) { 0x42 }
+    val extensionLength = totalLength - payload.size - 3
+    if (extensionLength > 0) {
+        payload += listOf(0x10, (extensionLength ushr 8) and 0xff, extensionLength and 0xff)
+        payload += List(extensionLength) { 0 }
+    }
+    return payload.map(Int::toByte).toByteArray()
 }
 
 private fun String.hexBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()

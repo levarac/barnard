@@ -144,12 +144,21 @@ public data class BarnardConstraintEvent(
     val requiredAction: String?,
 )
 
+/** Parsed B005 hint retained only for the current discovery session. */
+public data class BarnardEventInfoHintEvent(
+    val peripheralId: String,
+    val eventInfo: BarnardEventInfo,
+    val additionalNamesOmitted: Boolean,
+    val additionalEventsOmitted: Boolean,
+)
+
 public sealed class BarnardEvent {
     public data class State(val state: BarnardState) : BarnardEvent()
     public data class Constraint(val constraint: BarnardConstraintEvent) : BarnardEvent()
     public data class Error(val error: BarnardErrorEvent) : BarnardEvent()
     public data class Detection(val detection: BarnardDetectionEvent) : BarnardEvent()
     public data class RssiUpdate(val update: BarnardRssiUpdateEvent) : BarnardEvent()
+    public data class EventInfoHint(val hint: BarnardEventInfoHintEvent) : BarnardEvent()
 }
 
 public data class BarnardDebugEvent(
