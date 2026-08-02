@@ -13,20 +13,32 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 The first `v0.1.0` tag will be cut by the project lead after the root Swift
 package manifest is merged.
 
-## GitHub release notes (automated)
+## GitHub release notes
 
-Pushing a `vX.Y.Z` tag triggers the **Release Notes** workflow
-(`.github/workflows/release-notes.yml`), which creates the GitHub Release for
-that tag automatically: it collects the PRs, resolved issues, and `specs/`
-changes since the previous version tag, drafts a summary with a GitHub Model,
-and attaches the raw generated facts in a collapsible section. If the AI pass
-is unavailable the release is still created with the raw notes.
+Two layers, split deliberately so no API key or paid inference dependency is
+needed (GitHub Models, the original zero-config backend, was retired on
+2026-07-30):
 
-To regenerate notes for an existing tag (or backfill an old one), run the
-workflow manually from the **Actions** tab: pick **Release Notes**, enter the
-tag, and leave **dry run** on to preview in the run summary first; re-run with
-dry run off to create or update the release. Review the generated text after
-each release — the AI summary is a draft, not an authority.
+1. **Facts, automated.** Pushing a `vX.Y.Z` tag triggers the **Release Notes**
+   workflow (`.github/workflows/release-notes.yml`), which creates the GitHub
+   Release for that tag using only `GITHUB_TOKEN`: PRs, resolved issues, and
+   `specs/` changes since the previous version tag, plus the changelog link.
+   This always succeeds on its own and is the factual source of truth.
+2. **Summary prose, drafted at release time.** Whoever drives the release —
+   in practice the maintainer's agent session that pushes the tag — drafts a
+   short summary (Highlights, protocol changes, what's new; breaking changes
+   called out prominently when present) on top of the generated facts and
+   applies it with `gh release edit vX.Y.Z --notes-file <file>`, keeping the
+   generated facts in a collapsible details section and attributing the
+   drafted summary in the body. The v0.1.0–v0.3.0 releases follow this shape;
+   use them as the template.
+
+To regenerate the factual notes for an existing tag (or backfill an old one),
+run the workflow manually from the **Actions** tab: pick **Release Notes**,
+enter the tag, and leave **dry run** on to preview first. **Warning:** a
+non-dry re-run replaces the whole release body, including any drafted summary
+— re-apply the summary afterwards. The summary is a draft, not an authority;
+review it after each release.
 
 ## Publishing the Android library to Maven Central
 
