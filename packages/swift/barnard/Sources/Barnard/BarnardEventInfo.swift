@@ -141,6 +141,12 @@ public enum BarnardEventInfoCodec {
     return BarnardEventInfo(eventDisplayName: displayName, eventCodeHash: eventCodeHash)
   }
 
+  /// A B005 hint is trustworthy only as an unauthenticated hint when it is
+  /// internally consistent with the same Peripheral's B004 response.
+  public static func matchesB004(_ info: BarnardEventInfo, b004EventCodeHash: Data) -> Bool {
+    !b004EventCodeHash.isEmpty && info.eventCodeHash == b004EventCodeHash
+  }
+
   private static func appendLength(_ length: Int, to payload: inout Data) {
     payload.append(UInt8((length >> 8) & 0xff))
     payload.append(UInt8(length & 0xff))

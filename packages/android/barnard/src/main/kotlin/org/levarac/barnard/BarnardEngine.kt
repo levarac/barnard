@@ -1494,6 +1494,12 @@ public class BarnardEngine(private val appContext: Context) {
                 eventInfoCharUuid -> {
                     try {
                         val hint = BarnardEventInfoCodec.parse(value)
+                        if (!BarnardEventInfoCodec.matchesB004(hint, peripheralReadValues[address]?.eventCodeHash ?: ByteArray(0))) {
+                            eventInfoRetryBudget.recordSemanticUnavailable(address)
+                            emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address, "reason" to "b004_mismatch"))
+                            finishConnection(gatt)
+                            return
+                        }
                         emitDebug("info", "gatt_event_info_hint", mapOf(
                             "address" to address,
                             "eventCodeHash" to hint.eventCodeHash.toHex(),

@@ -3,6 +3,7 @@ package org.levarac.barnard
 import org.levarac.barnard.BarnardCrypto.toHex
 
 import java.nio.ByteBuffer
+import java.nio.CharBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.text.Normalizer
@@ -123,9 +124,21 @@ public object BarnardEventInfoCodec {
         return BarnardEventInfo(resolvedDisplayName, resolvedEventCodeHash)
     }
 
+    @JvmStatic
+    public fun matchesB004(info: BarnardEventInfo, b004EventCodeHash: ByteArray): Boolean =
+        b004EventCodeHash.isNotEmpty() && info.eventCodeHash.contentEquals(b004EventCodeHash)
+
     private fun canonicalDisplayNameBytes(displayName: String): ByteArray {
         requireEventInfo(Normalizer.normalize(displayName, Normalizer.Form.NFC) == displayName, BarnardEventInfoError.INVALID_DISPLAY_NAME)
-        val bytes = displayName.toByteArray(StandardCharsets.UTF_8)
+        val bytes = try {
+            val encoded = StandardCharsets.UTF_8.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .encode(CharBuffer.wrap(displayName))
+            ByteArray(encoded.remaining()).also(encoded::get)
+        } catch (_: Exception) {
+            throw BarnardEventInfoException(BarnardEventInfoError.INVALID_DISPLAY_NAME)
+        }
         requireEventInfo(bytes.size in 1..MAXIMUM_DISPLAY_NAME_BYTES, BarnardEventInfoError.INVALID_DISPLAY_NAME)
         requireEventInfo(displayName.codePoints().allMatch { it > 0x1f && it != 0x7f }, BarnardEventInfoError.INVALID_DISPLAY_NAME)
         return bytes

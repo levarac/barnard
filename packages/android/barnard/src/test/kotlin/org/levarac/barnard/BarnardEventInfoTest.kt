@@ -99,6 +99,13 @@ class BarnardEventInfoTest {
         assertEquals(false, retries.canStart(peer, 60_000L))
         retries.recordSemanticUnavailable(peer)
         assertEquals(false, retries.canStart(peer, 999_000L))
+
+        retries.clear(peer)
+        assertEquals(true, retries.canStart(peer, 0L))
+        retries.recordRecoverableFailure(peer, 0L)
+        retries.recordSemanticUnavailable("CC:DD")
+        retries.clearAll()
+        assertEquals(true, retries.canStart(peer, 0L))
     }
 
     @Test
@@ -108,6 +115,9 @@ class BarnardEventInfoTest {
             BarnardEventInfoCodec.validateEventDisplayName("a".repeat(65))
         }
         BarnardEventInfoCodec.validateEventDisplayName("a")
+        assertThrows(IllegalArgumentException::class.java) {
+            BarnardEventInfoCodec.validateEventDisplayName("\ud800")
+        }
 
         BarnardEventInfoCodec.parse(b005Payload(16))
         assertThrows(IllegalArgumentException::class.java) {
@@ -117,6 +127,13 @@ class BarnardEventInfoTest {
         assertThrows(IllegalArgumentException::class.java) {
             BarnardEventInfoCodec.parse(ByteArray(513))
         }
+    }
+
+    @Test
+    fun b005HintMustMatchThePeripheralsB004Value() {
+        val info = BarnardEventInfoCodec.parse(b005Payload(16))
+        assertEquals(true, BarnardEventInfoCodec.matchesB004(info, ByteArray(8) { 0x42 }))
+        assertEquals(false, BarnardEventInfoCodec.matchesB004(info, ByteArray(8) { 0x43 }))
     }
 
     @Test

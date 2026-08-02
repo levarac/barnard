@@ -102,6 +102,13 @@ final class BarnardEventInfoTests: XCTestCase {
     XCTAssertFalse(retries.canStart(peer, now: 60))
     retries.recordSemanticUnavailable(peer)
     XCTAssertFalse(retries.canStart(peer, now: 999))
+
+    retries.clear(peer)
+    XCTAssertTrue(retries.canStart(peer, now: 0))
+    _ = retries.recordRecoverableFailure(peer, now: 0)
+    retries.recordSemanticUnavailable(UUID())
+    retries.clearAll()
+    XCTAssertTrue(retries.canStart(peer, now: 0))
   }
 
   func testCodecAcceptsExactBoundsAndRejectsAdjacentValues() throws {
@@ -113,6 +120,12 @@ final class BarnardEventInfoTests: XCTestCase {
     XCTAssertThrowsError(try BarnardEventInfoCodec.parse(Data(repeating: 0, count: 15)))
     XCTAssertNoThrow(try BarnardEventInfoCodec.parse(b005Payload(totalLength: 512)))
     XCTAssertThrowsError(try BarnardEventInfoCodec.parse(Data(repeating: 0, count: 513)))
+  }
+
+  func testB005HintMustMatchThePeripheralsB004Value() throws {
+    let info = try BarnardEventInfoCodec.parse(b005Payload(totalLength: 16))
+    XCTAssertTrue(BarnardEventInfoCodec.matchesB004(info, b004EventCodeHash: Data(repeating: 0x42, count: 8)))
+    XCTAssertFalse(BarnardEventInfoCodec.matchesB004(info, b004EventCodeHash: Data(repeating: 0x43, count: 8)))
   }
 
   private func b005Payload(totalLength: Int) -> Data {

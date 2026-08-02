@@ -1523,6 +1523,15 @@ extension BarnardEngine: CBPeripheralDelegate {
     case eventInfoCharacteristicUUID:
       do {
         let hint = try BarnardEventInfoCodec.parse(value)
+        guard BarnardEventInfoCodec.matchesB004(
+          hint,
+          b004EventCodeHash: peripheralReadValues[id]?.eventCodeHash ?? Data()
+        ) else {
+          eventInfoRetryBudget.recordSemanticUnavailable(id)
+          emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString, "reason": "b004_mismatch"])
+          finishConnection(peripheral)
+          return
+        }
         var data: [String: Any] = [
           "id": id.uuidString,
           "eventCodeHash": hint.eventCodeHash.hexString,
