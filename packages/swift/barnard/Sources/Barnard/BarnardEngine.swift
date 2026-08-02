@@ -118,6 +118,7 @@ public struct BarnardConstraintEvent {
 
 public struct BarnardEventInfoHintEvent {
   public let peripheralId: UUID
+  /// Empty for an overflow marker. Hosts must not retain hint data past the discovery session.
   public let eventInfo: BarnardEventInfo
   public let additionalNamesOmitted: Bool
   public let additionalEventsOmitted: Bool
@@ -590,6 +591,7 @@ public final class BarnardEngine: NSObject {
   public func dispose() {
     stopScanInternal()
     stopAdvertiseInternal()
+    eventInfoSnapshots.removeAll()
   }
 
   public func joinEvent(_ eventCode: String) {
@@ -1165,7 +1167,10 @@ public final class BarnardEngine: NSObject {
     let observation = eventInfoDiscoverySession.observe(eventInfo, now: Date().timeIntervalSince1970)
     onEvent?(.eventInfoHint(BarnardEventInfoHintEvent(
       peripheralId: peripheralId,
-      eventInfo: eventInfo,
+      eventInfo: eventInfoForDiscoveryHint(
+        eventInfo,
+        shouldEmitGenericHint: observation.shouldEmitGenericHint
+      ),
       additionalNamesOmitted: observation.additionalNamesOmitted,
       additionalEventsOmitted: observation.additionalEventsOmitted
     )))
@@ -1540,7 +1545,7 @@ extension BarnardEngine: CBPeripheralDelegate {
         data["displayName"] = hint.eventDisplayName
         #endif
         emitDebug(level: "info", name: "gatt_event_info_hint", data: data)
-        eventInfoRetryBudget.clear(id)
+        eventInfoRetryBudget.recordSuccessfulAttempt(id, now: Date().timeIntervalSince1970)
         emitEventInfoHint(peripheralId: id, eventInfo: hint)
       } catch {
         eventInfoRetryBudget.recordSemanticUnavailable(id)

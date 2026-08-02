@@ -40,6 +40,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "BarnardEngine"
 
+internal fun shouldDiscardEventInfoSnapshotAfterResponse(status: Int, responseSent: Boolean): Boolean =
+    status == BluetoothGatt.GATT_SUCCESS && !responseSent
+
 internal fun isRuntimePermissionRequestBlocked(
     sdkInt: Int,
     hasPermission: Boolean,
@@ -829,7 +832,7 @@ public class BarnardEngine(private val appContext: Context) {
         }
         val hint = BarnardEventInfoHintEvent(
             peripheralId = address,
-            eventInfo = eventInfo,
+            eventInfo = eventInfoForDiscoveryHint(eventInfo, observation.shouldEmitGenericHint),
             additionalNamesOmitted = observation.additionalNamesOmitted,
             additionalEventsOmitted = observation.additionalEventsOmitted,
         )
@@ -1513,7 +1516,7 @@ public class BarnardEngine(private val appContext: Context) {
                             "address" to address,
                             "eventCodeHash" to hint.eventCodeHash.toHex(),
                         ) + if (isDebugBuild()) mapOf("displayName" to hint.eventDisplayName) else emptyMap())
-                        eventInfoRetryBudget.clear(address)
+                        eventInfoRetryBudget.recordSuccessfulAttempt(address, System.currentTimeMillis())
                         emitEventInfoHint(address, hint)
                     } catch (_: IllegalArgumentException) {
                         eventInfoRetryBudget.recordSemanticUnavailable(address)
@@ -1782,6 +1785,13 @@ public class BarnardEngine(private val appContext: Context) {
             if (offset == snapshot.value.size) eventInfoSnapshots.remove(key) else snapshot.lastRequestAtMs = now
             Outcome(BluetoothGatt.GATT_SUCCESS, slice)
         }
-        server.sendResponse(device, requestId, outcome.status, offset, outcome.value)
+        val responseSent = server.sendResponse(device, requestId, outcome.status, offset, outcome.value)
+        if (shouldDiscardEventInfoSnapshotAfterResponse(outcome.status, responseSent)) {
+            val address = device.address ?: ""
+            val key = "$address:${eventInfoConnectionEpochs[address] ?: 0L}"
+            synchronized(eventInfoStateLock) {
+                eventInfoSnapshots.remove(key)
+            }
+        }
     }
 }

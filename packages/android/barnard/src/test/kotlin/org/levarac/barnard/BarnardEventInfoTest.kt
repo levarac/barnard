@@ -1,14 +1,23 @@
 package org.levarac.barnard
 
+import android.bluetooth.BluetoothGatt
 import org.levarac.barnard.BarnardCrypto.toHex
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class BarnardEventInfoTest {
+    @Test
+    fun failedSuccessfulB005ResponseDiscardsItsSnapshot() {
+        assertEquals(true, shouldDiscardEventInfoSnapshotAfterResponse(BluetoothGatt.GATT_SUCCESS, responseSent = false))
+        assertEquals(false, shouldDiscardEventInfoSnapshotAfterResponse(BluetoothGatt.GATT_SUCCESS, responseSent = true))
+        assertEquals(false, shouldDiscardEventInfoSnapshotAfterResponse(BluetoothGatt.GATT_READ_NOT_PERMITTED, responseSent = false))
+    }
+
     @Test
     fun goldenVectorsSerializeAndParseByteForByte() {
         val vectors = listOf(
@@ -75,7 +84,16 @@ class BarnardEventInfoTest {
             session.observe(BarnardEventInfo("Event $index", ByteArray(8) { index.toByte() }), 1L)
         }
         assertEquals(32, session.retainedHashCount)
-        assertEquals(true, session.observe(BarnardEventInfo("Overflow", ByteArray(8) { 0xff.toByte() }), 2L).additionalEventsOmitted)
+        val overflow = session.observe(BarnardEventInfo("Overflow", ByteArray(8) { 0xff.toByte() }), 2L)
+        assertEquals(true, overflow.additionalEventsOmitted)
+        assertEquals(true, overflow.shouldEmitGenericHint)
+        assertEquals(32, session.retainedHashCount)
+        val genericHint = eventInfoForDiscoveryHint(
+            BarnardEventInfo("Overflow", ByteArray(8) { 0xff.toByte() }),
+            overflow.shouldEmitGenericHint,
+        )
+        assertEquals("", genericHint.eventDisplayName)
+        assertArrayEquals(ByteArray(0), genericHint.eventCodeHash)
 
         val names = BarnardEventInfoDiscoverySession(0L)
         val hash = ByteArray(8) { 0x42 }
@@ -97,6 +115,14 @@ class BarnardEventInfoTest {
         assertEquals(true, retries.canStart(peer, 30_000L))
         assertEquals(null, retries.recordRecoverableFailure(peer, 30_000L))
         assertEquals(false, retries.canStart(peer, 60_000L))
+
+        retries.clear(peer)
+        assertEquals(true, retries.canStart(peer, 0L))
+        retries.recordSuccessfulAttempt(peer, 0L)
+        assertEquals(true, retries.canStart(peer, 1L))
+        retries.recordSuccessfulAttempt(peer, 1L)
+        assertEquals(false, retries.canStart(peer, 2L))
+
         retries.recordSemanticUnavailable(peer)
         assertEquals(false, retries.canStart(peer, 999_000L))
 
@@ -145,6 +171,25 @@ class BarnardEventInfoTest {
             BarnardEventInfo("Event", ByteArray(8) { 0x42 }),
             BarnardEventInfo("Event", ByteArray(8) { 0x42 }),
         )
+        assertNotEquals(
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }),
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01)),
+        )
+        assertEquals(
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x02)),
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x02)),
+        )
+        assertNotEquals(
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x02)),
+            BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01, 0x03)),
+        )
+        // Mutating an accessor's returned array must not affect equality or hashing.
+        val defensive = BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01))
+        val expectedHash = defensive.hashCode()
+        defensive.eventCodeHash[0] = 0x00
+        defensive.census!![0] = 0x7f
+        assertEquals(expectedHash, defensive.hashCode())
+        assertEquals(BarnardEventInfo("Event", ByteArray(8) { 0x42 }, census = byteArrayOf(0x01)), defensive)
         val failure = assertThrows(BarnardEventInfoException::class.java) {
             BarnardEventInfoCodec.parse(ByteArray(15))
         }

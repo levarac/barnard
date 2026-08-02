@@ -183,6 +183,15 @@ public enum BarnardEventInfoCodec {
 public struct BarnardEventInfoDiscoveryObservation: Equatable {
   public let additionalNamesOmitted: Bool
   public let additionalEventsOmitted: Bool
+  public let shouldEmitGenericHint: Bool
+}
+
+/// Replaces an overflowed B005 hint with a marker that has no parsed data.
+func eventInfoForDiscoveryHint(
+  _ eventInfo: BarnardEventInfo,
+  shouldEmitGenericHint: Bool
+) -> BarnardEventInfo {
+  shouldEmitGenericHint ? BarnardEventInfo(eventDisplayName: "", eventCodeHash: Data()) : eventInfo
 }
 
 /// Bounded, observer-local retention for one five-minute discovery session.
@@ -204,17 +213,20 @@ public final class BarnardEventInfoDiscoverySession {
       additionalEventsOmitted = false
     }
     let name = Data(info.eventDisplayName.utf8)
+    var overflowedThisObservation = false
     if var names = namesByHash[info.eventCodeHash] {
       if !names.contains(name) && names.count >= 4 { additionalNamesOmitted = true }
       else { names.insert(name); namesByHash[info.eventCodeHash] = names }
     } else if namesByHash.count >= 32 {
       additionalEventsOmitted = true
+      overflowedThisObservation = true
     } else {
       namesByHash[info.eventCodeHash] = [name]
     }
     return BarnardEventInfoDiscoveryObservation(
       additionalNamesOmitted: additionalNamesOmitted,
-      additionalEventsOmitted: additionalEventsOmitted
+      additionalEventsOmitted: additionalEventsOmitted,
+      shouldEmitGenericHint: overflowedThisObservation
     )
   }
 }
@@ -246,6 +258,15 @@ public final class BarnardEventInfoRetryBudget {
       let deadline = now + 30
       retryAfter[peer] = deadline
       return deadline
+    }
+  }
+  /// A successful B005 read still consumes one of the two session attempts.
+  public func recordSuccessfulAttempt(_ peer: UUID, now: TimeInterval) {
+    synchronized {
+      prune(now: now)
+      lastSeen[peer] = now
+      attempts[peer] = (attempts[peer] ?? 0) + 1
+      retryAfter.removeValue(forKey: peer)
     }
   }
   public func recordSemanticUnavailable(_ peer: UUID, now: TimeInterval = Date().timeIntervalSince1970) {

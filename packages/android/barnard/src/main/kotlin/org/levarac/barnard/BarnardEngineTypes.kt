@@ -144,7 +144,11 @@ public data class BarnardConstraintEvent(
     val requiredAction: String?,
 )
 
-/** Parsed B005 hint retained only for the current discovery session. */
+/**
+ * B005 hint retained only for the current discovery session. Hosts MUST NOT
+ * retain this hint data beyond that session. A generic overflow hint has an
+ * empty [eventInfo], so no parsed display name or hash can escape the session.
+ */
 public data class BarnardEventInfoHintEvent(
     val peripheralId: String,
     val eventInfo: BarnardEventInfo,

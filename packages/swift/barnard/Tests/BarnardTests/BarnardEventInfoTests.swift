@@ -77,7 +77,16 @@ final class BarnardEventInfoTests: XCTestCase {
       _ = session.observe(BarnardEventInfo(eventDisplayName: "Event \(index)", eventCodeHash: Data(repeating: UInt8(index), count: 8)), now: 1)
     }
     XCTAssertEqual(session.retainedHashCount, 32)
-    XCTAssertTrue(session.observe(BarnardEventInfo(eventDisplayName: "Overflow", eventCodeHash: Data(repeating: 0xff, count: 8)), now: 2).additionalEventsOmitted)
+    let overflow = session.observe(BarnardEventInfo(eventDisplayName: "Overflow", eventCodeHash: Data(repeating: 0xff, count: 8)), now: 2)
+    XCTAssertTrue(overflow.additionalEventsOmitted)
+    XCTAssertTrue(overflow.shouldEmitGenericHint)
+    XCTAssertEqual(session.retainedHashCount, 32)
+    let genericHint = eventInfoForDiscoveryHint(
+      BarnardEventInfo(eventDisplayName: "Overflow", eventCodeHash: Data(repeating: 0xff, count: 8)),
+      shouldEmitGenericHint: overflow.shouldEmitGenericHint
+    )
+    XCTAssertEqual(genericHint.eventDisplayName, "")
+    XCTAssertEqual(genericHint.eventCodeHash, Data())
 
     let names = BarnardEventInfoDiscoverySession(startedAt: 0)
     let hash = Data(repeating: 0x42, count: 8)
@@ -100,6 +109,14 @@ final class BarnardEventInfoTests: XCTestCase {
     XCTAssertTrue(retries.canStart(peer, now: 30))
     XCTAssertEqual(retries.recordRecoverableFailure(peer, now: 30), nil)
     XCTAssertFalse(retries.canStart(peer, now: 60))
+
+    retries.clear(peer)
+    XCTAssertTrue(retries.canStart(peer, now: 0))
+    retries.recordSuccessfulAttempt(peer, now: 0)
+    XCTAssertTrue(retries.canStart(peer, now: 1))
+    retries.recordSuccessfulAttempt(peer, now: 1)
+    XCTAssertFalse(retries.canStart(peer, now: 2))
+
     retries.recordSemanticUnavailable(peer)
     XCTAssertFalse(retries.canStart(peer, now: 999))
 
@@ -129,6 +146,22 @@ final class BarnardEventInfoTests: XCTestCase {
     let info = try BarnardEventInfoCodec.parse(b005Payload(totalLength: 16))
     XCTAssertTrue(BarnardEventInfoCodec.matchesB004(info, b004EventCodeHash: Data(repeating: 0x42, count: 8)))
     XCTAssertFalse(BarnardEventInfoCodec.matchesB004(info, b004EventCodeHash: Data(repeating: 0x43, count: 8)))
+  }
+
+  func testEventInfoEqualityIncludesReservedCensus() {
+    let eventCodeHash = Data(repeating: 0x42, count: 8)
+    XCTAssertNotEqual(
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash),
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01]))
+    )
+    XCTAssertEqual(
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x02])),
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x02]))
+    )
+    XCTAssertNotEqual(
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x02])),
+      BarnardEventInfo(eventDisplayName: "Event", eventCodeHash: eventCodeHash, census: Data([0x01, 0x03]))
+    )
   }
 
   private func b005Payload(totalLength: Int) -> Data {

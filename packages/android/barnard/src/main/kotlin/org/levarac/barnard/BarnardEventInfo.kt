@@ -12,15 +12,27 @@ import java.text.Normalizer
 public class BarnardEventInfo(
     public val eventDisplayName: String,
     eventCodeHash: ByteArray,
+    census: ByteArray? = null,
 ) {
-    public val eventCodeHash: ByteArray = eventCodeHash.copyOf()
+    private val eventCodeHashBytes: ByteArray = eventCodeHash.copyOf()
+    private val censusBytes: ByteArray? = census?.copyOf()
+
+    /** Returns a defensive copy; mutating it cannot affect equality or hashing. */
+    public val eventCodeHash: ByteArray
+        get() = eventCodeHashBytes.copyOf()
+
+    /** Reserved for the optional 0x10 census extension. v1 leaves it absent. Returns a defensive copy. */
+    public val census: ByteArray?
+        get() = censusBytes?.copyOf()
 
     override fun equals(other: Any?): Boolean =
         other is BarnardEventInfo &&
             eventDisplayName == other.eventDisplayName &&
-            eventCodeHash.contentEquals(other.eventCodeHash)
+            eventCodeHashBytes.contentEquals(other.eventCodeHashBytes) &&
+            censusBytes.contentEquals(other.censusBytes)
 
-    override fun hashCode(): Int = 31 * eventDisplayName.hashCode() + eventCodeHash.contentHashCode()
+    override fun hashCode(): Int =
+        31 * (31 * eventDisplayName.hashCode() + eventCodeHashBytes.contentHashCode()) + censusBytes.contentHashCode()
 }
 
 /** Kotlin mirror of Swift's [BarnardEventInfoError] reasons. */
@@ -166,7 +178,14 @@ public object BarnardEventInfoCodec {
 public data class BarnardEventInfoDiscoveryObservation(
     val additionalNamesOmitted: Boolean,
     val additionalEventsOmitted: Boolean,
+    val shouldEmitGenericHint: Boolean,
 )
+
+/** Replaces an overflowed B005 hint with a marker that has no parsed data. */
+internal fun eventInfoForDiscoveryHint(
+    eventInfo: BarnardEventInfo,
+    shouldEmitGenericHint: Boolean,
+): BarnardEventInfo = if (shouldEmitGenericHint) BarnardEventInfo("", ByteArray(0)) else eventInfo
 
 /** Bounded, observer-local state for one five-minute B005 discovery session. */
 public class BarnardEventInfoDiscoverySession(startedAtMs: Long) {
@@ -189,13 +208,21 @@ public class BarnardEventInfoDiscoverySession(startedAtMs: Long) {
         val hash = info.eventCodeHash.toHex()
         val name = info.eventDisplayName
         val names = namesByHash[hash]
+        var overflowedThisObservation = false
         when {
             names != null && name !in names && names.size >= 4 -> additionalNamesOmitted = true
             names != null -> names += name
-            namesByHash.size >= 32 -> additionalEventsOmitted = true
+            namesByHash.size >= 32 -> {
+                additionalEventsOmitted = true
+                overflowedThisObservation = true
+            }
             else -> namesByHash[hash] = mutableSetOf(name)
         }
-        return BarnardEventInfoDiscoveryObservation(additionalNamesOmitted, additionalEventsOmitted)
+        return BarnardEventInfoDiscoveryObservation(
+            additionalNamesOmitted,
+            additionalEventsOmitted,
+            overflowedThisObservation,
+        )
     }
 }
 
@@ -221,6 +248,15 @@ public class BarnardEventInfoRetryBudget {
         attempts[peer] = count
         if (count >= 2) return null
         return (nowMs + 30_000L).also { retryAfterMs[peer] = it }
+    }
+
+    /** A successful B005 read still consumes one of the two session attempts. */
+    @Synchronized
+    public fun recordSuccessfulAttempt(peer: String, nowMs: Long) {
+        prune(nowMs)
+        lastSeenMs[peer] = nowMs
+        attempts[peer] = (attempts[peer] ?: 0) + 1
+        retryAfterMs.remove(peer)
     }
 
     @Synchronized
