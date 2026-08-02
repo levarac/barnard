@@ -228,7 +228,7 @@ of the complete characteristic value, before ATT MTU fragmentation.
 | Offset | Size | Field | v1 value and rule |
 |---:|---:|---|---|
 | 0 | 1 | `formatVersion` | Exactly `0x01` |
-| 1 | variable | `tlvs` | Zero or more TLV records, ending exactly at the value boundary |
+| 1 | variable | `tlvs` | One or more TLV records, including required `0x01` and `0x02`, ending exactly at the value boundary |
 
 Each TLV record is:
 
@@ -253,6 +253,12 @@ once. A parser MUST reject the complete payload when:
 A v1 parser MUST skip the value of every structurally valid unknown TLV and
 continue parsing. Incompatible envelope or trust semantics require a new
 `formatVersion`; they MUST NOT be smuggled into a v1 unknown TLV.
+
+A conforming v1 emitter MUST emit only the TLV types assigned for emission by
+this specification: `0x01` and `0x02`. It MUST NOT emit reserved `0x10` or any
+other unassigned type. Reader-side unknown-TLV skipping exists solely for
+forward compatibility with extensions assigned by future specifications; it
+does not authorize a current v1 emitter to add private fields.
 
 ### v1 TLV registry
 
@@ -287,13 +293,23 @@ MUST prevent B005 from being served.
 
 The 512-byte bound allows a future census to exceed one ATT response. A
 Peripheral MUST maintain at most one active immutable B005 snapshot per
-connected Central. The snapshot key MUST include the platform's Central or
-connection identity; a snapshot MUST NOT be shared across Centrals or reused
-after that Central reconnects. On Apple platforms the key includes the
-`CBCentral` identifier plus a local connection epoch. On Android it includes
-the `BluetoothDevice` identity plus a local GATT-server connection epoch. The
-epoch changes after disconnect/reconnect. These keys are observer-local state
-and MUST NOT be transmitted.
+Central identity exposed by the platform's read callback. The snapshot key
+MUST include that Central identity, and a snapshot MUST NOT be shared across
+Centrals. On platforms that surface GATT-server connection state, the key MUST
+also include a local connection epoch, and a snapshot MUST NOT be reused after
+that Central reconnects. On Android it includes the `BluetoothDevice` identity
+plus a local GATT-server connection epoch. The epoch changes after
+disconnect/reconnect and is updated from
+`BluetoothGattServerCallback.onConnectionStateChange`.
+
+CoreBluetooth does not surface Central connect/disconnect events for a
+read-only, non-notifying characteristic. On Apple platforms the snapshot key
+MUST use the `CBCentral` identifier supplied with the read request, and the
+normative snapshot-reuse bound is replacement by an accepted offset-zero
+request or the 30-second inactivity timeout. The implementation MUST NOT rely
+on `didSubscribe` or `didUnsubscribe`, because B005 forbids `Notify` and
+`Indicate`. All snapshot keys are observer-local state and MUST NOT be
+transmitted.
 
 The callback sequence defines the application-level read transaction:
 
@@ -301,7 +317,9 @@ The callback sequence defines the application-level read transaction:
    MUST re-evaluate the serve policy, construct one complete canonical payload,
    and replace any older snapshot for that same connected Central. A repeated
    offset-zero request therefore starts a new transaction; it does not append
-   to or continue the older one.
+   to or continue the older one. An offset-zero request rejected by the serve
+   policy does not start a transaction and MUST NOT replace or delete an
+   existing snapshot.
 2. A nonzero request is a continuation only when that connected Central has an
    active snapshot. The Peripheral MUST use the captured bytes even if the
    current event metadata or serve policy has changed. A nonzero request with
@@ -313,19 +331,21 @@ The callback sequence defines the application-level read transaction:
    greater than the payload length returns GATT `Invalid Offset` and terminates
    the transaction.
 4. The transaction completes and the Peripheral MUST delete its snapshot when
-   it successfully handles an offset equal to the payload length, a response
-   fails, the Central disconnects, a new offset-zero request replaces it, or
-   no request for that snapshot arrives for 30 seconds. The inactivity timer
-   resets after each valid continuation request. This timeout is the required
-   completion mechanism on platforms that provide offset callbacks but no
-   explicit signal that the Central accepted the final response.
+   it successfully handles an offset equal to the payload length; when the
+   platform reports that a response failed; when the Central disconnects on a
+   platform that surfaces GATT-server connection state; when an accepted new
+   offset-zero request replaces it; or when no request for that snapshot
+   arrives for 30 seconds. The inactivity timer resets after each valid
+   continuation request. This timeout is the required completion mechanism on
+   platforms that provide offset callbacks but no explicit response-failure or
+   disconnect signal.
 
 Concurrent Centrals MUST have isolated snapshots and MAY observe different
 canonical payload versions when event state changes between their offset-zero
 requests. The Peripheral MUST NOT splice a changed display name, hash, or
 future census into any one snapshot. Snapshot storage MUST remain bounded by
 one value of at most 512 bytes per connected Central and MUST be released under
-the lifecycle above.
+the applicable platform lifecycle above.
 
 ## Serve policy
 
@@ -602,9 +622,11 @@ commit, timestamps, and raw B005 bytes for each run.
    remains Vector 1. Verify A's serving guard rejects the inconsistent local
    configuration; if malformed bytes are injected below that guard, B rejects
    the hint without suppressing direct observation.
-5. Exercise a payload larger than the negotiated ATT response by adding a
-   well-formed unknown TLV below the 512-byte cap. Verify continuation offsets
-   reconstruct one immutable payload and B skips the unknown TLV.
+5. In an instrumented test build, inject a well-formed unknown TLV below the
+   conforming emitter's serializer guard to make a payload larger than the
+   negotiated ATT response while remaining below the 512-byte cap. Verify
+   continuation offsets reconstruct one immutable payload and B skips the
+   unknown TLV; a conforming v1 emitter MUST NOT produce this test payload.
 6. Exercise truncation, invalid offset, disconnect, reconnect, and the current
    bounded retry/backoff behavior. Verify there is no unbounded connection,
    memory, or retry growth.
