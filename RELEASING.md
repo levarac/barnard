@@ -13,6 +13,21 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 The first `v0.1.0` tag will be cut by the project lead after the root Swift
 package manifest is merged.
 
+## GitHub release notes (automated)
+
+Pushing a `vX.Y.Z` tag triggers the **Release Notes** workflow
+(`.github/workflows/release-notes.yml`), which creates the GitHub Release for
+that tag automatically: it collects the PRs, resolved issues, and `specs/`
+changes since the previous version tag, drafts a summary with a GitHub Model,
+and attaches the raw generated facts in a collapsible section. If the AI pass
+is unavailable the release is still created with the raw notes.
+
+To regenerate notes for an existing tag (or backfill an old one), run the
+workflow manually from the **Actions** tab: pick **Release Notes**, enter the
+tag, and leave **dry run** on to preview in the run summary first; re-run with
+dry run off to create or update the release. Review the generated text after
+each release — the AI summary is a draft, not an authority.
+
 ## Publishing the Android library to Maven Central
 
 After the release tag is pushed and the one Maven Central credential secret
