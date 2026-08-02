@@ -101,6 +101,11 @@ class MainActivity : AppCompatActivity() {
             is BarnardEvent.Constraint -> {
                 append("constraint: ${event.constraint.code} ${event.constraint.message ?: ""}")
             }
+            is BarnardEvent.EventInfoHint -> {
+                val hint = event.hint
+                append("event_info_hint: name=${hint.eventInfo.eventDisplayName} " +
+                    "additionalNamesOmitted=${hint.additionalNamesOmitted} additionalEventsOmitted=${hint.additionalEventsOmitted}")
+            }
         }
     }
 
