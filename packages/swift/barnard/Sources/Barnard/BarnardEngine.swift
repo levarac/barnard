@@ -197,7 +197,12 @@ public final class BarnardEngine: NSObject {
   private var isAdvertising = false
   private var eventInfoServePolicy = BarnardEventInfoServePolicy()
   private var eventInfoDisplayName: String?
-  private struct EventInfoSnapshot { var value: Data; var lastRequest: Date }
+  private struct EventInfoSnapshot {
+    var value: Data
+    var eventDisplayName: String?
+    var eventCodeHash: Data
+    var lastRequest: Date
+  }
   private var eventInfoSnapshots: [UUID: EventInfoSnapshot] = [:]
   private var shouldStartScanWhenReady = false
   private var shouldStartAdvertiseWhenReady = false
@@ -459,7 +464,8 @@ public final class BarnardEngine: NSObject {
     organizerDesignated: Bool = false,
     eventActiveForDiscovery: Bool = false,
     eventDisplayName: String? = nil
-  ) {
+  ) throws {
+    if let eventDisplayName { try BarnardEventInfoCodec.validateEventDisplayName(eventDisplayName) }
     eventInfoServePolicy = BarnardEventInfoServePolicy(
       organizerDesignated: organizerDesignated,
       eventActiveForDiscovery: eventActiveForDiscovery
@@ -608,6 +614,7 @@ public final class BarnardEngine: NSObject {
     }
     peripheralManager?.stopAdvertising()
     isAdvertising = false
+    eventInfoSnapshots.removeAll()
     startAdvertiseInternal()
     emitDebug(level: "info", name: "advertise_restart_on_foreground", data: nil)
   }
@@ -1463,11 +1470,14 @@ extension BarnardEngine: CBPeripheralDelegate {
     case eventInfoCharacteristicUUID:
       do {
         let hint = try BarnardEventInfoCodec.parse(value)
-        emitDebug(level: "info", name: "gatt_event_info_hint", data: [
+        var data: [String: Any] = [
           "id": id.uuidString,
-          "displayName": hint.eventDisplayName,
           "eventCodeHash": hint.eventCodeHash.hexString,
-        ])
+        ]
+        #if DEBUG
+        data["displayName"] = hint.eventDisplayName
+        #endif
+        emitDebug(level: "info", name: "gatt_event_info_hint", data: data)
       } catch {
         emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString])
       }
@@ -1617,13 +1627,25 @@ extension BarnardEngine: CBPeripheralManagerDelegate {
           peripheral.respond(to: request, withResult: .readNotPermitted)
           return
         }
-        eventInfoSnapshots[id] = EventInfoSnapshot(value: value, lastRequest: now)
+        eventInfoSnapshots[id] = EventInfoSnapshot(
+          value: value,
+          eventDisplayName: eventInfoDisplayName,
+          eventCodeHash: rpid.getEventCodeHash(),
+          lastRequest: now
+        )
       } catch {
         peripheral.respond(to: request, withResult: .readNotPermitted)
         return
       }
     }
     guard var snapshot = eventInfoSnapshots[id] else {
+      peripheral.respond(to: request, withResult: .invalidOffset)
+      return
+    }
+    guard snapshot.eventDisplayName == eventInfoDisplayName,
+      snapshot.eventCodeHash == rpid.getEventCodeHash()
+    else {
+      eventInfoSnapshots.removeValue(forKey: id)
       peripheral.respond(to: request, withResult: .invalidOffset)
       return
     }

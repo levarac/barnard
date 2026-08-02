@@ -291,6 +291,7 @@ public class BarnardEngine(private val appContext: Context) {
         eventActiveForDiscovery: Boolean = false,
         eventDisplayName: String? = null,
     ) {
+        eventDisplayName?.let(BarnardEventInfoCodec::validateEventDisplayName)
         eventInfoServePolicy = BarnardEventInfoServePolicy(organizerDesignated, eventActiveForDiscovery)
         eventInfoDisplayName = eventDisplayName
     }
@@ -679,6 +680,8 @@ public class BarnardEngine(private val appContext: Context) {
         isAdvertising = false
         gattServer?.close()
         gattServer = null
+        eventInfoConnectionEpochs.clear()
+        eventInfoSnapshots.clear()
         emitState("advertise_stop")
         emitDebug("info", "advertise_stop", null)
     }
@@ -1349,8 +1352,7 @@ public class BarnardEngine(private val appContext: Context) {
             // B005 is read before, but never gated by, B004 same-event resolution.
             val eventInfoCh = svc.getCharacteristic(eventInfoCharUuid)
             if (eventInfoCh != null && hasConnectPermission()) {
-                gatt.readCharacteristic(eventInfoCh)
-                return
+                if (gatt.readCharacteristic(eventInfoCh)) return
             }
             readB004ForResolution(gatt, svc)
         }
@@ -1359,7 +1361,13 @@ public class BarnardEngine(private val appContext: Context) {
         private fun readB004ForResolution(gatt: BluetoothGatt, svc: BluetoothGattService) {
             val eventCodeHashCh = svc.getCharacteristic(eventCodeHashCharUuid)
             if (eventCodeHashCh != null && hasConnectPermission()) {
-                gatt.readCharacteristic(eventCodeHashCh)
+                if (gatt.readCharacteristic(eventCodeHashCh)) return
+                markGattResolutionFailed(
+                    address = gatt.device?.address ?: "",
+                    reason = "b004_read_not_started",
+                    recoverable = true
+                )
+                finishConnection(gatt)
             } else {
                 markGattResolutionFailed(
                     address = gatt.device?.address ?: "",
@@ -1432,9 +1440,8 @@ public class BarnardEngine(private val appContext: Context) {
                         val hint = BarnardEventInfoCodec.parse(value)
                         emitDebug("info", "gatt_event_info_hint", mapOf(
                             "address" to address,
-                            "displayName" to hint.eventDisplayName,
                             "eventCodeHash" to hint.eventCodeHash.toHex(),
-                        ))
+                        ) + if (isDebugBuild()) mapOf("displayName" to hint.eventDisplayName) else emptyMap())
                     } catch (_: IllegalArgumentException) {
                         emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address))
                     }
@@ -1564,8 +1571,12 @@ public class BarnardEngine(private val appContext: Context) {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             val address = device.address ?: return
-            eventInfoConnectionEpochs[address] = (eventInfoConnectionEpochs[address] ?: 0L) + 1L
             eventInfoSnapshots.keys.removeAll { it.startsWith("$address:") }
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                eventInfoConnectionEpochs[address] = (eventInfoConnectionEpochs[address] ?: 0L) + 1L
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                eventInfoConnectionEpochs.remove(address)
+            }
         }
 
         @SuppressLint("MissingPermission")

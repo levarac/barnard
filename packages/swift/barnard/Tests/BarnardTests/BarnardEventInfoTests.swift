@@ -36,7 +36,7 @@ final class BarnardEventInfoTests: XCTestCase {
       "020100124261726e61726420436f72652053706c69740200080b9f14789f13968f", // version
       "010100124261726e61726420436f72652053706c69740200080b9f14789f1396", // truncation
       "010200080b9f14789f13968f0100124261726e61726420436f72652053706c6974", // ordering
-      "01010001410200080b9f14789f13968f020000", // duplicate
+      "01010001410200080b9f14789f13968f020000", // unordered repeat of type 0x02
       "01010001ff0200080b9f14789f13968f", // invalid UTF-8
       "0101000241010200080b9f14789f13968f", // control character
       "0101000341cc8a0200080b9f14789f13968f", // non-NFC A + ring
@@ -63,6 +63,12 @@ final class BarnardEventInfoTests: XCTestCase {
       eventDisplayName: "Barnard Core Split",
       b004EventCodeHash: b004
     ))
+    XCTAssertNotNil(try BarnardEventInfoCodec.payloadIfServing(
+      policy: BarnardEventInfoServePolicy(organizerDesignated: true, eventActiveForDiscovery: true),
+      eventCode: "CORE-SPLIT-80",
+      eventDisplayName: "Barnard Core Split",
+      b004EventCodeHash: b004
+    ))
   }
 
   func testDiscoveryRetentionCapsNamesHashesAndResetsAtFiveMinutes() {
@@ -81,6 +87,8 @@ final class BarnardEventInfoTests: XCTestCase {
     XCTAssertTrue(names.observe(BarnardEventInfo(eventDisplayName: "Name 4", eventCodeHash: hash), now: 2).additionalNamesOmitted)
     _ = names.observe(BarnardEventInfo(eventDisplayName: "Fresh", eventCodeHash: hash), now: 300)
     XCTAssertEqual(names.retainedHashCount, 1)
+    XCTAssertFalse(names.additionalNamesOmitted)
+    XCTAssertFalse(names.additionalEventsOmitted)
   }
 
   func testRetryBudgetAllowsOnlyTwoTransportAttemptsWithThirtySecondBackoff() {

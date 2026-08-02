@@ -41,6 +41,11 @@ public object BarnardEventInfoCodec {
     }
 
     @JvmStatic
+    public fun validateEventDisplayName(eventDisplayName: String) {
+        canonicalDisplayNameBytes(eventDisplayName)
+    }
+
+    @JvmStatic
     public fun serialize(eventCode: String, eventDisplayName: String, b004EventCodeHash: ByteArray): ByteArray {
         val displayNameBytes = canonicalDisplayNameBytes(eventDisplayName)
         val eventCodeHash = BarnardCrypto.computeEventCodeHash(eventCode)
@@ -170,4 +175,16 @@ public class BarnardEventInfoRetryBudget {
     }
 
     public fun recordSemanticUnavailable(peer: String) { semanticUnavailable += peer }
+
+    public fun clear(peer: String) {
+        attempts.remove(peer)
+        retryAfterMs.remove(peer)
+        semanticUnavailable.remove(peer)
+    }
+
+    public fun clearAll() {
+        attempts.clear()
+        retryAfterMs.clear()
+        semanticUnavailable.clear()
+    }
 }

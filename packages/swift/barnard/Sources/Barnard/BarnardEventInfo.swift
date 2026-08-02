@@ -89,7 +89,12 @@ public enum BarnardEventInfoCodec {
     return payload
   }
 
-  public static func parse(_ payload: Data) throws -> BarnardEventInfo {
+  public static func validateEventDisplayName(_ eventDisplayName: String) throws {
+    _ = try canonicalDisplayNameBytes(eventDisplayName)
+  }
+
+  public static func parse(_ input: Data) throws -> BarnardEventInfo {
+    let payload = Data(input)
     guard (16...maximumPayloadBytes).contains(payload.count) else {
       throw BarnardEventInfoError.invalidPayloadLength
     }
@@ -225,4 +230,14 @@ public final class BarnardEventInfoRetryBudget {
     return deadline
   }
   public func recordSemanticUnavailable(_ peer: UUID) { semanticUnavailable.insert(peer) }
+  public func clear(_ peer: UUID) {
+    attempts.removeValue(forKey: peer)
+    retryAfter.removeValue(forKey: peer)
+    semanticUnavailable.remove(peer)
+  }
+  public func clearAll() {
+    attempts.removeAll()
+    retryAfter.removeAll()
+    semanticUnavailable.removeAll()
+  }
 }

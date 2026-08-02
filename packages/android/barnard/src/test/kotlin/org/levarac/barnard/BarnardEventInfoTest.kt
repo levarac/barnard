@@ -3,6 +3,7 @@ package org.levarac.barnard
 import org.levarac.barnard.BarnardCrypto.toHex
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -59,6 +60,12 @@ class BarnardEventInfoTest {
             "Barnard Core Split",
             b004,
         ))
+        assertNotNull(BarnardEventInfoCodec.payloadIfServing(
+            BarnardEventInfoServePolicy(organizerDesignated = true, eventActiveForDiscovery = true),
+            "CORE-SPLIT-80",
+            "Barnard Core Split",
+            b004,
+        ))
     }
 
     @Test
@@ -76,6 +83,8 @@ class BarnardEventInfoTest {
         assertEquals(true, names.observe(BarnardEventInfo("Name 4", hash), 2L).additionalNamesOmitted)
         names.observe(BarnardEventInfo("Fresh", hash), 300_000L)
         assertEquals(1, names.retainedHashCount)
+        assertEquals(false, names.additionalNamesOmitted)
+        assertEquals(false, names.additionalEventsOmitted)
     }
 
     @Test
