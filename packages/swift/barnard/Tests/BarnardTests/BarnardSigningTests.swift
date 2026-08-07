@@ -127,4 +127,44 @@ final class BarnardSigningTests: XCTestCase {
     XCTAssertEqual(proof.signingPublicKey, publicKey)
     XCTAssertEqual(proof.rpi.count, 16)
   }
+
+  /// barnard#124: the signing key pair is cached per instance, so a rotated
+  /// device secret must take effect on the very next call — including for
+  /// the same event code, where a cache keyed on the event code alone would
+  /// keep signing with the old identity.
+  func testBarnardIdentitySignFollowsDeviceSecretRotation() {
+    let defaults = UserDefaults.standard
+    defer { defaults.removeObject(forKey: "barnard.rpidSeed") }
+
+    let firstSecret = Data(repeating: 0x51, count: 32)
+    defaults.set(firstSecret, forKey: "barnard.rpidSeed")
+    let identity = BarnardIdentity()
+
+    let firstPublicKey = identity.signingPublicKey(eventCode: "EVT1")
+    XCTAssertEqual(
+      firstPublicKey,
+      BarnardSigning.deriveSigningKeyPair(deviceSecret: firstSecret, eventCode: "EVT1")
+        .publicKeyCompressed
+    )
+
+    // Same instance, same event code, different device secret.
+    let secondSecret = Data(repeating: 0x52, count: 32)
+    defaults.set(secondSecret, forKey: "barnard.rpidSeed")
+
+    let payload = Data("rotation payload".utf8)
+    let sig = identity.sign(eventCode: "EVT1", bytes: payload)
+    let recovered = BarnardSigning.recoverPublicKey(
+      recId: sig.v,
+      r: Secp256k1.UInt256(data: sig.r),
+      s: Secp256k1.UInt256(data: sig.s),
+      messageHash32: BarnardCrypto.sha256(payload)
+    )
+
+    XCTAssertNotEqual(recovered, firstPublicKey, "the rotated-out key must not sign")
+    XCTAssertEqual(
+      recovered,
+      BarnardSigning.deriveSigningKeyPair(deviceSecret: secondSecret, eventCode: "EVT1")
+        .publicKeyCompressed
+    )
+  }
 }
