@@ -65,15 +65,25 @@ final class BarnardCoreTests: XCTestCase {
     // calls, so the second read cannot rendezvous until the first transaction
     // has completed. An unfixed implementation reaches both reads together,
     // making the race deterministic without relying on sleeps or repetition.
-    DispatchQueue.concurrentPerform(iterations: 2) { index in
-      let loaded = BarnardCoreKeyManager.loadOrCreate(
-        key: key,
-        minimumByteCount: 32,
-        generatedByteCount: 32,
-        storage: storage,
-        randomSource: FixedRandomSource(bytes: secrets[index])
-      )
-      results.append(loaded)
+    let completed = DispatchGroup()
+    for index in secrets.indices {
+      completed.enter()
+      DispatchQueue.global().async {
+        defer { completed.leave() }
+        let loaded = BarnardCoreKeyManager.loadOrCreate(
+          key: key,
+          minimumByteCount: 32,
+          generatedByteCount: 32,
+          storage: storage,
+          randomSource: FixedRandomSource(bytes: secrets[index])
+        )
+        results.append(loaded)
+      }
+    }
+
+    guard completed.wait(timeout: .now() + 3) == .success else {
+      XCTFail("concurrent cold loads did not complete before the timeout")
+      return
     }
 
     let loadedValues = results.snapshot
@@ -92,9 +102,11 @@ final class BarnardCoreTests: XCTestCase {
 
   func testReentrantStorageCallbackDoesNotDeadlock() {
     let storage = ReentrantKeyStorage()
-    let completed = DispatchSemaphore(value: 0)
+    let completed = DispatchGroup()
+    completed.enter()
 
     DispatchQueue.global().async {
+      defer { completed.leave() }
       _ = BarnardCoreKeyManager.loadOrCreate(
         key: "outer-device-secret",
         minimumByteCount: 32,
@@ -102,14 +114,12 @@ final class BarnardCoreTests: XCTestCase {
         storage: storage,
         randomSource: FixedRandomSource(bytes: [UInt8](repeating: 0x11, count: 32))
       )
-      completed.signal()
     }
 
-    XCTAssertEqual(
-      completed.wait(timeout: .now() + 1),
-      .success,
-      "storage callbacks may synchronously re-enter loadOrCreate"
-    )
+    guard completed.wait(timeout: .now() + 3) == .success else {
+      XCTFail("re-entrant storage callback did not complete before the timeout")
+      return
+    }
     XCTAssertEqual(storage.nestedCallCount, 1)
   }
 
