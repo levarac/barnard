@@ -1,5 +1,7 @@
 // Use of this source code is governed by a BSD-style license.
 
+import Dispatch
+
 public protocol BarnardCoreRandomSource {
   func randomBytes(count: Int) -> [UInt8]
 }
@@ -45,6 +47,35 @@ public struct BarnardCoreBeaconChain {
 }
 
 public enum BarnardCoreKeyManager {
+  // Keep this target's platform imports minimal by using Dispatch, which is
+  // already available on its supported platforms. The serial queue covers
+  // the complete read-check-generate-write transaction: a caller that arrives
+  // after a cold caller must observe the value that was stored.
+  //
+  // The queue-specific check deliberately makes the critical section
+  // re-entrant for synchronous callbacks executing on this queue from injected
+  // storage or random sources. That avoids deadlocking host implementations
+  // that call back into loadOrCreate. Such callbacks must not recursively
+  // request the same key: re-entry is safe, but same-key recursive creation
+  // remains undefined; the inner caller may retain a secret that an outer call
+  // overwrites, so the returned and stored values can diverge. A callback that
+  // synchronously waits for another thread to call loadOrCreate can still
+  // deadlock and is not supported.
+  private static let loadOrCreateQueueKey = DispatchSpecificKey<Void>()
+  private static let loadOrCreateQueue: DispatchQueue = {
+    let queue = DispatchQueue(label: "org.levarac.barnard.core-key-manager")
+    queue.setSpecific(key: loadOrCreateQueueKey, value: ())
+    return queue
+  }()
+
+  /// Loads a stored value or atomically creates and stores one.
+  ///
+  /// The storage and random-source callbacks execute inside the transaction.
+  /// A callback that synchronously re-enters this method on the same execution
+  /// context is supported. Same-key recursive creation is undefined: the inner
+  /// caller may retain a secret that an outer call overwrites, so the returned
+  /// and stored values can diverge. Callbacks must not synchronously wait for
+  /// another thread to call this method.
   public static func loadOrCreate(
     key: String,
     minimumByteCount: Int,
@@ -52,12 +83,21 @@ public enum BarnardCoreKeyManager {
     storage: any BarnardCoreKeyStorage,
     randomSource: any BarnardCoreRandomSource
   ) -> [UInt8] {
-    if let existing = storage.bytes(forKey: key), existing.count >= minimumByteCount {
-      return existing
+    withLoadOrCreateCriticalSection {
+      if let existing = storage.bytes(forKey: key), existing.count >= minimumByteCount {
+        return existing
+      }
+      let generated = randomSource.randomBytes(count: generatedByteCount)
+      storage.setBytes(generated, forKey: key)
+      return generated
     }
-    let generated = randomSource.randomBytes(count: generatedByteCount)
-    storage.setBytes(generated, forKey: key)
-    return generated
+  }
+
+  private static func withLoadOrCreateCriticalSection<T>(_ body: () -> T) -> T {
+    if DispatchQueue.getSpecific(key: loadOrCreateQueueKey) != nil {
+      return body()
+    }
+    return loadOrCreateQueue.sync(execute: body)
   }
 }
 
