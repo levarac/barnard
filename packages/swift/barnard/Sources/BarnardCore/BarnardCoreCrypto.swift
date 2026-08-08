@@ -72,9 +72,10 @@ public enum BarnardCoreKeyManager {
   ///
   /// The storage and random-source callbacks execute inside the transaction.
   /// A callback that synchronously re-enters this method on the same execution
-  /// context is supported. The behavior of same-key recursive creation is
-  /// undefined, and callbacks must not synchronously wait for another thread
-  /// to call this method.
+  /// context is supported. Same-key recursive creation is undefined: the inner
+  /// caller may retain a secret that an outer call overwrites, so the returned
+  /// and stored values can diverge. Callbacks must not synchronously wait for
+  /// another thread to call this method.
   public static func loadOrCreate(
     key: String,
     minimumByteCount: Int,
