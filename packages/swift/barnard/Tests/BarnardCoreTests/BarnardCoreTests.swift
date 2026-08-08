@@ -1,5 +1,7 @@
 // Use of this source code is governed by a BSD-style license.
 
+import Dispatch
+import Foundation
 import XCTest
 @testable import BarnardCore
 
@@ -47,6 +49,43 @@ final class BarnardCoreTests: XCTestCase {
 
     XCTAssertEqual(first, [UInt8](repeating: 0x5a, count: 32))
     XCTAssertEqual(second, first)
+  }
+
+  func testConcurrentColdLoadsAgreeWithStoredSecret() {
+    let attempts = 8
+    let secrets = [
+      [UInt8](repeating: 0x11, count: 32),
+      [UInt8](repeating: 0x22, count: 32),
+    ]
+
+    for attempt in 0..<attempts {
+      let storage = DelayedKeyStorage(readDelay: 0.05)
+      let results = ConcurrentByteValues()
+
+      DispatchQueue.concurrentPerform(iterations: 2) { index in
+        let loaded = BarnardCoreKeyManager.loadOrCreate(
+          key: "device-secret-\(attempt)",
+          minimumByteCount: 32,
+          generatedByteCount: 32,
+          storage: storage,
+          randomSource: FixedRandomSource(bytes: secrets[index])
+        )
+        results.append(loaded)
+      }
+
+      let loadedValues = results.snapshot
+      XCTAssertEqual(loadedValues.count, 2)
+      XCTAssertEqual(
+        loadedValues[0],
+        loadedValues[1],
+        "concurrent cold loads must return the same device secret (attempt \(attempt))"
+      )
+      XCTAssertEqual(
+        loadedValues[0],
+        storage.storedBytes(forKey: "device-secret-\(attempt)"),
+        "concurrent cold loads must return the value that was persisted (attempt \(attempt))"
+      )
+    }
   }
 
   func testInjectedClockProducesExpectedPayload() {
@@ -100,6 +139,52 @@ private final class MemoryKeyStorage: BarnardCoreKeyStorage {
 
   func setBytes(_ bytes: [UInt8], forKey key: String) {
     values[key] = bytes
+  }
+}
+
+private final class DelayedKeyStorage: BarnardCoreKeyStorage {
+  private let lock = NSLock()
+  private let readDelay: TimeInterval
+  private var values: [String: [UInt8]] = [:]
+
+  init(readDelay: TimeInterval) {
+    self.readDelay = readDelay
+  }
+
+  func bytes(forKey key: String) -> [UInt8]? {
+    Thread.sleep(forTimeInterval: readDelay)
+    lock.lock()
+    defer { lock.unlock() }
+    return values[key]
+  }
+
+  func setBytes(_ bytes: [UInt8], forKey key: String) {
+    lock.lock()
+    values[key] = bytes
+    lock.unlock()
+  }
+
+  func storedBytes(forKey key: String) -> [UInt8]? {
+    lock.lock()
+    defer { lock.unlock() }
+    return values[key]
+  }
+}
+
+private final class ConcurrentByteValues {
+  private let lock = NSLock()
+  private var values: [[UInt8]] = []
+
+  func append(_ value: [UInt8]) {
+    lock.lock()
+    values.append(value)
+    lock.unlock()
+  }
+
+  var snapshot: [[UInt8]] {
+    lock.lock()
+    defer { lock.unlock() }
+    return values
   }
 }
 

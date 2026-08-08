@@ -1,5 +1,7 @@
 // Use of this source code is governed by a BSD-style license.
 
+import Dispatch
+
 public protocol BarnardCoreRandomSource {
   func randomBytes(count: Int) -> [UInt8]
 }
@@ -45,6 +47,12 @@ public struct BarnardCoreBeaconChain {
 }
 
 public enum BarnardCoreKeyManager {
+  // Keep this target's platform imports minimal by using the Dispatch
+  // semaphore primitive already available on its supported platforms. The
+  // lock covers the complete read-check-generate-write transaction: a caller
+  // that arrives after a cold caller must observe the value that was stored.
+  private static let loadOrCreateLock = DispatchSemaphore(value: 1)
+
   public static func loadOrCreate(
     key: String,
     minimumByteCount: Int,
@@ -52,6 +60,9 @@ public enum BarnardCoreKeyManager {
     storage: any BarnardCoreKeyStorage,
     randomSource: any BarnardCoreRandomSource
   ) -> [UInt8] {
+    loadOrCreateLock.wait()
+    defer { loadOrCreateLock.signal() }
+
     if let existing = storage.bytes(forKey: key), existing.count >= minimumByteCount {
       return existing
     }
