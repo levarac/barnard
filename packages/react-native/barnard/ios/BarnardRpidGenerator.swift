@@ -1,7 +1,6 @@
 import Foundation
 
 final class BarnardRpidGenerator {
-  private let deviceSecretKey = "barnard.rpidSeed"
   private let eventCodeKey = "barnard.eventCode"
 
   private(set) var eventCode: String? {
@@ -90,15 +89,7 @@ final class BarnardRpidGenerator {
   }
 
   private func getOrCreateDeviceSecret() -> Data {
-    let defaults = UserDefaults.standard
-
-    if let existing = defaults.data(forKey: deviceSecretKey), existing.count >= 32 {
-      return existing
-    }
-
-    let newSecret = BarnardCrypto.generateRandomBytes(32)
-    defaults.set(newSecret, forKey: deviceSecretKey)
-    return newSecret
+    BarnardDeviceSecretStore.loadOrCreate()
   }
 
   func getDeviceSecret() -> Data {

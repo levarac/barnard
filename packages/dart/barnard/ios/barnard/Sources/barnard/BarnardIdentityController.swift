@@ -14,6 +14,17 @@ import Foundation
 /// method channel — only the public key and signatures do.
 final class BarnardIdentityController: NSObject, FlutterPlugin {
   private let deviceSecretKey = "barnard.rpidSeed"
+  private let keyStorage: any BarnardCoreKeyStorage
+  private let randomSource: any BarnardCoreRandomSource
+
+  init(
+    keyStorage: any BarnardCoreKeyStorage = BarnardUserDefaultsKeyStorage(),
+    randomSource: any BarnardCoreRandomSource = BarnardSystemRandomSource()
+  ) {
+    self.keyStorage = keyStorage
+    self.randomSource = randomSource
+    super.init()
+  }
 
   static func register(with _: FlutterPluginRegistrar) {
     // Registered directly by BarnardPlugin.register(with:); this
@@ -120,12 +131,12 @@ final class BarnardIdentityController: NSObject, FlutterPlugin {
   // BarnardClient.exportCurrentTek, which is the TEK, not the raw secret).
 
   private func getOrCreateDeviceSecret() -> Data {
-    let defaults = UserDefaults.standard
-    if let existing = defaults.data(forKey: deviceSecretKey), existing.count >= 32 {
-      return existing
-    }
-    let newSecret = BarnardCrypto.generateRandomBytes(32)
-    defaults.set(newSecret, forKey: deviceSecretKey)
-    return newSecret
+    Data(BarnardCoreKeyManager.loadOrCreate(
+      key: deviceSecretKey,
+      minimumByteCount: 32,
+      generatedByteCount: 32,
+      storage: keyStorage,
+      randomSource: randomSource
+    ))
   }
 }

@@ -52,40 +52,65 @@ final class BarnardCoreTests: XCTestCase {
   }
 
   func testConcurrentColdLoadsAgreeWithStoredSecret() {
-    let attempts = 8
     let secrets = [
       [UInt8](repeating: 0x11, count: 32),
       [UInt8](repeating: 0x22, count: 32),
     ]
+    let key = "device-secret-rendezvous"
+    let storage = RendezvousKeyStorage(readTimeout: 1.0)
+    let results = ConcurrentByteValues()
 
-    for attempt in 0..<attempts {
-      let storage = DelayedKeyStorage(readDelay: 0.05)
-      let results = ConcurrentByteValues()
-
-      DispatchQueue.concurrentPerform(iterations: 2) { index in
-        let loaded = BarnardCoreKeyManager.loadOrCreate(
-          key: "device-secret-\(attempt)",
-          minimumByteCount: 32,
-          generatedByteCount: 32,
-          storage: storage,
-          randomSource: FixedRandomSource(bytes: secrets[index])
-        )
-        results.append(loaded)
-      }
-
-      let loadedValues = results.snapshot
-      XCTAssertEqual(loadedValues.count, 2)
-      XCTAssertEqual(
-        loadedValues[0],
-        loadedValues[1],
-        "concurrent cold loads must return the same device secret (attempt \(attempt))"
+    // The storage blocks the first read until the second read has arrived.
+    // The timeout is intentional: a correct implementation serializes the
+    // calls, so the second read cannot rendezvous until the first transaction
+    // has completed. An unfixed implementation reaches both reads together,
+    // making the race deterministic without relying on sleeps or repetition.
+    DispatchQueue.concurrentPerform(iterations: 2) { index in
+      let loaded = BarnardCoreKeyManager.loadOrCreate(
+        key: key,
+        minimumByteCount: 32,
+        generatedByteCount: 32,
+        storage: storage,
+        randomSource: FixedRandomSource(bytes: secrets[index])
       )
-      XCTAssertEqual(
-        loadedValues[0],
-        storage.storedBytes(forKey: "device-secret-\(attempt)"),
-        "concurrent cold loads must return the value that was persisted (attempt \(attempt))"
-      )
+      results.append(loaded)
     }
+
+    let loadedValues = results.snapshot
+    XCTAssertEqual(loadedValues.count, 2)
+    XCTAssertEqual(
+      loadedValues[0],
+      loadedValues[1],
+      "concurrent cold loads must return the same device secret"
+    )
+    XCTAssertEqual(
+      loadedValues[0],
+      storage.storedBytes(forKey: key),
+      "concurrent cold loads must return the value that was persisted"
+    )
+  }
+
+  func testReentrantStorageCallbackDoesNotDeadlock() {
+    let storage = ReentrantKeyStorage()
+    let completed = DispatchSemaphore(value: 0)
+
+    DispatchQueue.global().async {
+      _ = BarnardCoreKeyManager.loadOrCreate(
+        key: "outer-device-secret",
+        minimumByteCount: 32,
+        generatedByteCount: 32,
+        storage: storage,
+        randomSource: FixedRandomSource(bytes: [UInt8](repeating: 0x11, count: 32))
+      )
+      completed.signal()
+    }
+
+    XCTAssertEqual(
+      completed.wait(timeout: .now() + 1),
+      .success,
+      "storage callbacks may synchronously re-enter loadOrCreate"
+    )
+    XCTAssertEqual(storage.nestedCallCount, 1)
   }
 
   func testInjectedClockProducesExpectedPayload() {
@@ -142,32 +167,64 @@ private final class MemoryKeyStorage: BarnardCoreKeyStorage {
   }
 }
 
-private final class DelayedKeyStorage: BarnardCoreKeyStorage {
-  private let lock = NSLock()
-  private let readDelay: TimeInterval
+private final class RendezvousKeyStorage: BarnardCoreKeyStorage {
+  private let condition = NSCondition()
+  private let readTimeout: TimeInterval
+  private var readCount = 0
   private var values: [String: [UInt8]] = [:]
 
-  init(readDelay: TimeInterval) {
-    self.readDelay = readDelay
+  init(readTimeout: TimeInterval) {
+    self.readTimeout = readTimeout
   }
 
   func bytes(forKey key: String) -> [UInt8]? {
-    Thread.sleep(forTimeInterval: readDelay)
-    lock.lock()
-    defer { lock.unlock() }
+    condition.lock()
+    readCount += 1
+    if readCount == 2 {
+      condition.broadcast()
+    } else {
+      let deadline = Date(timeIntervalSinceNow: readTimeout)
+      while readCount < 2 && condition.wait(until: deadline) {}
+    }
+    let value = values[key]
+    condition.unlock()
+    return value
+  }
+
+  func setBytes(_ bytes: [UInt8], forKey key: String) {
+    condition.lock()
+    values[key] = bytes
+    condition.unlock()
+  }
+
+  func storedBytes(forKey key: String) -> [UInt8]? {
+    condition.lock()
+    let value = values[key]
+    condition.unlock()
+    return value
+  }
+}
+
+private final class ReentrantKeyStorage: BarnardCoreKeyStorage {
+  private var values: [String: [UInt8]] = [:]
+  private(set) var nestedCallCount = 0
+
+  func bytes(forKey key: String) -> [UInt8]? {
+    if nestedCallCount == 0 {
+      nestedCallCount = 1
+      _ = BarnardCoreKeyManager.loadOrCreate(
+        key: "nested-device-secret",
+        minimumByteCount: 32,
+        generatedByteCount: 32,
+        storage: self,
+        randomSource: FixedRandomSource(bytes: [UInt8](repeating: 0x22, count: 32))
+      )
+    }
     return values[key]
   }
 
   func setBytes(_ bytes: [UInt8], forKey key: String) {
-    lock.lock()
     values[key] = bytes
-    lock.unlock()
-  }
-
-  func storedBytes(forKey key: String) -> [UInt8]? {
-    lock.lock()
-    defer { lock.unlock() }
-    return values[key]
   }
 }
 

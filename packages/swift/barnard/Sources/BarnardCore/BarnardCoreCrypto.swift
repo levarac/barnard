@@ -47,11 +47,24 @@ public struct BarnardCoreBeaconChain {
 }
 
 public enum BarnardCoreKeyManager {
-  // Keep this target's platform imports minimal by using the Dispatch
-  // semaphore primitive already available on its supported platforms. The
-  // lock covers the complete read-check-generate-write transaction: a caller
-  // that arrives after a cold caller must observe the value that was stored.
-  private static let loadOrCreateLock = DispatchSemaphore(value: 1)
+  // Keep this target's platform imports minimal by using Dispatch, which is
+  // already available on its supported platforms. The serial queue covers
+  // the complete read-check-generate-write transaction: a caller that arrives
+  // after a cold caller must observe the value that was stored.
+  //
+  // The queue-specific check deliberately makes the critical section
+  // re-entrant for synchronous callbacks executing on this queue from injected
+  // storage or random sources. That avoids deadlocking host implementations
+  // that call back into loadOrCreate. Such callbacks must not recursively
+  // request the same key: re-entry is safe, but same-key recursive creation
+  // remains undefined. A callback that synchronously waits for another thread
+  // to call loadOrCreate can still deadlock and is not supported.
+  private static let loadOrCreateQueueKey = DispatchSpecificKey<Void>()
+  private static let loadOrCreateQueue: DispatchQueue = {
+    let queue = DispatchQueue(label: "org.levarac.barnard.core-key-manager")
+    queue.setSpecific(key: loadOrCreateQueueKey, value: ())
+    return queue
+  }()
 
   public static func loadOrCreate(
     key: String,
@@ -60,15 +73,21 @@ public enum BarnardCoreKeyManager {
     storage: any BarnardCoreKeyStorage,
     randomSource: any BarnardCoreRandomSource
   ) -> [UInt8] {
-    loadOrCreateLock.wait()
-    defer { loadOrCreateLock.signal() }
-
-    if let existing = storage.bytes(forKey: key), existing.count >= minimumByteCount {
-      return existing
+    withLoadOrCreateCriticalSection {
+      if let existing = storage.bytes(forKey: key), existing.count >= minimumByteCount {
+        return existing
+      }
+      let generated = randomSource.randomBytes(count: generatedByteCount)
+      storage.setBytes(generated, forKey: key)
+      return generated
     }
-    let generated = randomSource.randomBytes(count: generatedByteCount)
-    storage.setBytes(generated, forKey: key)
-    return generated
+  }
+
+  private static func withLoadOrCreateCriticalSection<T>(_ body: () -> T) -> T {
+    if DispatchQueue.getSpecific(key: loadOrCreateQueueKey) != nil {
+      return body()
+    }
+    return loadOrCreateQueue.sync(execute: body)
   }
 }
 

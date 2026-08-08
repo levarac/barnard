@@ -13,8 +13,6 @@ import React
 /// signatures do.
 @objc(BarnardIdentity)
 class BarnardIdentity: NSObject {
-  private let deviceSecretKey = "barnard.rpidSeed"
-
   @objc static func requiresMainQueueSetup() -> Bool { false }
 
   @objc(signingPublicKey:resolve:reject:)
@@ -102,12 +100,6 @@ class BarnardIdentity: NSObject {
   // Same storage key as BarnardRpidGenerator.getOrCreateDeviceSecret — see
   // that class for the rationale (shared DeviceSecret, never exposed).
   private func getOrCreateDeviceSecret() -> Data {
-    let defaults = UserDefaults.standard
-    if let existing = defaults.data(forKey: deviceSecretKey), existing.count >= 32 {
-      return existing
-    }
-    let newSecret = BarnardCrypto.generateRandomBytes(32)
-    defaults.set(newSecret, forKey: deviceSecretKey)
-    return newSecret
+    BarnardDeviceSecretStore.loadOrCreate()
   }
 }
