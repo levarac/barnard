@@ -57,8 +57,10 @@ public enum BarnardCoreKeyManager {
   // storage or random sources. That avoids deadlocking host implementations
   // that call back into loadOrCreate. Such callbacks must not recursively
   // request the same key: re-entry is safe, but same-key recursive creation
-  // remains undefined. A callback that synchronously waits for another thread
-  // to call loadOrCreate can still deadlock and is not supported.
+  // remains undefined; the inner caller may retain a secret that an outer call
+  // overwrites, so the returned and stored values can diverge. A callback that
+  // synchronously waits for another thread to call loadOrCreate can still
+  // deadlock and is not supported.
   private static let loadOrCreateQueueKey = DispatchSpecificKey<Void>()
   private static let loadOrCreateQueue: DispatchQueue = {
     let queue = DispatchQueue(label: "org.levarac.barnard.core-key-manager")

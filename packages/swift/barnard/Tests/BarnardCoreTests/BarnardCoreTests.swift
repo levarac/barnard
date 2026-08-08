@@ -181,6 +181,7 @@ private final class RendezvousKeyStorage: BarnardCoreKeyStorage {
   private let condition = NSCondition()
   private let readTimeout: TimeInterval
   private var readCount = 0
+  private var rendezvousSnapshot: [UInt8]?
   private var values: [String: [UInt8]] = [:]
 
   init(readTimeout: TimeInterval) {
@@ -191,12 +192,16 @@ private final class RendezvousKeyStorage: BarnardCoreKeyStorage {
     condition.lock()
     readCount += 1
     if readCount == 2 {
+      // Capture the pre-write state while holding the barrier lock. Returning
+      // this shared snapshot to both readers keeps the unfixed race from
+      // passing merely because one reader re-acquires the lock after a write.
+      rendezvousSnapshot = values[key]
       condition.broadcast()
     } else {
       let deadline = Date(timeIntervalSinceNow: readTimeout)
       while readCount < 2 && condition.wait(until: deadline) {}
     }
-    let value = values[key]
+    let value = readCount >= 2 ? rendezvousSnapshot : values[key]
     condition.unlock()
     return value
   }
