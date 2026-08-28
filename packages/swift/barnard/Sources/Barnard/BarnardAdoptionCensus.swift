@@ -111,7 +111,11 @@ private enum BarnardAdoptionWire {
   }
 
   static func encodeSignature(_ signature: BarnardSigning.RecoverableSignature) -> Data {
-    Data(signature.r + signature.s + [UInt8(signature.v)])
+    var encoded = Data()
+    encoded.append(signature.r)
+    encoded.append(signature.s)
+    encoded.append(UInt8(signature.v))
+    return encoded
   }
 }
 
