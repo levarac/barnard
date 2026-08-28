@@ -67,7 +67,13 @@ jobs:
             exit 1
           fi
       - name: swift test (Barnard compatibility + BarnardCore unit tests)
-        run: xcodebuild -scheme Barnard-Package -destination "id=${{ steps.destination.outputs.udid }}" test
+        # SWIFT_OPTIMIZATION_LEVEL=-O: the default -Onone debug build makes the
+        # BigInteger-based secp256k1 EC math ~9x slower under test, which was
+        # the actual cause of this job running with near-zero timeout margin
+        # (not test harness or Simulator overhead). -O strips bare `assert()`
+        # only (none present in Sources/Tests here; `precondition()` is
+        # unaffected), so numeric-correctness test behavior is unchanged.
+        run: xcodebuild -scheme Barnard-Package -destination "id=${{ steps.destination.outputs.udid }}" SWIFT_OPTIMIZATION_LEVEL=-O test
       - name: Root and inner Swift package manifest drift guard
         working-directory: .
         run: ./scripts/check-swift-package-manifest-mirror.sh
