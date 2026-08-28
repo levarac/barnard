@@ -55,6 +55,16 @@ enum BarnardCrypto {
     ))
   }
 
+  static func deriveTekForAdoptionCredential(
+    deviceSecret: Data,
+    credentialId: Data
+  ) -> Data {
+    Data(BarnardCoreCrypto.deriveTekForAdoptionCredential(
+      deviceSecret: Array(deviceSecret),
+      credentialId: Array(credentialId)
+    ))
+  }
+
   static func deriveTekForAnonymous(deviceSecret: Data) -> Data {
     Data(BarnardCoreCrypto.deriveTekForAnonymous(
       deviceSecret: Array(deviceSecret)

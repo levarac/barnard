@@ -44,6 +44,20 @@ enum BarnardSigning {
     )
   }
 
+  static func deriveSigningKeyPairForAdoptionCredential(
+    deviceSecret: Data,
+    credentialId: Data
+  ) -> SigningKeyPair {
+    let keyPair = BarnardCoreSigning.deriveSigningKeyPairForAdoptionCredential(
+      deviceSecret: Array(deviceSecret),
+      credentialId: Array(credentialId)
+    )
+    return SigningKeyPair(
+      privateKey: Secp256k1.UInt256(bytes: keyPair.privateKey),
+      publicKeyCompressed: Data(keyPair.publicKeyCompressed)
+    )
+  }
+
   static func signRecoverable(
     privateKey: Secp256k1.UInt256,
     messageHash32: Data

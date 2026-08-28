@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v3/common.schema.json",
+  "title": "Barnard Common Types (v3)",
+  "description": "Shared v3 adoption/census public-contract types. Byte values are lowercase hex. Device-unique identifiers, RPI, peripheral identifiers, and raw observation counts are intentionally absent.",
+  "type": "object",
+  "$defs": {
+    "HexBytes": {
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "description": "Lowercase hex with even length."
+    },
+    "Hex8": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Exactly 8 bytes as lowercase hex."
+    },
+    "Hex16": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Exactly 16 bytes as lowercase hex."
+    },
+    "Hex32": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Exactly 32 bytes as lowercase hex."
+    },
+    "CredentialBytes": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{318}$",
+      "description": "Exact 159-byte AdoptionCredential wire value."
+    },
+    "CensusBytes": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{284}$",
+      "description": "Exact 142-byte SignedWindowCensus wire value."
+    },
+    "B005V2Bytes": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{646,772}$",
+      "description": "B005 formatVersion 2 complete value, 323 through 386 bytes as lowercase hex."
+    },
+    "AdmissionMode": {
+      "type": "string",
+      "enum": ["open", "gated"]
+    },
+    "RegistryVerification": {
+      "type": "string",
+      "enum": ["verified", "unverified"]
+    }
+  }
+}
