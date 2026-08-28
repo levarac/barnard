@@ -504,7 +504,9 @@ public enum BarnardB005V2Codec {
     let bytes = Data(value.utf8)
     guard bytes == Data(value.precomposedStringWithCanonicalMapping.utf8),
       (1...maximumDisplayNameBytes).contains(bytes.count),
-      value.unicodeScalars.allSatisfy({ $0.value > 0x1f && $0.value != 0x7f })
+      value.unicodeScalars.allSatisfy({
+        $0.value > 0x1f && !((0x7f...0x9f).contains($0.value))
+      })
     else { throw BarnardAdoptionProtocolError.invalidDisplayName }
     return bytes
   }
@@ -652,6 +654,10 @@ public struct BarnardCensusTuple: Hashable {
 /// authority-signed aggregate; they are never inferred from RPI, peripheral
 /// IDs, raw observation counts, or relayer counts.
 public struct BarnardVerifiedCensusCandidate: Equatable {
+  /// The exact B005 bytes that were decoded, signature-verified, and bound
+  /// to the Registry Event Definition. Relay code must use this value rather
+  /// than accepting a separately supplied byte string.
+  public let exactB005Bytes: Data
   public let credentialId: Data
   public let eventId: Data
   public let admissionMode: BarnardAdoptionAdmissionMode
@@ -665,32 +671,53 @@ public struct BarnardVerifiedCensusCandidate: Equatable {
   public let observedAtUnixSeconds: UInt64
   public let registryVerification: BarnardRegistryVerification
 
-  public init(
-    credentialId: Data,
-    eventId: Data,
-    admissionMode: BarnardAdoptionAdmissionMode,
-    censusDomainId: Data,
-    censusWindowSeconds: UInt32,
-    authorityPolicyEpoch: UInt32,
-    censusAuthorityKeyHash: Data,
-    windowIndex: UInt64,
-    qualifiedVoterCount: UInt16,
-    eligibleVoterCount: UInt16,
-    observedAtUnixSeconds: UInt64,
-    registryVerification: BarnardRegistryVerification
+  private init(
+    exactB005Bytes: Data,
+    payload: BarnardB005V2Payload,
+    registryDefinition: BarnardRegistryEventDefinition,
+    observedAtUnixSeconds: UInt64
   ) {
-    self.credentialId = credentialId
-    self.eventId = eventId
-    self.admissionMode = admissionMode
-    self.censusDomainId = censusDomainId
-    self.censusWindowSeconds = censusWindowSeconds
-    self.authorityPolicyEpoch = authorityPolicyEpoch
-    self.censusAuthorityKeyHash = censusAuthorityKeyHash
-    self.windowIndex = windowIndex
-    self.qualifiedVoterCount = qualifiedVoterCount
-    self.eligibleVoterCount = eligibleVoterCount
+    let credential = payload.credential
+    let census = payload.census
+    let policy = registryDefinition.censusDomainPolicy
+    self.exactB005Bytes = exactB005Bytes
+    self.credentialId = credential.credentialId
+    self.eventId = credential.unsignedBody.eventId
+    self.admissionMode = credential.unsignedBody.admissionMode
+    self.censusDomainId = policy.censusDomainId
+    self.censusWindowSeconds = policy.censusWindowSeconds
+    self.authorityPolicyEpoch = policy.authorityPolicyEpoch
+    self.censusAuthorityKeyHash = BarnardCrypto.sha256(census.authorityPublicKey)
+    self.windowIndex = census.unsignedBody.windowIndex
+    self.qualifiedVoterCount = census.unsignedBody.qualifiedVoterCount
+    self.eligibleVoterCount = census.unsignedBody.eligibleVoterCount
     self.observedAtUnixSeconds = observedAtUnixSeconds
-    self.registryVerification = registryVerification
+    self.registryVerification = .verified
+  }
+
+  /// The only verified-candidate construction path. It decodes the exact
+  /// signed B005 bytes, verifies both signatures, and then requires an exact
+  /// host-authenticated Registry Event Definition binding before exposing any
+  /// census count, window, credential, event, domain, or authority field.
+  public static func decodeAndBind(
+    b005Bytes: Data,
+    registryDefinition: BarnardRegistryEventDefinition,
+    observedAtUnixSeconds: UInt64
+  ) throws -> BarnardVerifiedCensusCandidate {
+    let payload = try BarnardB005V2Codec.decode(b005Bytes)
+    guard registryDefinition.verify(
+      credential: payload.credential,
+      census: payload.census,
+      nowUnixSeconds: observedAtUnixSeconds
+    ) == .verified else {
+      throw BarnardAdoptionProtocolError.invalidField
+    }
+    return BarnardVerifiedCensusCandidate(
+      exactB005Bytes: b005Bytes,
+      payload: payload,
+      registryDefinition: registryDefinition,
+      observedAtUnixSeconds: observedAtUnixSeconds
+    )
   }
 
   public var censusTuple: BarnardCensusTuple {
@@ -703,30 +730,6 @@ public struct BarnardVerifiedCensusCandidate: Equatable {
     )
   }
 
-  public func withWindowIndex(_ value: UInt64) -> BarnardVerifiedCensusCandidate {
-    BarnardVerifiedCensusCandidate(
-      credentialId: credentialId, eventId: eventId, admissionMode: admissionMode,
-      censusDomainId: censusDomainId, censusWindowSeconds: censusWindowSeconds,
-      authorityPolicyEpoch: authorityPolicyEpoch, censusAuthorityKeyHash: censusAuthorityKeyHash,
-      windowIndex: value, qualifiedVoterCount: qualifiedVoterCount,
-      eligibleVoterCount: eligibleVoterCount, observedAtUnixSeconds: observedAtUnixSeconds,
-      registryVerification: registryVerification
-    )
-  }
-
-  public func withCounts(
-    qualifiedVoterCount: UInt16,
-    eligibleVoterCount: UInt16
-  ) -> BarnardVerifiedCensusCandidate {
-    BarnardVerifiedCensusCandidate(
-      credentialId: credentialId, eventId: eventId, admissionMode: admissionMode,
-      censusDomainId: censusDomainId, censusWindowSeconds: censusWindowSeconds,
-      authorityPolicyEpoch: authorityPolicyEpoch, censusAuthorityKeyHash: censusAuthorityKeyHash,
-      windowIndex: windowIndex, qualifiedVoterCount: qualifiedVoterCount,
-      eligibleVoterCount: eligibleVoterCount, observedAtUnixSeconds: observedAtUnixSeconds,
-      registryVerification: registryVerification
-    )
-  }
 }
 
 public enum BarnardAdoptionFallbackReason: Equatable {
@@ -854,37 +857,11 @@ public enum BarnardRelayDisposition: Equatable {
   case expired
 }
 
-/// Transport metadata exists only to make its exclusion explicit. No field
-/// other than `candidate.censusTuple` and exact signed B005 bytes influences
-/// deduplication, conflict detection, or majority evidence.
-public struct BarnardRelayObservation {
-  public let candidate: BarnardVerifiedCensusCandidate
-  public let exactB005Bytes: Data
-  public let directGattPeerHandle: String
-  public let observedRpi: Data
-  public let rawObservationCount: Int
-  public let relayerCount: Int
-
-  public init(
-    candidate: BarnardVerifiedCensusCandidate,
-    exactB005Bytes: Data,
-    directGattPeerHandle: String,
-    observedRpi: Data,
-    rawObservationCount: Int,
-    relayerCount: Int
-  ) {
-    self.candidate = candidate
-    self.exactB005Bytes = exactB005Bytes
-    self.directGattPeerHandle = directGattPeerHandle
-    self.observedRpi = observedRpi
-    self.rawObservationCount = rawObservationCount
-    self.relayerCount = relayerCount
-  }
-}
-
 /// Bounded exact-byte retention. It preserves the first two distinct signed
 /// payloads for a tuple so a second valid artifact is reported as an explicit
 /// equivocation instead of being discarded by first-seen-wins behavior.
+/// Transport metadata, RPI, raw observations, and relayer count are excluded:
+/// only a bound, verified candidate can enter this cache.
 public final class BarnardCensusRelayCache {
   private struct Entry {
     var payloads: [Data]
@@ -897,35 +874,39 @@ public final class BarnardCensusRelayCache {
   private var entries: [BarnardCensusTuple: Entry] = [:]
   private var expired: Set<BarnardCensusTuple> = []
   private var expiredOrder: [BarnardCensusTuple] = []
+  /// Exclusive monotonic floor. It survives bounded tombstone eviction, so a
+  /// candidate from an expired window cannot re-enter once its exact tuple's
+  /// tombstone has been displaced.
+  private var expiredWindowFloor: UInt64 = 0
 
   public init(maximumActiveTuples: Int, maximumPayloadsPerConflict: Int) {
     self.maximumActiveTuples = max(1, maximumActiveTuples)
-    self.maximumPayloadsPerConflict = max(2, maximumPayloadsPerConflict)
+    self.maximumPayloadsPerConflict = min(2, max(2, maximumPayloadsPerConflict))
   }
 
-  public func record(_ observation: BarnardRelayObservation) -> BarnardRelayCacheResult {
+  public func record(_ candidate: BarnardVerifiedCensusCandidate) -> BarnardRelayCacheResult {
     lock.lock()
     defer { lock.unlock() }
-    let tuple = observation.candidate.censusTuple
-    if expired.contains(tuple) { return .expired }
+    let tuple = candidate.censusTuple
+    if tuple.windowIndex < expiredWindowFloor || expired.contains(tuple) { return .expired }
     if var entry = entries[tuple] {
-      if entry.payloads.contains(observation.exactB005Bytes) { return .duplicate }
+      if entry.payloads.contains(candidate.exactB005Bytes) { return .duplicate }
       if entry.payloads.count < maximumPayloadsPerConflict {
-        entry.payloads.append(observation.exactB005Bytes)
+        entry.payloads.append(candidate.exactB005Bytes)
       }
       entry.equivocated = true
       entries[tuple] = entry
       return .censusEquivocation
     }
     guard entries.count < maximumActiveTuples else { return .capacityExceeded }
-    entries[tuple] = Entry(payloads: [observation.exactB005Bytes], equivocated: false)
+    entries[tuple] = Entry(payloads: [candidate.exactB005Bytes], equivocated: false)
     return .acceptedForRelay
   }
 
   public func relayDisposition(for tuple: BarnardCensusTuple) -> BarnardRelayDisposition {
     lock.lock()
     defer { lock.unlock() }
-    if expired.contains(tuple) { return .expired }
+    if tuple.windowIndex < expiredWindowFloor || expired.contains(tuple) { return .expired }
     guard let entry = entries[tuple] else { return .notObserved }
     return entry.equivocated ? .blockedByEquivocation : .relayable
   }
@@ -939,7 +920,8 @@ public final class BarnardCensusRelayCache {
   public func prune(expiredThroughWindow: UInt64) {
     lock.lock()
     defer { lock.unlock() }
-    let tuples = entries.keys.filter { $0.windowIndex < expiredThroughWindow }
+    expiredWindowFloor = max(expiredWindowFloor, expiredThroughWindow)
+    let tuples = entries.keys.filter { $0.windowIndex < expiredWindowFloor }
     for tuple in tuples {
       entries.removeValue(forKey: tuple)
       rememberExpired(tuple)

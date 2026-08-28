@@ -446,7 +446,7 @@ public object BarnardB005V2Codec {
     private fun canonicalDisplayNameBytes(value: String): ByteArray {
         val bytes = value.toByteArray(StandardCharsets.UTF_8)
         if (Normalizer.normalize(value, Normalizer.Form.NFC) != value || bytes.size !in 1..maximumDisplayNameBytes ||
-            value.any { it.code <= 0x1f || it.code == 0x7f }
+            value.any { it.code in 0x00..0x1f || it.code in 0x7f..0x9f }
         ) adoptionFailure(BarnardAdoptionProtocolError.INVALID_DISPLAY_NAME)
         return bytes
     }
@@ -564,8 +564,12 @@ public class BarnardCensusTuple(
     ).fold(1) { acc, value -> 31 * acc + value }
 }
 
-/** Verified candidate used only after the host registry binding gate. */
-public class BarnardVerifiedCensusCandidate(
+/**
+ * Verified candidate whose public fields can only come from exact B005 bytes
+ * after signature verification and Registry Event Definition binding.
+ */
+public class BarnardVerifiedCensusCandidate private constructor(
+    exactB005Bytes: ByteArray,
     credentialId: ByteArray,
     eventId: ByteArray,
     public val admissionMode: BarnardAdoptionAdmissionMode,
@@ -579,10 +583,13 @@ public class BarnardVerifiedCensusCandidate(
     public val observedAtUnixSeconds: ULong,
     public val registryVerification: BarnardRegistryVerification,
 ) {
+    private val exactB005BytesValue = exactB005Bytes.copyOf()
     private val credentialIdBytes = credentialId.copyOf()
     private val eventIdBytes = eventId.copyOf()
     private val censusDomainIdBytes = censusDomainId.copyOf()
     private val censusAuthorityKeyHashBytes = censusAuthorityKeyHash.copyOf()
+    /** Exact bound B005 artifact; relay code must never accept a separate byte string. */
+    public val exactB005Bytes: ByteArray get() = exactB005BytesValue.copyOf()
     public val credentialId: ByteArray get() = credentialIdBytes.copyOf()
     public val eventId: ByteArray get() = eventIdBytes.copyOf()
     public val censusDomainId: ByteArray get() = censusDomainIdBytes.copyOf()
@@ -590,16 +597,41 @@ public class BarnardVerifiedCensusCandidate(
     public val censusTuple: BarnardCensusTuple
         get() = BarnardCensusTuple(credentialIdBytes, censusDomainIdBytes, authorityPolicyEpoch, censusAuthorityKeyHashBytes, windowIndex)
 
-    public fun withWindowIndex(value: ULong): BarnardVerifiedCensusCandidate = BarnardVerifiedCensusCandidate(
-        credentialIdBytes, eventIdBytes, admissionMode, censusDomainIdBytes, censusWindowSeconds, authorityPolicyEpoch,
-        censusAuthorityKeyHashBytes, value, qualifiedVoterCount, eligibleVoterCount, observedAtUnixSeconds, registryVerification,
-    )
-
-    public fun withCounts(qualifiedVoterCount: UShort, eligibleVoterCount: UShort): BarnardVerifiedCensusCandidate =
-        BarnardVerifiedCensusCandidate(
-            credentialIdBytes, eventIdBytes, admissionMode, censusDomainIdBytes, censusWindowSeconds, authorityPolicyEpoch,
-            censusAuthorityKeyHashBytes, windowIndex, qualifiedVoterCount, eligibleVoterCount, observedAtUnixSeconds, registryVerification,
-        )
+    public companion object {
+        /**
+         * The sole verified-candidate factory. All exposed credential, event,
+         * domain, authority, window, and count fields are derived from the
+         * signature-verified B005 artifact plus its exact registry binding.
+         */
+        public fun decodeAndBind(
+            b005Bytes: ByteArray,
+            registryDefinition: BarnardRegistryEventDefinition,
+            observedAtUnixSeconds: ULong,
+        ): BarnardVerifiedCensusCandidate {
+            val payload = BarnardB005V2Codec.decode(b005Bytes)
+            if (registryDefinition.verify(payload.credential, payload.census, observedAtUnixSeconds) !=
+                BarnardRegistryVerification.VERIFIED
+            ) adoptionFailure(BarnardAdoptionProtocolError.INVALID_FIELD)
+            val credential = payload.credential
+            val census = payload.census
+            val policy = registryDefinition.censusDomainPolicy
+            return BarnardVerifiedCensusCandidate(
+                exactB005Bytes = b005Bytes,
+                credentialId = credential.credentialId,
+                eventId = credential.unsignedBody.eventId,
+                admissionMode = credential.unsignedBody.admissionMode,
+                censusDomainId = policy.censusDomainId,
+                censusWindowSeconds = policy.censusWindowSeconds,
+                authorityPolicyEpoch = policy.authorityPolicyEpoch,
+                censusAuthorityKeyHash = BarnardAdoptionWire.sha256(census.authorityPublicKey),
+                windowIndex = census.unsignedBody.windowIndex,
+                qualifiedVoterCount = census.unsignedBody.qualifiedVoterCount,
+                eligibleVoterCount = census.unsignedBody.eligibleVoterCount,
+                observedAtUnixSeconds = observedAtUnixSeconds,
+                registryVerification = BarnardRegistryVerification.VERIFIED,
+            )
+        }
+    }
 }
 
 public enum class BarnardAdoptionFallbackReason {
@@ -721,51 +753,42 @@ public enum class BarnardRelayCacheResult {
 
 public enum class BarnardRelayDisposition { NOT_OBSERVED, RELAYABLE, BLOCKED_BY_EQUIVOCATION, EXPIRED }
 
-/** Transport metadata is retained in the input only to make its non-vote role explicit. */
-public class BarnardRelayObservation(
-    public val candidate: BarnardVerifiedCensusCandidate,
-    exactB005Bytes: ByteArray,
-    public val directGattPeerHandle: String,
-    observedRpi: ByteArray,
-    public val rawObservationCount: Int,
-    public val relayerCount: Int,
-) {
-    private val exactB005BytesValue = exactB005Bytes.copyOf()
-    private val observedRpiValue = observedRpi.copyOf()
-    public val exactB005Bytes: ByteArray get() = exactB005BytesValue.copyOf()
-    public val observedRpi: ByteArray get() = observedRpiValue.copyOf()
-}
-
-/** Bounded exact-byte cache which reports, rather than first-seen-wins, conflicts. */
+/**
+ * Bounded exact-byte cache which reports, rather than first-seen-wins,
+ * conflicts. Transport metadata, RPI, raw observations, and relayer count
+ * are excluded: only a bound verified candidate can enter this cache.
+ */
 public class BarnardCensusRelayCache(
     maximumActiveTuples: Int,
     maximumPayloadsPerConflict: Int,
 ) {
     private data class Entry(var payloads: MutableList<ByteArray>, var equivocated: Boolean)
     private val maximumActiveTuples = maximumActiveTuples.coerceAtLeast(1)
-    private val maximumPayloadsPerConflict = maximumPayloadsPerConflict.coerceAtLeast(2)
+    private val maximumPayloadsPerConflict = maximumPayloadsPerConflict.coerceIn(2, 2)
     private val entries = linkedMapOf<BarnardCensusTuple, Entry>()
     private val expired = linkedSetOf<BarnardCensusTuple>()
+    /** Exclusive monotonic floor that survives bounded tombstone eviction. */
+    private var expiredWindowFloor: ULong = 0uL
 
     @Synchronized
-    public fun record(observation: BarnardRelayObservation): BarnardRelayCacheResult {
-        val tuple = observation.candidate.censusTuple
-        if (tuple in expired) return BarnardRelayCacheResult.EXPIRED
+    public fun record(candidate: BarnardVerifiedCensusCandidate): BarnardRelayCacheResult {
+        val tuple = candidate.censusTuple
+        if (tuple.windowIndex < expiredWindowFloor || tuple in expired) return BarnardRelayCacheResult.EXPIRED
         val existing = entries[tuple]
         if (existing != null) {
-            if (existing.payloads.any { it.contentEquals(observation.exactB005Bytes) }) return BarnardRelayCacheResult.DUPLICATE
-            if (existing.payloads.size < maximumPayloadsPerConflict) existing.payloads += observation.exactB005Bytes
+            if (existing.payloads.any { it.contentEquals(candidate.exactB005Bytes) }) return BarnardRelayCacheResult.DUPLICATE
+            if (existing.payloads.size < maximumPayloadsPerConflict) existing.payloads += candidate.exactB005Bytes
             existing.equivocated = true
             return BarnardRelayCacheResult.CENSUS_EQUIVOCATION
         }
         if (entries.size >= maximumActiveTuples) return BarnardRelayCacheResult.CAPACITY_EXCEEDED
-        entries[tuple] = Entry(mutableListOf(observation.exactB005Bytes), false)
+        entries[tuple] = Entry(mutableListOf(candidate.exactB005Bytes), false)
         return BarnardRelayCacheResult.ACCEPTED_FOR_RELAY
     }
 
     @Synchronized
     public fun relayDisposition(tuple: BarnardCensusTuple): BarnardRelayDisposition = when {
-        tuple in expired -> BarnardRelayDisposition.EXPIRED
+        tuple.windowIndex < expiredWindowFloor || tuple in expired -> BarnardRelayDisposition.EXPIRED
         entries[tuple]?.equivocated == true -> BarnardRelayDisposition.BLOCKED_BY_EQUIVOCATION
         tuple in entries -> BarnardRelayDisposition.RELAYABLE
         else -> BarnardRelayDisposition.NOT_OBSERVED
@@ -776,7 +799,8 @@ public class BarnardCensusRelayCache(
 
     @Synchronized
     public fun prune(expiredThroughWindow: ULong) {
-        val expiredTuples = entries.keys.filter { it.windowIndex < expiredThroughWindow }
+        if (expiredThroughWindow > expiredWindowFloor) expiredWindowFloor = expiredThroughWindow
+        val expiredTuples = entries.keys.filter { it.windowIndex < expiredWindowFloor }
         expiredTuples.forEach {
             entries.remove(it)
             expired += it

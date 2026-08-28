@@ -4,6 +4,7 @@ package org.levarac.barnard
 
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
 import org.levarac.barnard.BarnardCrypto.toHex
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -183,8 +184,20 @@ class BarnardAdoptionCensusContractTest {
     fun registryGateAndCrossEventMajority_chooseOnlyQualifiedOpenWinner() {
         val vectors = AdoptionCensusVectors.load()
         val policy = domainPolicy(vectors)
-        val winner = candidate(vectors, qualified = 4u, eligible = 7u, observedAt = 1_540u, eventMarker = 0x41)
-        val runnerUp = candidate(vectors, qualified = 3u, eligible = 7u, observedAt = 1_545u, eventMarker = 0x42)
+        val winner = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
+        val runnerUp = candidate(
+            vectors,
+            qualified = 3u,
+            eligible = 7u,
+            observedAt = 1_545u,
+            credentialAuthorityKey = 2,
+        )
 
         val winnerDecision = BarnardAdoptionDecision.evaluate(
             candidates = listOf(winner, runnerUp),
@@ -194,30 +207,38 @@ class BarnardAdoptionCensusContractTest {
         assertTrue(winnerDecision is BarnardAdoptionDecisionResult.AutoAdopt)
         assertArrayEquals(winner.credentialId, (winnerDecision as BarnardAdoptionDecisionResult.AutoAdopt).credentialId)
 
-        val selfCertifiedOnly = candidate(
+        val unbound = candidateInput(
             vectors,
             qualified = 4u,
             eligible = 7u,
             observedAt = 1_540u,
-            eventMarker = 0x43,
-            registryVerification = BarnardRegistryVerification.UNVERIFIED,
+            credentialAuthorityKey = 1,
         )
-        val unverifiedDecision = BarnardAdoptionDecision.evaluate(
-            candidates = listOf(selfCertifiedOnly),
-            domainPolicy = policy,
-            nowUnixSeconds = 1_550uL,
+        val definition = unbound.registryDefinition
+        val mismatchedDefinition = BarnardRegistryEventDefinition(
+            eventId = ByteArray(32),
+            credentialId = definition.credentialId,
+            b004AdoptionScopeHash = definition.b004AdoptionScopeHash,
+            displayNameHash = definition.displayNameHash,
+            validFromUnixSeconds = definition.validFromUnixSeconds,
+            validUntilUnixSeconds = definition.validUntilUnixSeconds,
+            admissionMode = definition.admissionMode,
+            censusDomainPolicy = definition.censusDomainPolicy,
         )
-        assertEquals(
-            BarnardAdoptionFallbackReason.REGISTRY_UNVERIFIED,
-            (unverifiedDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
-        )
+        assertThrows(BarnardAdoptionProtocolException::class.java) {
+            BarnardVerifiedCensusCandidate.decodeAndBind(
+                b005Bytes = unbound.b005Bytes,
+                registryDefinition = mismatchedDefinition,
+                observedAtUnixSeconds = 1_540uL,
+            )
+        }
 
         val gated = candidate(
             vectors,
             qualified = 4u,
             eligible = 7u,
             observedAt = 1_540u,
-            eventMarker = 0x44,
+            credentialAuthorityKey = 1,
             admissionMode = BarnardAdoptionAdmissionMode.GATED,
         )
         val gatedDecision = BarnardAdoptionDecision.evaluate(
@@ -230,7 +251,13 @@ class BarnardAdoptionCensusContractTest {
             (gatedDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
         )
 
-        val noMajority = candidate(vectors, qualified = 3u, eligible = 6u, observedAt = 1_540u, eventMarker = 0x45)
+        val noMajority = candidate(
+            vectors,
+            qualified = 3u,
+            eligible = 6u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
         val noMajorityDecision = BarnardAdoptionDecision.evaluate(
             candidates = listOf(noMajority),
             domainPolicy = policy,
@@ -241,7 +268,13 @@ class BarnardAdoptionCensusContractTest {
             (noMajorityDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
         )
 
-        val stale = candidate(vectors, qualified = 4u, eligible = 7u, observedAt = 1_489u, eventMarker = 0x46)
+        val stale = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_489u,
+            credentialAuthorityKey = 1,
+        )
         val staleDecision = BarnardAdoptionDecision.evaluate(
             candidates = listOf(stale),
             domainPolicy = policy,
@@ -252,7 +285,14 @@ class BarnardAdoptionCensusContractTest {
             (staleDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
         )
 
-        val wrongWindow = winner.withWindowIndex(winner.windowIndex + 1uL)
+        val wrongWindow = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+            windowIndex = winner.windowIndex + 1uL,
+        )
         val wrongWindowDecision = BarnardAdoptionDecision.evaluate(
             candidates = listOf(wrongWindow),
             domainPolicy = policy,
@@ -268,7 +308,13 @@ class BarnardAdoptionCensusContractTest {
     fun rotationAndDomainAuthorityConflicts_failClosed() {
         val vectors = AdoptionCensusVectors.load()
         val policy = domainPolicy(vectors)
-        val active = candidate(vectors, qualified = 4u, eligible = 7u, observedAt = 1_540u, eventMarker = 0x51)
+        val active = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
         val rotatedId = vectors.bytes("rotated_credential_id")
 
         assertEquals(
@@ -297,8 +343,8 @@ class BarnardAdoptionCensusContractTest {
             qualified = 4u,
             eligible = 7u,
             observedAt = 1_540u,
-            eventMarker = 0x52,
-            authorityKeyHash = vectors.bytes("authority_key_hash_conflict"),
+            credentialAuthorityKey = 2,
+            censusAuthorityKey = 1,
         )
         assertEquals(
             BarnardAdoptionDecisionResult.DOMAIN_AUTHORITY_INCONSISTENCY,
@@ -311,53 +357,132 @@ class BarnardAdoptionCensusContractTest {
     }
 
     @Test
-    fun relayDedupUsesStableTuple_andReportsEquivocation() {
+    fun verifiedCandidateFactory_preservesSignedCountsAndRejectsUnboundBytes() {
         val vectors = AdoptionCensusVectors.load()
-        val candidate = candidate(vectors, qualified = 4u, eligible = 7u, observedAt = 1_540u, eventMarker = 0x61)
-        val cache = BarnardCensusRelayCache(maximumActiveTuples = 32, maximumPayloadsPerConflict = 2)
-        val original = ByteArray(vectors.int("maximum_b005_v2_bytes")) { 0x61 }
-        val first = BarnardRelayObservation(
-            candidate = candidate,
-            exactB005Bytes = original,
-            directGattPeerHandle = "ephemeral-a",
-            observedRpi = ByteArray(16) { 0xa1.toByte() },
-            rawObservationCount = 1,
-            relayerCount = 1,
+        val policy = domainPolicy(vectors)
+        val signedZero = candidate(
+            vectors,
+            qualified = 0u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
         )
-        assertEquals(BarnardRelayCacheResult.ACCEPTED_FOR_RELAY, cache.record(first))
 
-        val duplicate = BarnardRelayObservation(
-            candidate = candidate,
-            exactB005Bytes = original,
-            directGattPeerHandle = "ephemeral-b",
-            observedRpi = ByteArray(16) { 0xb2.toByte() },
-            rawObservationCount = 999,
-            relayerCount = 999,
+        assertEquals(0u.toUShort(), signedZero.qualifiedVoterCount)
+        assertEquals(7u.toUShort(), signedZero.eligibleVoterCount)
+        val zeroDecision = BarnardAdoptionDecision.evaluate(
+            candidates = listOf(signedZero),
+            domainPolicy = policy,
+            nowUnixSeconds = 1_550uL,
         )
-        assertEquals(BarnardRelayCacheResult.DUPLICATE, cache.record(duplicate))
+        assertEquals(
+            BarnardAdoptionFallbackReason.NO_CLEAR_MAJORITY,
+            (zeroDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
+        )
 
-        val conflict = BarnardRelayObservation(
-            candidate = candidate.withCounts(
-                qualifiedVoterCount = 5u.toUShort(),
-                eligibleVoterCount = 7u.toUShort(),
-            ),
-            exactB005Bytes = ByteArray(vectors.int("maximum_b005_v2_bytes")) { 0x62 },
-            directGattPeerHandle = "ephemeral-c",
-            observedRpi = ByteArray(16) { 0xc3.toByte() },
-            rawObservationCount = 2,
-            relayerCount = 2,
+        val bound = candidateInput(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
         )
-        assertEquals(BarnardRelayCacheResult.CENSUS_EQUIVOCATION, cache.record(conflict))
-        assertEquals(BarnardRelayDisposition.BLOCKED_BY_EQUIVOCATION, cache.relayDisposition(candidate.censusTuple))
-        assertEquals(2, cache.retainedPayloadCount(candidate.censusTuple))
-        cache.prune(expiredThroughWindow = candidate.windowIndex + 1uL)
-        assertEquals(BarnardRelayDisposition.EXPIRED, cache.relayDisposition(candidate.censusTuple))
+        val tampered = bound.b005Bytes.copyOf().also { bytes ->
+            bytes[bytes.lastIndex] = (bytes.last().toInt() xor 0x01).toByte()
+        }
+        assertThrows(BarnardAdoptionProtocolException::class.java) {
+            BarnardVerifiedCensusCandidate.decodeAndBind(
+                b005Bytes = tampered,
+                registryDefinition = bound.registryDefinition,
+                observedAtUnixSeconds = 1_540uL,
+            )
+        }
+    }
+
+    @Test
+    fun relayCache_usesBoundArtifactsExpiryWatermarkAndTwoPayloadHardCap() {
+        val vectors = AdoptionCensusVectors.load()
+        val first = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
+        val conflict = candidate(
+            vectors,
+            qualified = 5u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
+        val thirdPayload = candidate(
+            vectors,
+            qualified = 6u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
+        val conflictCache = BarnardCensusRelayCache(maximumActiveTuples = 4, maximumPayloadsPerConflict = 99)
+        assertEquals(BarnardRelayCacheResult.ACCEPTED_FOR_RELAY, conflictCache.record(first))
+        assertEquals(BarnardRelayCacheResult.DUPLICATE, conflictCache.record(first))
+        assertEquals(BarnardRelayCacheResult.CENSUS_EQUIVOCATION, conflictCache.record(conflict))
+        assertEquals(BarnardRelayCacheResult.CENSUS_EQUIVOCATION, conflictCache.record(thirdPayload))
+        assertEquals(BarnardRelayDisposition.BLOCKED_BY_EQUIVOCATION, conflictCache.relayDisposition(first.censusTuple))
+        assertEquals(2, conflictCache.retainedPayloadCount(first.censusTuple))
+
+        val replayCache = BarnardCensusRelayCache(maximumActiveTuples = 1, maximumPayloadsPerConflict = 99)
+        val laterWindow = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_840u,
+            credentialAuthorityKey = 1,
+            windowIndex = first.windowIndex + 1uL,
+        )
+        assertEquals(BarnardRelayCacheResult.ACCEPTED_FOR_RELAY, replayCache.record(first))
+        replayCache.prune(expiredThroughWindow = first.windowIndex + 1uL)
+        assertEquals(BarnardRelayCacheResult.ACCEPTED_FOR_RELAY, replayCache.record(laterWindow))
+        replayCache.prune(expiredThroughWindow = laterWindow.windowIndex + 1uL)
+        assertEquals(BarnardRelayCacheResult.EXPIRED, replayCache.record(first))
+    }
+
+    @Test
+    fun b005_rejectsC1UnicodeControlInDisplayName() {
+        val vectors = AdoptionCensusVectors.load()
+        val malformed = b005V2(
+            displayName = "Barnard\u0085Tap",
+            scopeHash = vectors.bytes("b004_adoption_scope_hash"),
+            credential = vectors.bytes("credential_full"),
+            census = vectors.bytes("census_full"),
+        )
+        val error = assertThrows(BarnardAdoptionProtocolException::class.java) {
+            BarnardB005V2Codec.decode(malformed)
+        }
+        assertEquals(BarnardAdoptionProtocolError.INVALID_DISPLAY_NAME, error.reason)
+    }
+
+    @Test
+    fun vectorParser_decodesEscapesAndRejectsDuplicateKeys() {
+        assertEquals("first\nsecond\\tail", parseVectorText("value=first\\nsecond\\\\tail\n").getValue("value"))
+        assertThrows(IllegalArgumentException::class.java) {
+            parseVectorText("same=one\nsame=two\n")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            parseVectorText("value=bad\\q\n")
+        }
     }
 
     @Test
     fun selfCheckRequiresVerifiedSameCredentialPeer_withoutCrossDeviceTekResolution() {
         val vectors = AdoptionCensusVectors.load()
-        val local = candidate(vectors, qualified = 4u, eligible = 7u, observedAt = 1_540u, eventMarker = 0x71)
+        val local = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
         val tracker = BarnardAutoAdoptionSelfCheck(
             credentialId = local.credentialId,
             b004AdoptionScopeHash = vectors.bytes("b004_adoption_scope_hash"),
@@ -412,40 +537,141 @@ class BarnardAdoptionCensusContractTest {
         assertEquals(BarnardSelfCheckWindowResult.PRESENT_SWITCH_PROMPT, noPeerTracker.completeWindow(local.windowIndex + 3uL))
     }
 
-    private fun domainPolicy(vectors: AdoptionCensusVectors): BarnardCensusDomainPolicy =
+    private fun domainPolicy(
+        vectors: AdoptionCensusVectors,
+        authorityPublicKey: ByteArray? = null,
+    ): BarnardCensusDomainPolicy =
         BarnardCensusDomainPolicy(
             censusDomainId = vectors.bytes("census_domain_id"),
             censusWindowSeconds = vectors.int("census_window_seconds").toUInt(),
             authorityPolicyEpoch = vectors.int("census_authority_policy_epoch").toUInt(),
-            authorizedAuthorityKeyHash = vectors.bytes("authority_key_hash_primary"),
+            authorizedAuthorityKeyHash = sha256(
+                authorityPublicKey ?: vectors.bytes("census_authority_public_key"),
+            ),
             minimumEligibleVoterCount = vectors.int("minimum_eligible_voters").toUShort(),
             minimumQualifiedVoterCount = vectors.int("minimum_qualified_voters").toUShort(),
         )
+
+    private data class BoundCandidateInput(
+        val b005Bytes: ByteArray,
+        val registryDefinition: BarnardRegistryEventDefinition,
+    )
+
+    private data class AuthorityKey(
+        val privateKey: ByteArray,
+        val publicKey: ByteArray,
+    )
 
     private fun candidate(
         vectors: AdoptionCensusVectors,
         qualified: UInt,
         eligible: UInt,
         observedAt: UInt,
-        eventMarker: Int,
         admissionMode: BarnardAdoptionAdmissionMode = BarnardAdoptionAdmissionMode.OPEN,
-        registryVerification: BarnardRegistryVerification = BarnardRegistryVerification.VERIFIED,
-        authorityKeyHash: ByteArray? = null,
-    ): BarnardVerifiedCensusCandidate =
-        BarnardVerifiedCensusCandidate(
-            credentialId = vectors.bytes("credential_id"),
-            eventId = ByteArray(32) { eventMarker.toByte() },
+        credentialAuthorityKey: Int,
+        censusAuthorityKey: Int = 2,
+        windowIndex: ULong? = null,
+    ): BarnardVerifiedCensusCandidate {
+        val input = candidateInput(
+            vectors = vectors,
+            qualified = qualified,
+            eligible = eligible,
+            observedAt = observedAt,
             admissionMode = admissionMode,
-            censusDomainId = vectors.bytes("census_domain_id"),
-            censusWindowSeconds = vectors.int("census_window_seconds").toUInt(),
-            authorityPolicyEpoch = vectors.int("census_authority_policy_epoch").toUInt(),
-            censusAuthorityKeyHash = authorityKeyHash ?: vectors.bytes("authority_key_hash_primary"),
-            windowIndex = vectors.ulong("census_window_index"),
-            qualifiedVoterCount = qualified.toUShort(),
-            eligibleVoterCount = eligible.toUShort(),
-            observedAtUnixSeconds = observedAt.toULong(),
-            registryVerification = registryVerification,
+            credentialAuthorityKey = credentialAuthorityKey,
+            censusAuthorityKey = censusAuthorityKey,
+            windowIndex = windowIndex,
         )
+        return BarnardVerifiedCensusCandidate.decodeAndBind(
+            b005Bytes = input.b005Bytes,
+            registryDefinition = input.registryDefinition,
+            observedAtUnixSeconds = observedAt.toULong(),
+        )
+    }
+
+    private fun candidateInput(
+        vectors: AdoptionCensusVectors,
+        qualified: UInt,
+        eligible: UInt,
+        observedAt: UInt,
+        admissionMode: BarnardAdoptionAdmissionMode = BarnardAdoptionAdmissionMode.OPEN,
+        credentialAuthorityKey: Int,
+        censusAuthorityKey: Int = 2,
+        windowIndex: ULong? = null,
+    ): BoundCandidateInput {
+        val credentialAuthority = authorityKey(vectors, credentialAuthorityKey)
+        val censusAuthority = authorityKey(vectors, censusAuthorityKey)
+        val displayName = vectors.string("display_name")
+        val unsignedCredential = BarnardAdoptionCredential.UnsignedBody(
+            admissionMode = admissionMode,
+            eventId = sha256(credentialAuthority.publicKey),
+            b004AdoptionScopeHash = vectors.bytes("b004_adoption_scope_hash"),
+            displayNameHash = sha256(displayName.toByteArray(Charsets.UTF_8)),
+            validFromUnixSeconds = 0uL,
+            validUntilUnixSeconds = 10_000uL,
+            censusWindowSeconds = vectors.int("census_window_seconds").toUInt(),
+        )
+        val credential = BarnardAdoptionCredential.decode(
+            BarnardAdoptionCredential.encodeSigned(unsignedCredential, credentialAuthority.privateKey),
+        )
+        val census = BarnardSignedWindowCensus.decode(
+            BarnardSignedWindowCensus.encodeSigned(
+                BarnardSignedWindowCensus.UnsignedBody(
+                    credentialId = credential.credentialId,
+                    windowIndex = windowIndex ?: vectors.ulong("census_window_index"),
+                    qualifiedVoterCount = qualified.toUShort(),
+                    eligibleVoterCount = eligible.toUShort(),
+                    countedSetMerkleRoot = vectors.bytes("counted_set_merkle_root_v1"),
+                ),
+                censusAuthority.privateKey,
+            ),
+        )
+        val b005Bytes = BarnardB005V2Codec.serialize(
+            BarnardB005V2Payload(
+                eventDisplayName = displayName,
+                b004AdoptionScopeHash = vectors.bytes("b004_adoption_scope_hash"),
+                credential = credential,
+                census = census,
+            ),
+        )
+        val registryDefinition = BarnardRegistryEventDefinition(
+            eventId = credential.unsignedBody.eventId,
+            credentialId = credential.credentialId,
+            b004AdoptionScopeHash = credential.unsignedBody.b004AdoptionScopeHash,
+            displayNameHash = credential.unsignedBody.displayNameHash,
+            validFromUnixSeconds = credential.unsignedBody.validFromUnixSeconds,
+            validUntilUnixSeconds = credential.unsignedBody.validUntilUnixSeconds,
+            admissionMode = credential.unsignedBody.admissionMode,
+            censusDomainPolicy = domainPolicy(vectors, censusAuthority.publicKey),
+        )
+        return BoundCandidateInput(b005Bytes, registryDefinition)
+    }
+
+    private fun authorityKey(vectors: AdoptionCensusVectors, index: Int): AuthorityKey =
+        when (index) {
+            1 -> AuthorityKey(
+                vectors.bytes("credential_authority_test_private_key"),
+                vectors.bytes("credential_authority_public_key"),
+            )
+            2 -> AuthorityKey(
+                vectors.bytes("census_authority_test_private_key"),
+                vectors.bytes("census_authority_public_key"),
+            )
+            else -> error("unsupported deterministic authority test key")
+        }
+
+    private fun sha256(value: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(value)
+
+    private fun parseVectorText(contents: String): Map<String, String> {
+        val file = File.createTempFile("barnard-adoption-census-", ".txt")
+        return try {
+            file.writeText(contents, Charsets.UTF_8)
+            AdoptionCensusVectors.parse(file)
+        } finally {
+            file.delete()
+        }
+    }
 
     private fun b005V2(
         displayName: String,
@@ -482,7 +708,7 @@ private class AdoptionCensusVectors private constructor(private val values: Map<
             error("could not locate test-vectors/adoption-census-v1.txt")
         }
 
-        private fun parse(file: File): Map<String, String> {
+        fun parse(file: File): Map<String, String> {
             val result = linkedMapOf<String, String>()
             val keyPattern = Regex("[A-Za-z0-9_]+")
             file.readLines(Charsets.UTF_8).forEach { line ->
@@ -491,9 +717,31 @@ private class AdoptionCensusVectors private constructor(private val values: Map<
                 require(separator > 0) { "malformed vector line: $line" }
                 val key = line.substring(0, separator)
                 require(keyPattern.matches(key)) { "malformed vector key: $key" }
-                result[key] = line.substring(separator + 1)
+                require(key !in result) { "duplicate vector key: $key" }
+                result[key] = decodeValue(line.substring(separator + 1), line)
             }
             return result
+        }
+
+        private fun decodeValue(rawValue: String, line: String): String {
+            val decoded = StringBuilder()
+            var escaping = false
+            rawValue.forEach { character ->
+                if (escaping) {
+                    when (character) {
+                        'n' -> decoded.append('\n')
+                        '\\' -> decoded.append('\\')
+                        else -> throw IllegalArgumentException("malformed vector escape: $line")
+                    }
+                    escaping = false
+                } else if (character == '\\') {
+                    escaping = true
+                } else {
+                    decoded.append(character)
+                }
+            }
+            require(!escaping) { "malformed vector escape: $line" }
+            return decoded.toString()
         }
     }
 
