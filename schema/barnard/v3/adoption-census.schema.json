@@ -176,7 +176,48 @@
           ]
         }
       },
-      "required": ["type", "result", "credentialId", "reason"]
+      "required": ["type", "result", "credentialId", "reason"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "result": { "const": "auto_adopt" } }
+          },
+          "then": {
+            "properties": {
+              "credentialId": { "$ref": "common.schema.json#/$defs/Hex32" },
+              "reason": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "result": { "const": "requires_chooser" } }
+          },
+          "then": {
+            "properties": {
+              "credentialId": { "type": "null" },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "registry_unverified", "gated", "no_clear_majority", "insufficient_evidence",
+                  "stale_candidate", "wrong_census_window", "inconsistent_eligibility", "domain_mismatch"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "result": { "const": "domain_authority_inconsistency" } }
+          },
+          "then": {
+            "properties": {
+              "credentialId": { "type": "null" },
+              "reason": { "type": "null" }
+            }
+          }
+        }
+      ]
     },
     "RelayConflict": {
       "type": "object",

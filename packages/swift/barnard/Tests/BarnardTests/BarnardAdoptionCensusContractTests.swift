@@ -168,19 +168,19 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
   func testRegistryGateAndCrossEventMajorityChooseOnlyAQualifiedOpenWinner() throws {
     let vectors = try AdoptionCensusVectors.load()
     let policy = domainPolicy(vectors)
-    let winner = candidate(
+    let winner = try candidate(
       vectors,
       qualified: 4,
       eligible: 7,
       observedAt: 1_540,
-      eventMarker: 0x41
+      credentialAuthorityKey: 1
     )
-    let runnerUp = candidate(
+    let runnerUp = try candidate(
       vectors,
       qualified: 3,
       eligible: 7,
       observedAt: 1_545,
-      eventMarker: 0x42
+      credentialAuthorityKey: 2
     )
 
     XCTAssertEqual(
@@ -192,30 +192,39 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       .autoAdopt(credentialId: winner.credentialId)
     )
 
-    let selfCertifiedOnly = candidate(
+    let unbound = try candidateInput(
       vectors,
       qualified: 4,
       eligible: 7,
       observedAt: 1_540,
-      eventMarker: 0x43,
-      registryVerification: .unverified
+      credentialAuthorityKey: 1
     )
-    XCTAssertEqual(
-      BarnardAdoptionDecision.evaluate(
-        candidates: [selfCertifiedOnly],
-        domainPolicy: policy,
-        nowUnixSeconds: 1_550
-      ),
-      .requiresChooser(.registryUnverified)
+    let definition = unbound.registryDefinition
+    let mismatchedDefinition = BarnardRegistryEventDefinition(
+      eventId: Data(repeating: 0, count: 32),
+      credentialId: definition.credentialId,
+      b004AdoptionScopeHash: definition.b004AdoptionScopeHash,
+      displayNameHash: definition.displayNameHash,
+      validFromUnixSeconds: definition.validFromUnixSeconds,
+      validUntilUnixSeconds: definition.validUntilUnixSeconds,
+      admissionMode: definition.admissionMode,
+      censusDomainPolicy: definition.censusDomainPolicy
+    )
+    XCTAssertThrowsError(
+      try BarnardVerifiedCensusCandidate.decodeAndBind(
+        b005Bytes: unbound.b005Bytes,
+        registryDefinition: mismatchedDefinition,
+        observedAtUnixSeconds: 1_540
+      )
     )
 
-    let gated = candidate(
+    let gated = try candidate(
       vectors,
       qualified: 4,
       eligible: 7,
       observedAt: 1_540,
-      eventMarker: 0x44,
-      admissionMode: .gated
+      admissionMode: .gated,
+      credentialAuthorityKey: 1
     )
     XCTAssertEqual(
       BarnardAdoptionDecision.evaluate(
@@ -226,12 +235,12 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       .requiresChooser(.gated)
     )
 
-    let noMajority = candidate(
+    let noMajority = try candidate(
       vectors,
       qualified: 3,
       eligible: 6,
       observedAt: 1_540,
-      eventMarker: 0x45
+      credentialAuthorityKey: 1
     )
     XCTAssertEqual(
       BarnardAdoptionDecision.evaluate(
@@ -242,12 +251,12 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       .requiresChooser(.noClearMajority)
     )
 
-    let stale = candidate(
+    let stale = try candidate(
       vectors,
       qualified: 4,
       eligible: 7,
       observedAt: 1_489,
-      eventMarker: 0x46
+      credentialAuthorityKey: 1
     )
     XCTAssertEqual(
       BarnardAdoptionDecision.evaluate(
@@ -258,7 +267,14 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       .requiresChooser(.staleCandidate)
     )
 
-    let wrongWindow = winner.withWindowIndex(winner.windowIndex + 1)
+    let wrongWindow = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1,
+      windowIndex: winner.windowIndex + 1
+    )
     XCTAssertEqual(
       BarnardAdoptionDecision.evaluate(
         candidates: [wrongWindow],
@@ -272,7 +288,13 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
   func testRotationAndDomainAuthorityConflictsFailClosed() throws {
     let vectors = try AdoptionCensusVectors.load()
     let policy = domainPolicy(vectors)
-    let active = candidate(vectors, qualified: 4, eligible: 7, observedAt: 1_540, eventMarker: 0x51)
+    let active = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
+    )
     let rotatedId = try vectors.bytes("rotated_credential_id")
 
     XCTAssertEqual(
@@ -297,13 +319,13 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       .validBoundaryReplacement
     )
 
-    let otherAuthority = candidate(
+    let otherAuthority = try candidate(
       vectors,
       qualified: 4,
       eligible: 7,
       observedAt: 1_540,
-      eventMarker: 0x52,
-      authorityKeyHash: try vectors.bytes("authority_key_hash_conflict")
+      credentialAuthorityKey: 2,
+      censusAuthorityKey: 1
     )
     XCTAssertEqual(
       BarnardAdoptionDecision.evaluate(
@@ -315,50 +337,130 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     )
   }
 
-  func testRelayDedupUsesStableTupleAndReportsEquivocation() throws {
+  func testVerifiedCandidateFactoryPreservesSignedCountsAndRejectsUnboundBytes() throws {
     let vectors = try AdoptionCensusVectors.load()
-    let candidate = candidate(vectors, qualified: 4, eligible: 7, observedAt: 1_540, eventMarker: 0x61)
-    let cache = BarnardCensusRelayCache(maximumActiveTuples: 32, maximumPayloadsPerConflict: 2)
-    let original = Data(repeating: 0x61, count: try vectors.int("maximum_b005_v2_bytes"))
-    let replayWithDifferentTransportMetadata = BarnardRelayObservation(
-      candidate: candidate,
-      exactB005Bytes: original,
-      directGattPeerHandle: "ephemeral-a",
-      observedRpi: Data(repeating: 0xa1, count: 16),
-      rawObservationCount: 1,
-      relayerCount: 1
+    let policy = domainPolicy(vectors)
+    let signedZero = try candidate(
+      vectors,
+      qualified: 0,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
     )
-    XCTAssertEqual(cache.record(replayWithDifferentTransportMetadata), .acceptedForRelay)
 
-    let duplicate = BarnardRelayObservation(
-      candidate: candidate,
-      exactB005Bytes: original,
-      directGattPeerHandle: "ephemeral-b",
-      observedRpi: Data(repeating: 0xb2, count: 16),
-      rawObservationCount: 999,
-      relayerCount: 999
+    XCTAssertEqual(signedZero.qualifiedVoterCount, 0)
+    XCTAssertEqual(signedZero.eligibleVoterCount, 7)
+    XCTAssertEqual(
+      BarnardAdoptionDecision.evaluate(
+        candidates: [signedZero],
+        domainPolicy: policy,
+        nowUnixSeconds: 1_550
+      ),
+      .requiresChooser(.noClearMajority)
     )
-    XCTAssertEqual(cache.record(duplicate), .duplicate)
 
-    let conflictingCandidate = candidate.withCounts(qualifiedVoterCount: 5, eligibleVoterCount: 7)
-    let conflict = BarnardRelayObservation(
-      candidate: conflictingCandidate,
-      exactB005Bytes: Data(repeating: 0x62, count: try vectors.int("maximum_b005_v2_bytes")),
-      directGattPeerHandle: "ephemeral-c",
-      observedRpi: Data(repeating: 0xc3, count: 16),
-      rawObservationCount: 2,
-      relayerCount: 2
+    let bound = try candidateInput(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
     )
-    XCTAssertEqual(cache.record(conflict), .censusEquivocation)
-    XCTAssertEqual(cache.relayDisposition(for: candidate.censusTuple), .blockedByEquivocation)
-    XCTAssertEqual(cache.retainedPayloadCount(for: candidate.censusTuple), 2)
-    cache.prune(expiredThroughWindow: candidate.windowIndex + 1)
-    XCTAssertEqual(cache.relayDisposition(for: candidate.censusTuple), .expired)
+    var tamperedBytes = bound.b005Bytes
+    tamperedBytes[tamperedBytes.index(before: tamperedBytes.endIndex)] ^= 0x01
+    XCTAssertThrowsError(
+      try BarnardVerifiedCensusCandidate.decodeAndBind(
+        b005Bytes: tamperedBytes,
+        registryDefinition: bound.registryDefinition,
+        observedAtUnixSeconds: 1_540
+      )
+    )
+  }
+
+  func testRelayCacheUsesBoundArtifactsExpiryWatermarkAndTwoPayloadHardCap() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let first = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
+    )
+    let conflict = try candidate(
+      vectors,
+      qualified: 5,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
+    )
+    let thirdPayload = try candidate(
+      vectors,
+      qualified: 6,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
+    )
+    let conflictCache = BarnardCensusRelayCache(
+      maximumActiveTuples: 4,
+      maximumPayloadsPerConflict: 99
+    )
+    XCTAssertEqual(conflictCache.record(first), .acceptedForRelay)
+    XCTAssertEqual(conflictCache.record(first), .duplicate)
+    XCTAssertEqual(conflictCache.record(conflict), .censusEquivocation)
+    XCTAssertEqual(conflictCache.record(thirdPayload), .censusEquivocation)
+    XCTAssertEqual(conflictCache.relayDisposition(for: first.censusTuple), .blockedByEquivocation)
+    XCTAssertEqual(conflictCache.retainedPayloadCount(for: first.censusTuple), 2)
+
+    let replayCache = BarnardCensusRelayCache(
+      maximumActiveTuples: 1,
+      maximumPayloadsPerConflict: 99
+    )
+    let laterWindow = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_840,
+      credentialAuthorityKey: 1,
+      windowIndex: first.windowIndex + 1
+    )
+    XCTAssertEqual(replayCache.record(first), .acceptedForRelay)
+    replayCache.prune(expiredThroughWindow: first.windowIndex + 1)
+    XCTAssertEqual(replayCache.record(laterWindow), .acceptedForRelay)
+    replayCache.prune(expiredThroughWindow: laterWindow.windowIndex + 1)
+    XCTAssertEqual(replayCache.record(first), .expired)
+  }
+
+  func testB005RejectsC1UnicodeControlInDisplayName() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let c1DisplayName = "Barnard\u{0085}Tap"
+    let malformed = b005V2(
+      displayName: c1DisplayName,
+      scopeHash: try vectors.bytes("b004_adoption_scope_hash"),
+      credential: try vectors.bytes("credential_full"),
+      census: try vectors.bytes("census_full")
+    )
+
+    XCTAssertThrowsError(try BarnardB005V2Codec.decode(malformed)) { error in
+      XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidDisplayName)
+    }
+  }
+
+  func testVectorParserDecodesEscapesAndRejectsDuplicateKeys() throws {
+    let escaped = try AdoptionCensusVectors(contents: "value=first\\nsecond\\\\tail\n")
+    XCTAssertEqual(try escaped.string("value"), "first\nsecond\\tail")
+    XCTAssertThrowsError(try AdoptionCensusVectors(contents: "same=one\nsame=two\n"))
+    XCTAssertThrowsError(try AdoptionCensusVectors(contents: "value=bad\\q\n"))
   }
 
   func testSelfCheckRequiresVerifiedSameCredentialPeerWithoutCrossDeviceTEKResolution() throws {
     let vectors = try AdoptionCensusVectors.load()
-    let local = candidate(vectors, qualified: 4, eligible: 7, observedAt: 1_540, eventMarker: 0x71)
+    let local = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
+    )
     let tracker = BarnardAutoAdoptionSelfCheck(
       credentialId: local.credentialId,
       b004AdoptionScopeHash: try vectors.bytes("b004_adoption_scope_hash"),
@@ -411,15 +513,25 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     XCTAssertEqual(noPeerTracker.completeWindow(local.windowIndex + 3), .presentSwitchPrompt)
   }
 
-  private func domainPolicy(_ vectors: AdoptionCensusVectors) -> BarnardCensusDomainPolicy {
+  private func domainPolicy(
+    _ vectors: AdoptionCensusVectors,
+    authorityPublicKey: Data? = nil
+  ) -> BarnardCensusDomainPolicy {
     BarnardCensusDomainPolicy(
       censusDomainId: try! vectors.bytes("census_domain_id"),
       censusWindowSeconds: UInt32(try! vectors.int("census_window_seconds")),
       authorityPolicyEpoch: UInt32(try! vectors.int("census_authority_policy_epoch")),
-      authorizedAuthorityKeyHash: try! vectors.bytes("authority_key_hash_primary"),
+      authorizedAuthorityKeyHash: BarnardCrypto.sha256(
+        authorityPublicKey ?? (try! vectors.bytes("census_authority_public_key"))
+      ),
       minimumEligibleVoterCount: UInt16(try! vectors.int("minimum_eligible_voters")),
       minimumQualifiedVoterCount: UInt16(try! vectors.int("minimum_qualified_voters"))
     )
+  }
+
+  private struct BoundCandidateInput {
+    let b005Bytes: Data
+    let registryDefinition: BarnardRegistryEventDefinition
   }
 
   private func candidate(
@@ -427,25 +539,107 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     qualified: UInt16,
     eligible: UInt16,
     observedAt: UInt64,
-    eventMarker: UInt8,
     admissionMode: BarnardAdoptionAdmissionMode = .open,
-    registryVerification: BarnardRegistryVerification = .verified,
-    authorityKeyHash: Data? = nil
-  ) -> BarnardVerifiedCensusCandidate {
-    BarnardVerifiedCensusCandidate(
-      credentialId: try! vectors.bytes("credential_id"),
-      eventId: Data(repeating: eventMarker, count: 32),
+    credentialAuthorityKey: Int,
+    censusAuthorityKey: Int = 2,
+    windowIndex: UInt64? = nil
+  ) throws -> BarnardVerifiedCensusCandidate {
+    let input = try candidateInput(
+      vectors,
+      qualified: qualified,
+      eligible: eligible,
+      observedAt: observedAt,
       admissionMode: admissionMode,
-      censusDomainId: try! vectors.bytes("census_domain_id"),
-      censusWindowSeconds: UInt32(try! vectors.int("census_window_seconds")),
-      authorityPolicyEpoch: UInt32(try! vectors.int("census_authority_policy_epoch")),
-      censusAuthorityKeyHash: authorityKeyHash ?? (try! vectors.bytes("authority_key_hash_primary")),
-      windowIndex: try! vectors.uint64("census_window_index"),
-      qualifiedVoterCount: qualified,
-      eligibleVoterCount: eligible,
-      observedAtUnixSeconds: observedAt,
-      registryVerification: registryVerification
+      credentialAuthorityKey: credentialAuthorityKey,
+      censusAuthorityKey: censusAuthorityKey,
+      windowIndex: windowIndex
     )
+    return try BarnardVerifiedCensusCandidate.decodeAndBind(
+      b005Bytes: input.b005Bytes,
+      registryDefinition: input.registryDefinition,
+      observedAtUnixSeconds: observedAt
+    )
+  }
+
+  private func candidateInput(
+    _ vectors: AdoptionCensusVectors,
+    qualified: UInt16,
+    eligible: UInt16,
+    observedAt: UInt64,
+    admissionMode: BarnardAdoptionAdmissionMode = .open,
+    credentialAuthorityKey: Int,
+    censusAuthorityKey: Int = 2,
+    windowIndex: UInt64? = nil
+  ) throws -> BoundCandidateInput {
+    let credentialAuthority = authorityKey(vectors, index: credentialAuthorityKey)
+    let censusAuthority = authorityKey(vectors, index: censusAuthorityKey)
+    let displayName = try vectors.string("display_name")
+    let unsignedCredential = try BarnardAdoptionCredential.UnsignedBody(
+      admissionMode: admissionMode,
+      eventId: BarnardCrypto.sha256(credentialAuthority.publicKey),
+      b004AdoptionScopeHash: try vectors.bytes("b004_adoption_scope_hash"),
+      displayNameHash: BarnardCrypto.sha256(Data(displayName.utf8)),
+      validFromUnixSeconds: 0,
+      validUntilUnixSeconds: 10_000,
+      censusWindowSeconds: UInt32(try vectors.int("census_window_seconds"))
+    )
+    let credential = try BarnardAdoptionCredential.decode(
+      BarnardAdoptionCredential.encodeSigned(
+        unsignedBody: unsignedCredential,
+        authorityPrivateKey: credentialAuthority.privateKey
+      )
+    )
+    let census = try BarnardSignedWindowCensus.decode(
+      BarnardSignedWindowCensus.encodeSigned(
+        unsignedBody: try BarnardSignedWindowCensus.UnsignedBody(
+          credentialId: credential.credentialId,
+          windowIndex: windowIndex ?? (try vectors.uint64("census_window_index")),
+          qualifiedVoterCount: qualified,
+          eligibleVoterCount: eligible,
+          countedSetMerkleRoot: try vectors.bytes("counted_set_merkle_root_v1")
+        ),
+        authorityPrivateKey: censusAuthority.privateKey
+      )
+    )
+    let b005Bytes = try BarnardB005V2Codec.serialize(
+      BarnardB005V2Payload(
+        eventDisplayName: displayName,
+        b004AdoptionScopeHash: try vectors.bytes("b004_adoption_scope_hash"),
+        credential: credential,
+        census: census
+      )
+    )
+    let registryDefinition = BarnardRegistryEventDefinition(
+      eventId: credential.unsignedBody.eventId,
+      credentialId: credential.credentialId,
+      b004AdoptionScopeHash: credential.unsignedBody.b004AdoptionScopeHash,
+      displayNameHash: credential.unsignedBody.displayNameHash,
+      validFromUnixSeconds: credential.unsignedBody.validFromUnixSeconds,
+      validUntilUnixSeconds: credential.unsignedBody.validUntilUnixSeconds,
+      admissionMode: credential.unsignedBody.admissionMode,
+      censusDomainPolicy: domainPolicy(vectors, authorityPublicKey: censusAuthority.publicKey)
+    )
+    return BoundCandidateInput(b005Bytes: b005Bytes, registryDefinition: registryDefinition)
+  }
+
+  private func authorityKey(
+    _ vectors: AdoptionCensusVectors,
+    index: Int
+  ) -> (privateKey: Data, publicKey: Data) {
+    switch index {
+    case 1:
+      return (
+        try! vectors.bytes("credential_authority_test_private_key"),
+        try! vectors.bytes("credential_authority_public_key")
+      )
+    case 2:
+      return (
+        try! vectors.bytes("census_authority_test_private_key"),
+        try! vectors.bytes("census_authority_public_key")
+      )
+    default:
+      fatalError("unsupported deterministic authority test key")
+    }
   }
 
   private func b005V2(displayName: String, scopeHash: Data, credential: Data, census: Data) -> Data {
@@ -518,21 +712,49 @@ private struct AdoptionCensusVectors {
     return value
   }
 
-  private init(contents: String) throws {
+  fileprivate init(contents: String) throws {
     var parsed: [String: String] = [:]
     for line in contents.split(separator: "\n", omittingEmptySubsequences: false) {
       guard !line.isEmpty, !line.hasPrefix("#") else { continue }
       guard let separator = line.firstIndex(of: "=") else { throw VectorError.malformedLine(String(line)) }
       let key = String(line[..<separator])
-      guard key.utf8.allSatisfy({
+      guard !key.isEmpty, key.utf8.allSatisfy({
         (0x41...0x5a).contains($0) || (0x61...0x7a).contains($0)
           || (0x30...0x39).contains($0) || $0 == 0x5f
       }) else {
         throw VectorError.malformedLine(String(line))
       }
-      parsed[key] = String(line[line.index(after: separator)...])
+      guard parsed[key] == nil else { throw VectorError.malformedLine(String(line)) }
+      parsed[key] = try Self.decodeValue(
+        String(line[line.index(after: separator)...]),
+        line: String(line)
+      )
     }
     values = parsed
+  }
+
+  private static func decodeValue(_ rawValue: String, line: String) throws -> String {
+    var decoded = ""
+    var escaping = false
+    for scalar in rawValue.unicodeScalars {
+      if escaping {
+        switch scalar.value {
+        case 0x6e:
+          decoded.append(contentsOf: "\n")
+        case 0x5c:
+          decoded.append(contentsOf: "\\")
+        default:
+          throw VectorError.malformedLine(line)
+        }
+        escaping = false
+      } else if scalar.value == 0x5c {
+        escaping = true
+      } else {
+        decoded.unicodeScalars.append(scalar)
+      }
+    }
+    guard !escaping else { throw VectorError.malformedLine(line) }
+    return decoded
   }
 
   private enum VectorError: Error {
