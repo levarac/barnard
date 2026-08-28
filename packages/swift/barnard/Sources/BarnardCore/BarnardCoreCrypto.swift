@@ -102,6 +102,25 @@ public enum BarnardCoreKeyManager {
 }
 
 public enum BarnardCoreCrypto {
+  /// Domain-separated v2 AdoptionCredential TEK derivation. The credential
+  /// identifier is the stable hash of the signed credential's unsigned body;
+  /// it replaces the raw EventCode as the event-specific IKM suffix for the
+  /// code-less admission path. The legacy EventCode derivation below remains
+  /// byte-for-byte unchanged for B005 v1 deployments.
+  public static func deriveTekForAdoptionCredential(
+    deviceSecret: [UInt8],
+    credentialId: [UInt8]
+  ) -> [UInt8] {
+    guard credentialId.count == 32 else {
+      return [UInt8](repeating: 0, count: 16)
+    }
+    return BarnardCorePrimitives.hkdfSha256(
+      inputKeyMaterial: deviceSecret + credentialId,
+      info: Array("barnard-adoption-tek:v1".utf8),
+      outputByteCount: 16
+    )
+  }
+
   /// Calculates ENIN without trapping when an input cannot fit in `UInt32`.
   ///
   /// This is the boundary-safe counterpart to `calculateEnin`. It shares the

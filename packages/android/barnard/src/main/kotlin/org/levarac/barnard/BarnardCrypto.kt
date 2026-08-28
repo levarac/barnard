@@ -58,6 +58,20 @@ object BarnardCrypto {
     }
 
     /**
+     * Derive the code-less v2 TEK from DeviceSecret and a verified stable
+     * AdoptionCredential ID. The distinct info label prevents a credential
+     * from being interpreted as a legacy EventCode input.
+     */
+    fun deriveTekForAdoptionCredential(deviceSecret: ByteArray, credentialId: ByteArray): ByteArray {
+        if (credentialId.size != 32) return ByteArray(16)
+        return hkdfSha256(
+            deviceSecret + credentialId,
+            "barnard-adoption-tek:v1".toByteArray(Charsets.UTF_8),
+            16,
+        )
+    }
+
+    /**
      * Derive TEK for Anonymous Mode from DeviceSecret.
      *
      * `TEK = HKDF(DeviceSecret, "barnard-tek-anonymous", 16)`
