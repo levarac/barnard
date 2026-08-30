@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
 import org.levarac.barnard.BarnardCrypto.toHex
+import java.math.BigInteger
 import java.security.MessageDigest
 
 /** Recoverable secp256k1 signature `(r, s, v)`, Kotlin-first mirror of [BarnardSigning.RecoverableSignature]. */
@@ -20,6 +21,12 @@ public data class BarnardRpidOwnershipProof(
     val rpi: String,
     val signingPublicKey: String,
     val signature: BarnardRecoverableSignature,
+)
+
+/** The long-lived owner keypair (barnard#133 / barnard#92), Kotlin-first mirror of [BarnardSigning.SigningKeyPair]. */
+public data class BarnardOwnerKeyPair(
+    val privateKey: String,
+    val publicKeyCompressed: String,
 )
 
 /**
@@ -85,6 +92,116 @@ public class BarnardIdentity(private val appContext: Context) {
         return BarnardRecoverableSignature(r = sig.r.toHex(), s = sig.s.toHex(), v = sig.v)
     }
 
+    // MARK: - Owner key: account binding, self-proof, wallet acknowledgement (barnard#133 / barnard#92)
+    //
+    // Unlike signingPublicKey/sign/proveRpidOwnership/proveKeyBinding above,
+    // these six do not use appContext or the device secret — the owner key
+    // is rooted in an externally supplied account secret, not the device.
+    // They live on this same public wrapper anyway: Android's BarnardSigning
+    // is a single internal object (not split into a public "Core" + a
+    // public "Identity" layer like Swift's BarnardCore/BarnardIdentity), so
+    // this is the pragmatic Android equivalent of Swift's surface.
+
+    /**
+     * Derives the long-lived owner keypair from a 32-byte [accountSecret]
+     * (barnard#133 / barnard#92). See [BarnardSigning.deriveOwnerKeyPair].
+     */
+    public fun deriveOwnerKeyPair(accountSecret: ByteArray): BarnardOwnerKeyPair {
+        val keyPair = BarnardSigning.deriveOwnerKeyPair(accountSecret)
+        return BarnardOwnerKeyPair(
+            privateKey = fixedHex32(keyPair.privateKey),
+            publicKeyCompressed = keyPair.publicKeyCompressed.toHex(),
+        )
+    }
+
+    /**
+     * Canonical, EIP-4361-shaped text for an external wallet SDK to sign
+     * with `personal_sign`, binding [walletAddress] to [ownerPublicKey]
+     * (barnard#133 / barnard#92). Returns `null` on any guard failure. See
+     * [BarnardSigning.buildAccountBindingText].
+     */
+    public fun buildAccountBindingText(
+        domain: String,
+        walletAddress: ByteArray,
+        ownerPublicKey: ByteArray,
+        chainId: ULong,
+        nonce: ByteArray,
+        issuedAt: String,
+    ): String? {
+        return BarnardSigning.buildAccountBindingText(domain, walletAddress, ownerPublicKey, chainId, nonce, issuedAt)
+    }
+
+    /**
+     * Canonical self-proof claim message binding [eventSigningPublicKey] to
+     * [ownerPublicKey] for the ENIN range `[eninStart, eninEnd]`
+     * (barnard#133 / barnard#92). Returns `null` on any guard failure. See
+     * [BarnardSigning.buildSelfProofMessage].
+     */
+    public fun buildSelfProofMessage(
+        eventIdHash: ByteArray,
+        eventSigningPublicKey: ByteArray,
+        eninStart: ULong,
+        eninEnd: ULong,
+        ownerPublicKey: ByteArray,
+    ): ByteArray? {
+        return BarnardSigning.buildSelfProofMessage(eventIdHash, eventSigningPublicKey, eninStart, eninEnd, ownerPublicKey)
+    }
+
+    /**
+     * Signs the self-proof claim per [buildSelfProofMessage] with
+     * [ownerPrivateKey] (lowercase hex), after confirming it actually
+     * derives [ownerPublicKey] (barnard#133 / barnard#92). Returns `null` on
+     * any guard failure. See [BarnardSigning.signSelfProof].
+     */
+    public fun signSelfProof(
+        ownerPrivateKey: String,
+        eventIdHash: ByteArray,
+        eventSigningPublicKey: ByteArray,
+        eninStart: ULong,
+        eninEnd: ULong,
+        ownerPublicKey: ByteArray,
+    ): BarnardRecoverableSignature? {
+        val sig = BarnardSigning.signSelfProof(
+            parseOwnerPrivateKey(ownerPrivateKey) ?: return null,
+            eventIdHash,
+            eventSigningPublicKey,
+            eninStart,
+            eninEnd,
+            ownerPublicKey,
+        ) ?: return null
+        return BarnardRecoverableSignature(r = sig.r.toHex(), s = sig.s.toHex(), v = sig.v)
+    }
+
+    /**
+     * Canonical wallet-acknowledgement claim message counter-signing one
+     * exact [walletSignature] over [walletAddress] (barnard#133 /
+     * barnard#92). Returns `null` on any guard failure. See
+     * [BarnardSigning.buildWalletAcknowledgementMessage].
+     */
+    public fun buildWalletAcknowledgementMessage(walletAddress: ByteArray, walletSignature: ByteArray): ByteArray? {
+        return BarnardSigning.buildWalletAcknowledgementMessage(walletAddress, walletSignature)
+    }
+
+    /**
+     * Signs the wallet-acknowledgement claim per
+     * [buildWalletAcknowledgementMessage] with [ownerPrivateKey] (lowercase
+     * hex, barnard#133 / barnard#92). Returns `null` on any guard failure.
+     * See [BarnardSigning.signWalletAcknowledgement].
+     */
+    public fun signWalletAcknowledgement(
+        ownerPrivateKey: String,
+        walletAddress: ByteArray,
+        walletSignature: ByteArray,
+    ): BarnardRecoverableSignature? {
+        val sig = BarnardSigning.signWalletAcknowledgement(
+            parseOwnerPrivateKey(ownerPrivateKey) ?: return null,
+            walletAddress,
+            walletSignature,
+        )
+            ?: return null
+        return BarnardRecoverableSignature(r = sig.r.toHex(), s = sig.s.toHex(), v = sig.v)
+    }
+
     // MARK: - DeviceSecret Management
     //
     // Same storage key as BarnardEngine.getOrCreateDeviceSecret — the
@@ -102,5 +219,30 @@ public class BarnardIdentity(private val appContext: Context) {
         val bytes = BarnardCrypto.generateRandomBytes(32)
         prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
         return bytes
+    }
+
+    // MARK: - Owner-key hex <-> BigInteger conversion (barnard#133 / barnard#92)
+    //
+    // BarnardSigning keeps private keys as BigInteger internally and its own
+    // fixed-width encoder (toFixedBytes(value, 32)) is private to that file
+    // by design. These are a small local duplicate scoped to the hex string
+    // boundary this public wrapper needs, so BarnardSigning.kt does not need
+    // any visibility change.
+
+    /** Fixed-width 32-byte big-endian lowercase hex, matching the convention `BarnardSigning`'s own `toFixedBytes(value, 32)` uses internally. */
+    private fun fixedHex32(value: BigInteger): String {
+        val raw = value.toByteArray()
+        val trimmed = if (raw.size > 32 && raw[0] == 0.toByte()) raw.copyOfRange(raw.size - 32, raw.size) else raw
+        val fixed = when {
+            trimmed.size == 32 -> trimmed
+            trimmed.size < 32 -> ByteArray(32 - trimmed.size) + trimmed
+            else -> trimmed.copyOfRange(trimmed.size - 32, trimmed.size)
+        }
+        return fixed.toHex()
+    }
+
+    private fun parseOwnerPrivateKey(hex: String): BigInteger? {
+        if (!Regex("[0-9a-f]{64}").matches(hex)) return null
+        return BigInteger(hex, 16)
     }
 }

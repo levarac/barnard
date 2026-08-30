@@ -32,6 +32,16 @@ android {
             isMinifyEnabled = false
         }
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.testLogging {
+                events("passed", "skipped", "failed", "standardOut", "standardError")
+                showStandardStreams = true
+            }
+        }
+    }
 }
 
 dependencies {
@@ -46,4 +56,12 @@ dependencies {
     // directly; UIAutomator/Espresso would only add a brittle UI layer.
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
+
+    // JVM unit tests (barnard#133): prove BarnardIdentity's owner-key
+    // wrappers are reachable from a separate Gradle build, where Kotlin's
+    // `internal` is genuinely unreachable (unlike a same-module test, which
+    // Kotlin's Gradle plugin wires as a friend-path).
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("androidx.test:core:1.5.0")
+    testImplementation("org.robolectric:robolectric:4.11.1")
 }
