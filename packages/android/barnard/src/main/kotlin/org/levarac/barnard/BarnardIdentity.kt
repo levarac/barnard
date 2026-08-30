@@ -162,7 +162,7 @@ public class BarnardIdentity(private val appContext: Context) {
         ownerPublicKey: ByteArray,
     ): BarnardRecoverableSignature? {
         val sig = BarnardSigning.signSelfProof(
-            hexToBigInteger(ownerPrivateKey),
+            parseOwnerPrivateKey(ownerPrivateKey) ?: return null,
             eventIdHash,
             eventSigningPublicKey,
             eninStart,
@@ -193,7 +193,11 @@ public class BarnardIdentity(private val appContext: Context) {
         walletAddress: ByteArray,
         walletSignature: ByteArray,
     ): BarnardRecoverableSignature? {
-        val sig = BarnardSigning.signWalletAcknowledgement(hexToBigInteger(ownerPrivateKey), walletAddress, walletSignature)
+        val sig = BarnardSigning.signWalletAcknowledgement(
+            parseOwnerPrivateKey(ownerPrivateKey) ?: return null,
+            walletAddress,
+            walletSignature,
+        )
             ?: return null
         return BarnardRecoverableSignature(r = sig.r.toHex(), s = sig.s.toHex(), v = sig.v)
     }
@@ -237,5 +241,8 @@ public class BarnardIdentity(private val appContext: Context) {
         return fixed.toHex()
     }
 
-    private fun hexToBigInteger(hex: String): BigInteger = BigInteger(hex, 16)
+    private fun parseOwnerPrivateKey(hex: String): BigInteger? {
+        if (!Regex("[0-9a-f]{64}").matches(hex)) return null
+        return BigInteger(hex, 16)
+    }
 }
