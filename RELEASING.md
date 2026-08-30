@@ -58,6 +58,48 @@ For a local fallback, put `mavenCentralUsername`, `mavenCentralPassword`,
 `~/.gradle/gradle.properties`. Then run the manual Maven Central publish command
 from `packages/android/barnard`; it uses the same automatic release behavior.
 
+## Known-consumer version checklist
+
+Barnard has one whole-monorepo version. For a release `vX.Y.Z`, every known
+consumer reference below must resolve to `X.Y.Z`. This checklist is a
+consumer-side release gate: it proves that Beid is configured to consume the
+published Barnard version; it is not evidence that Barnard itself was built or
+published correctly.
+
+Perform these steps in the Beid checkout only after both distribution surfaces
+are available to consumers: Maven `org.levarac:barnard:X.Y.Z` and the
+corresponding reachable Git tag `vX.Y.Z`. Do not change consumer pins or
+resolve Swift Package Manager until both are available:
+
+1. Set the Android dependency in
+   `android/app/build.gradle.kts` to `org.levarac:barnard:X.Y.Z`.
+2. Set the iOS dependency version in `ios/project.yml`. Its `exactVersion`
+   value is the iOS source of truth and must be `X.Y.Z`.
+3. Regenerate `ios/Beid.xcodeproj/project.pbxproj` from `ios/project.yml`.
+   The generated project file is a downstream representation of `project.yml`;
+   do not edit it to establish or override the version.
+4. Resolve Swift Package Manager dependencies, then commit
+   `ios/Beid.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
+   `Package.resolved` is also downstream: it records the resolver's selected
+   package version and must not be treated as an authority over
+   `ios/project.yml`.
+5. Independently inspect all four references—`android/app/build.gradle.kts`,
+   `ios/project.yml`, `ios/Beid.xcodeproj/project.pbxproj`, and
+   `ios/Beid.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`—and
+   confirm that each records `X.Y.Z` for Barnard. A disagreement is a release
+   blocker: return to `ios/project.yml`, regenerate, and resolve again rather
+   than hand-editing either downstream file.
+6. Capture consumer-side evidence by completing Swift Package Manager
+   resolution and a Beid build that uses the resolved package. Record both
+   results with the release change. This evidence validates the consumer
+   integration only; it does not replace the Barnard package's own build and
+   publication evidence.
+
+As a lightweight safeguard, add a consumer-side mismatch check that extracts
+the Barnard version from these four files and fails when the values differ. It
+should run where Beid changes its Barnard dependency, but this repository does
+not implement or configure that check for Beid.
+
 Revisit whole-monorepo versioning if repository size grows enough to hurt
 consumer fetches or if platforms genuinely need divergent versioning. At that
 point, evaluate a CI-published distribution repository.
