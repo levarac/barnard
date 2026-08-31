@@ -24,11 +24,12 @@ public struct BarnardRpidOwnershipProof {
 /// port of `BarnardIdentityController`.
 ///
 /// A module separate from `BarnardEngine` (the sensing client) — it shares
-/// the same on-device `DeviceSecret` storage (`UserDefaults` key
-/// `barnard.rpidSeed`) as `BarnardEngine`/`BarnardRpidGenerator` so the
-/// signing identity is rooted in the same secret as the sensing client's
-/// TEK, but the private signing key it derives never leaves this type —
-/// only the public key and signatures do.
+/// the same on-device `DeviceSecret` storage key (`barnard.rpidSeed`) as
+/// `BarnardEngine`/`BarnardRpidGenerator` so the signing identity is rooted
+/// in the same secret as the sensing client's TEK. The default initializer
+/// uses `UserDefaults`; hosts can inject another `BarnardCoreKeyStorage`.
+/// The private signing key this type derives never leaves it — only the
+/// public key and signatures do.
 ///
 /// Deriving that key costs one secp256k1 scalar multiplication, so an
 /// instance keeps the most recent derivation in memory
@@ -44,6 +45,16 @@ public final class BarnardIdentity {
 
   public init() {
     keyStorage = BarnardUserDefaultsKeyStorage()
+    randomSource = BarnardSystemRandomSource()
+  }
+
+  /// Creates an identity that reads and creates its DeviceSecret through
+  /// `keyStorage` under the `barnard.rpidSeed` key.
+  ///
+  /// Inject the same storage instance into `BarnardEngine` to keep the
+  /// signing-identity and TEK roots aligned.
+  public init(keyStorage: any BarnardCoreKeyStorage) {
+    self.keyStorage = keyStorage
     randomSource = BarnardSystemRandomSource()
   }
 
