@@ -211,7 +211,9 @@ Barnard MUST NOT include device-unique identifiers in Advertise, but it MUST pro
 ### Tracking risk minimization
 
 - RPID is derived from an on-device secret; without `rpidSeed` it must not be predictable
-- Store `rpidSeed` in storage that is removed on uninstall (avoid stores that may survive uninstall, e.g., iOS Keychain)
+- The default Apple storage is removed on uninstall. A host may instead inject
+  secure platform storage, including storage eligible for OS-standard encrypted
+  backup, and then owns migration plus uninstall/restore lifecycle policy.
 - Enforce safe bounds for rotation to avoid excessive battery/CPU (e.g., 60s..3600s)
 - Optional: `epochOffsetSeconds` (0..rotationSeconds-1) to desynchronize rotation boundaries across devices
 

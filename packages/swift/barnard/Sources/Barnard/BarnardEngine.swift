@@ -1,5 +1,8 @@
 // Use of this source code is governed by a BSD-style license.
 
+#if canImport(BarnardCore)
+import BarnardCore
+#endif
 import CoreBluetooth
 import Foundation
 import UIKit
@@ -185,7 +188,7 @@ public final class BarnardEngine: NSObject {
 
   // MARK: - Components
 
-  private let rpid = BarnardRpidGenerator()
+  private let rpid: BarnardRpidGenerator
 
   // MARK: - BLE Managers
 
@@ -327,8 +330,25 @@ public final class BarnardEngine: NSObject {
   // MARK: - Initialization
 
   override public init() {
+    rpid = BarnardRpidGenerator()
     super.init()
 
+    registerForApplicationLifecycleNotifications()
+  }
+
+  /// Creates an engine whose RPID and TEK path reads and creates its
+  /// DeviceSecret through `keyStorage` under the `barnard.rpidSeed` key.
+  ///
+  /// Inject the same storage instance into `BarnardIdentity` to keep the TEK
+  /// and signing-identity roots aligned.
+  public init(keyStorage: any BarnardCoreKeyStorage) {
+    rpid = BarnardRpidGenerator(keyStorage: keyStorage)
+    super.init()
+
+    registerForApplicationLifecycleNotifications()
+  }
+
+  private func registerForApplicationLifecycleNotifications() {
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(appDidBecomeActive),
