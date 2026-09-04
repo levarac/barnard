@@ -115,7 +115,11 @@ v2 implementation is blocked. Any adopted encoding MUST provide at least:
 
 The relay lifetime MUST be at most 12 ENINs: `relayExpiresAtEnin - validFromEnin`
 MUST NOT exceed 12, and a receiver MUST reject an envelope whose lifetime exceeds
-it. Under B004's 300-second default that is one hour. Longer events require
+it. The relay window is the half-open interval `[validFromEnin,
+relayExpiresAtEnin)`: an envelope is relayable while `currentEnin <
+relayExpiresAtEnin` and stops the moment `currentEnin` reaches
+`relayExpiresAtEnin`, so a lifetime of 12 covers exactly 12 ENIN values. Under
+B004's 300-second default that is one hour. Longer events require
 authority or delegate refresh (a new envelope with a later `validFromEnin`). A
 receiver MUST NOT extend expiry.
 
@@ -126,7 +130,7 @@ A receiver MUST, in this order:
 3. obtain the authoritative on-chain definition for `eventId`;
 4. require exact `eventId`, `eventCodeHash`, display-name, validity-window, and
    signer-authority agreement with that definition;
-5. require `validFromEnin <= currentEnin <= relayExpiresAtEnin <=
+5. require `validFromEnin <= currentEnin < relayExpiresAtEnin <=
    validThroughEnin`; and
 6. only then expose the event to host display or relay APIs.
 
@@ -198,7 +202,7 @@ bytes, extend expiry, reset selection, or create hints. State is bounded to one
 508-byte envelope and 32 handles; further handles saturate `r >= k` without
 being retained.
 
-At `relayExpiresAtEnin`, on definition invalidation, on signature failure, or
+When `currentEnin` reaches `relayExpiresAtEnin`, on definition invalidation, on signature failure, or
 when the host stops Scan/Advertise, the implementation MUST stop new B005 reads,
 clear the relay lease and density handles, and delete the cached relay envelope.
 An immutable GATT snapshot already accepted at offset zero follows specification
@@ -276,7 +280,8 @@ It MUST NOT re-sign, edit, extend, manufacture, or count the envelope.
    mismatching and unavailable on-chain definitions. Assert no verified display,
    no relay lease, no admission side effect, and unchanged direct B002-B004 flow.
 3. **Unit — expiry:** exercise ENIN immediately before, at, and after each signed
-   bound. Assert relay stops and state is deleted after `relayExpiresAtEnin`, and
+   bound. Assert relay stops and state is deleted once `currentEnin` reaches
+   `relayExpiresAtEnin` (the expiry ENIN itself is not relayable), and
    local time uncertainty fails closed for relay.
 4. **Unit — density and bounds:** with deterministic random fixtures, exercise
    `r = 0, 1, 2, 3, 4`, contention cancellation, lease renewal, 33 peer handles,
