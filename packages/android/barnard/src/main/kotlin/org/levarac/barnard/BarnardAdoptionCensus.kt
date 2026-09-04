@@ -420,6 +420,10 @@ public object BarnardB005V2Codec {
         val scope = scopeHash ?: adoptionFailure(BarnardAdoptionProtocolError.MISSING_REQUIRED_TLV)
         val credentialWire = credentialBytes ?: adoptionFailure(BarnardAdoptionProtocolError.MISSING_REQUIRED_TLV)
         val censusWire = censusBytes ?: adoptionFailure(BarnardAdoptionProtocolError.MISSING_REQUIRED_TLV)
+        // Validate the display name (0x01 TLV) before the scope hash (0x02 TLV),
+        // matching Swift and the TLV order in the spec, so a payload invalid in
+        // both ways reports the same reason on both platforms.
+        val displayName = validatedDisplayName(name)
         if (scope.size != 8) adoptionFailure(BarnardAdoptionProtocolError.INVALID_B005_V2)
         val credential = try {
             BarnardAdoptionCredential.decode(credentialWire)
@@ -431,7 +435,7 @@ public object BarnardB005V2Codec {
         } catch (_: BarnardAdoptionProtocolException) {
             adoptionFailure(BarnardAdoptionProtocolError.INVALID_CENSUS_SIGNATURE)
         }
-        val payload = BarnardB005V2Payload(validatedDisplayName(name), scope, credential, census)
+        val payload = BarnardB005V2Payload(displayName, scope, credential, census)
         serialize(payload)
         return payload
     }

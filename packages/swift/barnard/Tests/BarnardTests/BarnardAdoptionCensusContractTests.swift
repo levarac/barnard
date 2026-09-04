@@ -445,6 +445,25 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     }
   }
 
+  /// A payload invalid in two independent ways at once (bad display name AND
+  /// wrong-length scope hash) must report the *same* rejection reason on both
+  /// platforms, so frozen cross-platform negative test vectors can pin a
+  /// single reason code. Swift checks the display name (0x01 TLV) before the
+  /// scope hash (0x02 TLV); Android must match this order.
+  func testB005ChecksDisplayNameBeforeScopeLength() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let malformed = b005V2(
+      displayName: "Barnard\u{0085}Tap",
+      scopeHash: Data(repeating: 0xAB, count: 7),
+      credential: try vectors.bytes("credential_full"),
+      census: try vectors.bytes("census_full")
+    )
+
+    XCTAssertThrowsError(try BarnardB005V2Codec.decode(malformed)) { error in
+      XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidDisplayName)
+    }
+  }
+
   /// `Data` slices preserve the original buffer's indices instead of
   /// renumbering from zero (e.g. `someData.dropFirst(n)`), which is a
   /// completely normal shape for a TLV value a host extracted from a larger

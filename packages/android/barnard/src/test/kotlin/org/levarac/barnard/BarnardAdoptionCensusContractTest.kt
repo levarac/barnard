@@ -462,6 +462,28 @@ class BarnardAdoptionCensusContractTest {
         assertEquals(BarnardAdoptionProtocolError.INVALID_DISPLAY_NAME, error.reason)
     }
 
+    /**
+     * A payload invalid in two independent ways at once (bad display name AND
+     * wrong-length scope hash) must report the *same* rejection reason as
+     * Swift, so frozen cross-platform negative test vectors can pin a single
+     * reason code. The display name (0x01 TLV) must be checked before the
+     * scope hash (0x02 TLV).
+     */
+    @Test
+    fun b005_rejectsInvalidDisplayNameBeforeScopeLengthMismatch() {
+        val vectors = AdoptionCensusVectors.load()
+        val malformed = b005V2(
+            displayName = "BarnardTap",
+            scopeHash = ByteArray(7) { 0xAB.toByte() },
+            credential = vectors.bytes("credential_full"),
+            census = vectors.bytes("census_full"),
+        )
+        val error = assertThrows(BarnardAdoptionProtocolException::class.java) {
+            BarnardB005V2Codec.decode(malformed)
+        }
+        assertEquals(BarnardAdoptionProtocolError.INVALID_DISPLAY_NAME, error.reason)
+    }
+
     @Test
     fun vectorParser_decodesEscapesAndRejectsDuplicateKeys() {
         assertEquals("first\nsecond\\tail", parseVectorText("value=first\\nsecond\\\\tail\n").getValue("value"))
