@@ -496,6 +496,20 @@ class BarnardAdoptionCensusContractTest {
     }
 
     @Test
+    fun vectorBytes_rejectsSignedOrNonHexByteText() {
+        val valid = AdoptionCensusVectors.withValues(mapOf("key" to "0aff"))
+        assertArrayEquals(byteArrayOf(0x0a, 0xff.toByte()), valid.bytes("key"))
+
+        // `String.toInt(radix)` accepts a leading sign, so an unvalidated
+        // parser would silently turn "-1" into 0xff instead of rejecting it.
+        val signed = AdoptionCensusVectors.withValues(mapOf("key" to "-1"))
+        assertThrows(IllegalArgumentException::class.java) { signed.bytes("key") }
+
+        val nonHex = AdoptionCensusVectors.withValues(mapOf("key" to "zz"))
+        assertThrows(IllegalArgumentException::class.java) { nonHex.bytes("key") }
+    }
+
+    @Test
     fun selfCheckRequiresVerifiedSameCredentialPeer_withoutCrossDeviceTekResolution() {
         val vectors = AdoptionCensusVectors.load()
         val local = candidate(
@@ -719,6 +733,8 @@ class BarnardAdoptionCensusContractTest {
 
 private class AdoptionCensusVectors private constructor(private val values: Map<String, String>) {
     companion object {
+        private val hexDigitChars = "0123456789abcdefABCDEF".toSet()
+
         fun load(): AdoptionCensusVectors {
             var directory: File? = File(System.getProperty("user.dir")).absoluteFile
             repeat(20) {
@@ -729,6 +745,9 @@ private class AdoptionCensusVectors private constructor(private val values: Map<
             }
             error("could not locate test-vectors/adoption-census-v1.txt")
         }
+
+        /** Test-only factory for exercising accessors like [bytes] against synthetic values. */
+        fun withValues(values: Map<String, String>): AdoptionCensusVectors = AdoptionCensusVectors(values)
 
         fun parse(file: File): Map<String, String> {
             val result = linkedMapOf<String, String>()
@@ -773,7 +792,12 @@ private class AdoptionCensusVectors private constructor(private val values: Map<
         val value = string(key)
         require(value.length % 2 == 0) { "odd-length hex vector: $key" }
         return ByteArray(value.length / 2) { index ->
-            value.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+            val pair = value.substring(index * 2, index * 2 + 2)
+            // `String.toInt(radix)` accepts a leading sign (e.g. "-1" parses
+            // to -1, which silently becomes 0xff as a Byte), unlike Swift's
+            // `UInt8(_:radix:)`. Reject anything but two unsigned hex digits.
+            require(pair.all { it in hexDigitChars }) { "malformed hex byte '$pair' in vector: $key" }
+            pair.toInt(16).toByte()
         }
     }
 
