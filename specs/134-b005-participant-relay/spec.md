@@ -80,7 +80,7 @@ Integers are unsigned and big-endian.
 
 | Offset | Size | Field | Rule |
 |---:|---:|---|---|
-| 0 | 1 | `formatVersion` | Exactly `0x02` |
+| 0 | 1 | `formatVersion` | Exactly `0x03` |
 | 1 | 1 | `relayHopCount` | `0` for direct; `1` or `2` for relay |
 | 2 | 2 | `signedEnvelopeLength` | `1...508`; ends at value boundary |
 | 4 | variable | `signedEnvelope` | Organizer-authorized bytes, unchanged by relays |
@@ -95,7 +95,7 @@ is the adversary-resistant boundary; hop limit bounds conforming forwarders.
 
 B005 v1 remains parseable with its legacy unverified-hint semantics under
 specification 113, but it MUST NOT be participant-relayed or enter the verified
-B005 v2 display path. An older Central that does not understand `0x02` treats
+B005 v2 display path. An older Central that does not understand `0x03` treats
 event-info as unavailable and continues the existing B004/B002/B003 flow.
 
 ## Minimal signed-envelope contract shared with issue #122
@@ -309,6 +309,12 @@ The questions raised in the draft were settled as follows (levarac/barnard#168).
 1. **Delivery container**: B005 v2 uses the four-byte delivery container above, not an
    additive v1 TLV. Authenticated trust semantics are incompatible with v1, and nesting
    preserves the signed envelope exactly.
+   *Erratum (2026-09-05):* the container's `formatVersion` is `0x03`, not `0x02` as
+   originally written. `0x02` was already assigned by
+   [`specification 123-128`](../123-128-adoption-credential-census/spec.md) to the
+   adoption-credential census format, which is implemented and released in tag `v0.6.0`.
+   Assigning `0x03` to the relay container leaves those released bytes untouched. Neither
+   parser accepts the other's payload, so no deployed value changes meaning.
 2. **Maximum relay lifetime**: 12 ENIN. Hourly refresh bounds replay while avoiding
    per-window signing. Issue #122 decides whether direct authority signing or delegated
    liveness signing performs the refresh.
