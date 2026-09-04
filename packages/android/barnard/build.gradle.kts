@@ -53,7 +53,7 @@ android {
 }
 
 dependencies {
-    implementation("org.bouncycastle:bcprov-jdk18on:1.81")
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.81")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.test:core:1.5.0")
