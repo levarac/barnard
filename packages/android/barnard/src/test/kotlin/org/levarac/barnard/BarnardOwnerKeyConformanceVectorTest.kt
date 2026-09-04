@@ -159,8 +159,8 @@ class BarnardOwnerKeyConformanceVectorTest {
 
         val recovered = BarnardSigning.recoverPublicKey(
             sig.v,
-            BigInteger(1, sig.r),
-            BigInteger(1, sig.s),
+            sig.r,
+            sig.s,
             MessageDigest.getInstance("SHA-256").digest(message!!),
         )
         assertArrayEquals(ownerPublicKey, recovered)
@@ -176,8 +176,8 @@ class BarnardOwnerKeyConformanceVectorTest {
             hex(ev("public_key_compressed")),
             BarnardSigning.recoverPublicKey(
                 signature.v,
-                BigInteger(1, signature.r),
-                BigInteger(1, signature.s),
+                signature.r,
+                signature.s,
                 hex(ev("message_hash")),
             ),
         )
@@ -206,8 +206,8 @@ class BarnardOwnerKeyConformanceVectorTest {
         assertNull(
             "$rKey/$sKey",
             BarnardSigning.recoverPublicKey(
-                ev("expected_v").toInt(), BigInteger(1, hex(ev(rKey))),
-                BigInteger(1, hex(ev(sKey))), hash,
+                ev("expected_v").toInt(), hex(ev(rKey)),
+                hex(ev(sKey)), hash,
             ),
         )
     }
@@ -227,10 +227,10 @@ class BarnardOwnerKeyConformanceVectorTest {
     @Test
     fun ecdsaProfile_rejectsHighS() {
         val hash = hex(ev("message_hash"))
-        val r = BigInteger(ev("expected_r"), 16)
+        val r = hex(ev("expected_r"))
         assertNull(
             BarnardSigning.recoverPublicKey(
-                ev("high_s_recovery_v").toInt(), r, BigInteger(ev("high_s"), 16), hash,
+                ev("high_s_recovery_v").toInt(), r, hex(ev("high_s")), hash,
             ),
         )
     }
@@ -239,8 +239,8 @@ class BarnardOwnerKeyConformanceVectorTest {
     fun ecdsaProfile_rejectsOutOfRangeRecoveryId() {
         assertNull(
             BarnardSigning.recoverPublicKey(
-                ev("out_of_range_recovery_id").toInt(), BigInteger(ev("expected_r"), 16),
-                BigInteger(ev("expected_s"), 16), hex(ev("message_hash")),
+                ev("out_of_range_recovery_id").toInt(), hex(ev("expected_r")),
+                hex(ev("expected_s")), hex(ev("message_hash")),
             ),
         )
     }
