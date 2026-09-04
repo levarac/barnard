@@ -43,10 +43,6 @@
     "AdmissionMode": {
       "type": "string",
       "enum": ["open", "gated"]
-    },
-    "RegistryVerification": {
-      "type": "string",
-      "enum": ["verified", "unverified"]
     }
   }
 }
