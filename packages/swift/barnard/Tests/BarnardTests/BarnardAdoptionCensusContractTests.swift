@@ -227,7 +227,9 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
         registryDefinition: mismatchedDefinition,
         observedAtUnixSeconds: 1_540
       )
-    )
+    ) { error in
+      XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidField)
+    }
 
     let gated = try candidate(
       vectors,
@@ -504,7 +506,16 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
         registryDefinition: bound.registryDefinition,
         observedAtUnixSeconds: 1_540
       )
-    )
+    ) { error in
+      // Flipping the payload's last byte flips the census signature's raw
+      // recoveryId byte (0<->1), which is still canonical, so decode()
+      // recovers a *different*, wrong authority public key rather than
+      // failing outright; decodeAndBind's registry-binding check is what
+      // actually rejects it, once that wrong key's hash doesn't match the
+      // configured authority. Verified precisely (not assumed) against the
+      // real vector bytes before writing this assertion.
+      XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidField)
+    }
   }
 
   func testRelayCacheUsesBoundArtifactsExpiryWatermarkAndTwoPayloadHardCap() throws {

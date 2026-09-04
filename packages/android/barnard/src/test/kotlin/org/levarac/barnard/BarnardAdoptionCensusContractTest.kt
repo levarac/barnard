@@ -237,13 +237,14 @@ class BarnardAdoptionCensusContractTest {
             admissionMode = definition.admissionMode,
             censusDomainPolicy = definition.censusDomainPolicy,
         )
-        assertThrows(BarnardAdoptionProtocolException::class.java) {
+        val mismatchedEventIdError = assertThrows(BarnardAdoptionProtocolException::class.java) {
             BarnardVerifiedCensusCandidate.decodeAndBind(
                 b005Bytes = unbound.b005Bytes,
                 registryDefinition = mismatchedDefinition,
                 observedAtUnixSeconds = 1_540uL,
             )
         }
+        assertEquals(BarnardAdoptionProtocolError.INVALID_FIELD, mismatchedEventIdError.reason)
 
         val gated = candidate(
             vectors,
@@ -534,13 +535,21 @@ class BarnardAdoptionCensusContractTest {
         val tampered = bound.b005Bytes.copyOf().also { bytes ->
             bytes[bytes.lastIndex] = (bytes.last().toInt() xor 0x01).toByte()
         }
-        assertThrows(BarnardAdoptionProtocolException::class.java) {
+        // Flipping the payload's last byte flips the census signature's raw
+        // recoveryId byte (0<->1), which is still canonical, so decode()
+        // recovers a *different*, wrong authority public key rather than
+        // failing outright; decodeAndBind's registry-binding check is what
+        // actually rejects it, once that wrong key's hash doesn't match the
+        // configured authority. Verified precisely (not assumed) against the
+        // real vector bytes before writing this assertion.
+        val tamperedError = assertThrows(BarnardAdoptionProtocolException::class.java) {
             BarnardVerifiedCensusCandidate.decodeAndBind(
                 b005Bytes = tampered,
                 registryDefinition = bound.registryDefinition,
                 observedAtUnixSeconds = 1_540uL,
             )
         }
+        assertEquals(BarnardAdoptionProtocolError.INVALID_FIELD, tamperedError.reason)
     }
 
     @Test
