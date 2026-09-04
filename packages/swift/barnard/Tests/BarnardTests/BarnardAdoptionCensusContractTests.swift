@@ -344,6 +344,77 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     )
   }
 
+  /// A single off-domain candidate among otherwise-usable ones is normal
+  /// steady state (e.g. a neighboring event sharing the same radio range)
+  /// and MUST report the mixed-set reason `.domainMismatch`, not the
+  /// wholesale-mismatch reason `.noCandidateInDomain` - the two are
+  /// different product signals and MUST NOT collapse into one value.
+  func testAdoptionDecisionDistinguishesNoCandidateInDomainFromMixedDomainMismatch() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let policy = try domainPolicy(vectors)
+    let matching = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
+    )
+
+    let unbound = try candidateInput(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 2
+    )
+    let definition = unbound.registryDefinition
+    let outOfDomainPolicy = BarnardCensusDomainPolicy(
+      censusDomainId: Data(repeating: 0xEE, count: 32),
+      censusWindowSeconds: definition.censusDomainPolicy.censusWindowSeconds,
+      authorityPolicyEpoch: definition.censusDomainPolicy.authorityPolicyEpoch,
+      authorizedAuthorityKeyHash: definition.censusDomainPolicy.authorizedAuthorityKeyHash,
+      minimumEligibleVoterCount: definition.censusDomainPolicy.minimumEligibleVoterCount,
+      minimumQualifiedVoterCount: definition.censusDomainPolicy.minimumQualifiedVoterCount,
+      maximumCandidateAgeSeconds: definition.censusDomainPolicy.maximumCandidateAgeSeconds
+    )
+    let outOfDomainDefinition = BarnardRegistryEventDefinition(
+      eventId: definition.eventId,
+      credentialId: definition.credentialId,
+      b004AdoptionScopeHash: definition.b004AdoptionScopeHash,
+      displayNameHash: definition.displayNameHash,
+      validFromUnixSeconds: definition.validFromUnixSeconds,
+      validUntilUnixSeconds: definition.validUntilUnixSeconds,
+      admissionMode: definition.admissionMode,
+      censusDomainPolicy: outOfDomainPolicy
+    )
+    let outOfDomain = try BarnardVerifiedCensusCandidate.decodeAndBind(
+      b005Bytes: unbound.b005Bytes,
+      registryDefinition: outOfDomainDefinition,
+      observedAtUnixSeconds: 1_540
+    )
+
+    // Wholesale: every candidate is off-domain.
+    XCTAssertEqual(
+      BarnardAdoptionDecision.evaluate(
+        candidates: [outOfDomain],
+        domainPolicy: policy,
+        nowUnixSeconds: 1_550
+      ),
+      .requiresChooser(.noCandidateInDomain)
+    )
+
+    // Mixed: at least one candidate matches, at least one does not - the
+    // *old* reason must still be returned, not the new one.
+    XCTAssertEqual(
+      BarnardAdoptionDecision.evaluate(
+        candidates: [matching, outOfDomain],
+        domainPolicy: policy,
+        nowUnixSeconds: 1_550
+      ),
+      .requiresChooser(.domainMismatch)
+    )
+  }
+
   func testRotationAndDomainAuthorityConflictsFailClosed() throws {
     let vectors = try AdoptionCensusVectors.load()
     let policy = try domainPolicy(vectors)

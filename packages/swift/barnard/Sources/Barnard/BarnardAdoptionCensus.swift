@@ -752,6 +752,7 @@ public enum BarnardAdoptionFallbackReason: Equatable {
   case domainMismatch
   case noAuthoritativeCensus
   case invalidDomainPolicy
+  case noCandidateInDomain
 }
 
 public enum BarnardAdoptionDecisionResult: Equatable {
@@ -780,11 +781,15 @@ public enum BarnardAdoptionDecision {
     if candidates.contains(where: { $0.registryVerification != .verified }) {
       return .requiresChooser(.registryUnverified)
     }
-    if candidates.contains(where: {
-      $0.censusDomainId != domainPolicy.censusDomainId
-        || $0.censusWindowSeconds != domainPolicy.censusWindowSeconds
-        || $0.authorityPolicyEpoch != domainPolicy.authorityPolicyEpoch
-    }) {
+    let domainMatches: (BarnardVerifiedCensusCandidate) -> Bool = {
+      $0.censusDomainId == domainPolicy.censusDomainId
+        && $0.censusWindowSeconds == domainPolicy.censusWindowSeconds
+        && $0.authorityPolicyEpoch == domainPolicy.authorityPolicyEpoch
+    }
+    if candidates.allSatisfy({ !domainMatches($0) }) {
+      return .requiresChooser(.noCandidateInDomain)
+    }
+    if candidates.contains(where: { !domainMatches($0) }) {
       return .requiresChooser(.domainMismatch)
     }
     if candidates.contains(where: { $0.censusAuthorityKeyHash != domainPolicy.authorizedAuthorityKeyHash }) {

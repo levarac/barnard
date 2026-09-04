@@ -348,6 +348,18 @@ treat these differently: an evaluated `no_clear_majority` is a correct
 chooser outcome, while `no_authoritative_census` or `invalid_domain_policy`
 is a degraded fallback.
 
+The domain/window/policy-epoch check MUST also distinguish a mixed set from
+a wholesale mismatch. When every candidate fails to match the configured
+domain, window, and policy epoch, the SDK MUST report
+`no_candidate_in_domain`: this is a likely misconfiguration signal, since
+nothing observed belongs to the host's own domain at all. When at least one
+candidate matches and at least one does not, the SDK MUST report
+`domain_mismatch`: this is normal steady state (e.g. a neighboring event's
+candidates sharing the same radio range) and MUST NOT be conflated with the
+wholesale case. Either case still requires the chooser or confirmation
+fallback and MUST NOT auto-adopt; this is a reason split only, not a change
+to which candidates suppress auto-adoption.
+
 A valid different authority key in the same configured
 domain/window/policy epoch is `domain_authority_inconsistency`; it MUST fail
 closed and MUST NOT form a separate majority group. Future multi-authority

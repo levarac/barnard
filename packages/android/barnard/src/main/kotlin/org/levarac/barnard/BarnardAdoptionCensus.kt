@@ -649,6 +649,7 @@ public enum class BarnardAdoptionFallbackReason {
     DOMAIN_MISMATCH,
     NO_AUTHORITATIVE_CENSUS,
     INVALID_DOMAIN_POLICY,
+    NO_CANDIDATE_IN_DOMAIN,
 }
 
 public sealed class BarnardAdoptionDecisionResult {
@@ -687,12 +688,17 @@ public object BarnardAdoptionDecision {
         if (candidates.any { it.registryVerification != BarnardRegistryVerification.VERIFIED }) {
             return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.REGISTRY_UNVERIFIED)
         }
-        if (candidates.any {
-                !it.censusDomainId.contentEquals(domainPolicy.censusDomainId) ||
-                    it.censusWindowSeconds != domainPolicy.censusWindowSeconds ||
-                    it.authorityPolicyEpoch != domainPolicy.authorityPolicyEpoch
-            }
-        ) return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.DOMAIN_MISMATCH)
+        val domainMatches: (BarnardVerifiedCensusCandidate) -> Boolean = {
+            it.censusDomainId.contentEquals(domainPolicy.censusDomainId) &&
+                it.censusWindowSeconds == domainPolicy.censusWindowSeconds &&
+                it.authorityPolicyEpoch == domainPolicy.authorityPolicyEpoch
+        }
+        if (candidates.all { !domainMatches(it) }) {
+            return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.NO_CANDIDATE_IN_DOMAIN)
+        }
+        if (candidates.any { !domainMatches(it) }) {
+            return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.DOMAIN_MISMATCH)
+        }
         if (candidates.any { !it.censusAuthorityKeyHash.contentEquals(domainPolicy.authorizedAuthorityKeyHash) }) {
             return BarnardAdoptionDecisionResult.DOMAIN_AUTHORITY_INCONSISTENCY
         }

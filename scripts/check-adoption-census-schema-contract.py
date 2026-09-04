@@ -269,6 +269,8 @@ def main() -> int:
         decision("requires_chooser", None, "no_clear_majority"),
         decision("requires_chooser", None, "no_authoritative_census"),
         decision("requires_chooser", None, "invalid_domain_policy"),
+        decision("requires_chooser", None, "domain_mismatch"),
+        decision("requires_chooser", None, "no_candidate_in_domain"),
         decision("domain_authority_inconsistency", None, None),
     ]
     invalid_cases = [
@@ -278,6 +280,7 @@ def main() -> int:
         decision("requires_chooser", None, None),
         decision("domain_authority_inconsistency", identifier, None),
         decision("domain_authority_inconsistency", None, "domain_mismatch"),
+        decision("domain_authority_inconsistency", None, "no_candidate_in_domain"),
     ]
     for value in valid_cases:
         require(schema_valid(value), f"AdoptionDecision rejects a required valid combination: {value}")

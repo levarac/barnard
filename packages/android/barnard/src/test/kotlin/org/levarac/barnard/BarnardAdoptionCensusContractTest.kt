@@ -372,6 +372,82 @@ class BarnardAdoptionCensusContractTest {
         )
     }
 
+    /**
+     * A single off-domain candidate among otherwise-usable ones is normal
+     * steady state (e.g. a neighboring event sharing the same radio range)
+     * and MUST report the mixed-set reason DOMAIN_MISMATCH, not the
+     * wholesale-mismatch reason NO_CANDIDATE_IN_DOMAIN - the two are
+     * different product signals and MUST NOT collapse into one value.
+     */
+    @Test
+    fun adoptionDecisionDistinguishesNoCandidateInDomainFromMixedDomainMismatch() {
+        val vectors = AdoptionCensusVectors.load()
+        val policy = domainPolicy(vectors)
+        val matching = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
+
+        val unbound = candidateInput(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 2,
+        )
+        val definition = unbound.registryDefinition
+        val outOfDomainPolicy = BarnardCensusDomainPolicy(
+            censusDomainId = ByteArray(32) { 0xEE.toByte() },
+            censusWindowSeconds = definition.censusDomainPolicy.censusWindowSeconds,
+            authorityPolicyEpoch = definition.censusDomainPolicy.authorityPolicyEpoch,
+            authorizedAuthorityKeyHash = definition.censusDomainPolicy.authorizedAuthorityKeyHash,
+            minimumEligibleVoterCount = definition.censusDomainPolicy.minimumEligibleVoterCount,
+            minimumQualifiedVoterCount = definition.censusDomainPolicy.minimumQualifiedVoterCount,
+            maximumCandidateAgeSeconds = definition.censusDomainPolicy.maximumCandidateAgeSeconds,
+        )
+        val outOfDomainDefinition = BarnardRegistryEventDefinition(
+            eventId = definition.eventId,
+            credentialId = definition.credentialId,
+            b004AdoptionScopeHash = definition.b004AdoptionScopeHash,
+            displayNameHash = definition.displayNameHash,
+            validFromUnixSeconds = definition.validFromUnixSeconds,
+            validUntilUnixSeconds = definition.validUntilUnixSeconds,
+            admissionMode = definition.admissionMode,
+            censusDomainPolicy = outOfDomainPolicy,
+        )
+        val outOfDomain = BarnardVerifiedCensusCandidate.decodeAndBind(
+            b005Bytes = unbound.b005Bytes,
+            registryDefinition = outOfDomainDefinition,
+            observedAtUnixSeconds = 1_540uL,
+        )
+
+        // Wholesale: every candidate is off-domain.
+        val wholesaleDecision = BarnardAdoptionDecision.evaluate(
+            candidates = listOf(outOfDomain),
+            domainPolicy = policy,
+            nowUnixSeconds = 1_550uL,
+        )
+        assertEquals(
+            BarnardAdoptionFallbackReason.NO_CANDIDATE_IN_DOMAIN,
+            (wholesaleDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
+        )
+
+        // Mixed: at least one candidate matches, at least one does not - the
+        // *old* reason must still be returned, not the new one.
+        val mixedDecision = BarnardAdoptionDecision.evaluate(
+            candidates = listOf(matching, outOfDomain),
+            domainPolicy = policy,
+            nowUnixSeconds = 1_550uL,
+        )
+        assertEquals(
+            BarnardAdoptionFallbackReason.DOMAIN_MISMATCH,
+            (mixedDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
+        )
+    }
+
     @Test
     fun rotationAndDomainAuthorityConflicts_failClosed() {
         val vectors = AdoptionCensusVectors.load()

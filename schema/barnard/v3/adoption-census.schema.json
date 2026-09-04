@@ -156,7 +156,7 @@
       "enum": [
         "registry_unverified", "gated", "no_clear_majority", "insufficient_evidence",
         "stale_candidate", "wrong_census_window", "inconsistent_eligibility", "domain_mismatch",
-        "no_authoritative_census", "invalid_domain_policy"
+        "no_authoritative_census", "invalid_domain_policy", "no_candidate_in_domain"
       ]
     },
     "AdoptionDecision": {
