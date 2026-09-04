@@ -113,8 +113,10 @@ v2 implementation is blocked. Any adopted encoding MUST provide at least:
 - a domain-separated signature covering every preceding field, including all
   validity and relay-policy fields.
 
-The default relay lifetime SHOULD be at most 12 ENINs: one hour under B004's
-300-second default. Longer events require authority or delegate refresh. A
+The relay lifetime MUST be at most 12 ENINs: `relayExpiresAtEnin - validFromEnin`
+MUST NOT exceed 12, and a receiver MUST reject an envelope whose lifetime exceeds
+it. Under B004's 300-second default that is one hour. Longer events require
+authority or delegate refresh (a new envelope with a later `validFromEnin`). A
 receiver MUST NOT extend expiry.
 
 A receiver MUST, in this order:
@@ -318,7 +320,7 @@ The questions raised in the draft were settled as follows (levarac/barnard#168).
 
 ## Compatibility and implementation boundary
 
-This draft changes no schema, package, example, or CI file. Before later
+This specification changes no schema, package, example, or CI file. Before later
 implementation, issue #122 must settle signed bytes and shared vectors. Exported
 public shapes follow schema-first. Swift and Android MUST share fixtures,
 defaults, errors, and bounded mock behavior.
