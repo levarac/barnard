@@ -264,16 +264,36 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       .requiresChooser(.noClearMajority)
     )
 
-    let stale = try candidate(
+    // Pin the staleness boundary to the policy's actual configured
+    // maximumCandidateAgeSeconds rather than an arbitrary hardcoded offset,
+    // so the threshold itself is constrained: exactly at the max age must
+    // still be accepted, one second older must not.
+    let atMaxAge = try candidate(
       vectors,
       qualified: 4,
       eligible: 7,
-      observedAt: 1_489,
+      observedAt: 1_550 - policy.maximumCandidateAgeSeconds,
       credentialAuthorityKey: 1
     )
     XCTAssertEqual(
       BarnardAdoptionDecision.evaluate(
-        candidates: [stale],
+        candidates: [atMaxAge],
+        domainPolicy: policy,
+        nowUnixSeconds: 1_550
+      ),
+      .autoAdopt(credentialId: atMaxAge.credentialId)
+    )
+
+    let oneSecondStale = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_550 - policy.maximumCandidateAgeSeconds - 1,
+      credentialAuthorityKey: 1
+    )
+    XCTAssertEqual(
+      BarnardAdoptionDecision.evaluate(
+        candidates: [oneSecondStale],
         domainPolicy: policy,
         nowUnixSeconds: 1_550
       ),

@@ -281,15 +281,37 @@ class BarnardAdoptionCensusContractTest {
             (noMajorityDecision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
         )
 
-        val stale = candidate(
+        // Pin the staleness boundary to the policy's actual configured
+        // maximumCandidateAgeSeconds rather than an arbitrary hardcoded
+        // offset, so the threshold itself is constrained: exactly at the max
+        // age must still be accepted, one second older must not.
+        val atMaxAge = candidate(
             vectors,
             qualified = 4u,
             eligible = 7u,
-            observedAt = 1_489u,
+            observedAt = (1_550uL - policy.maximumCandidateAgeSeconds).toUInt(),
+            credentialAuthorityKey = 1,
+        )
+        val atMaxAgeDecision = BarnardAdoptionDecision.evaluate(
+            candidates = listOf(atMaxAge),
+            domainPolicy = policy,
+            nowUnixSeconds = 1_550uL,
+        )
+        assertTrue(atMaxAgeDecision is BarnardAdoptionDecisionResult.AutoAdopt)
+        assertArrayEquals(
+            atMaxAge.credentialId,
+            (atMaxAgeDecision as BarnardAdoptionDecisionResult.AutoAdopt).credentialId,
+        )
+
+        val oneSecondStale = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = (1_550uL - policy.maximumCandidateAgeSeconds - 1uL).toUInt(),
             credentialAuthorityKey = 1,
         )
         val staleDecision = BarnardAdoptionDecision.evaluate(
-            candidates = listOf(stale),
+            candidates = listOf(oneSecondStale),
             domainPolicy = policy,
             nowUnixSeconds = 1_550uL,
         )
