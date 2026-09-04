@@ -446,6 +446,11 @@ public enum BarnardB005V2Codec {
   }
 
   public static func decode(_ bytes: Data) throws -> BarnardB005V2Payload {
+    // `bytes` may be a slice of a larger buffer (e.g. a TLV value extracted
+    // from a scan record upstream), and `Data` slices preserve the original
+    // buffer's indices rather than renumbering from zero. Copy into a fresh
+    // zero-based `Data` before doing any absolute offset arithmetic below.
+    let bytes = Data(bytes)
     guard bytes.count <= maximumPayloadBytes, bytes.first == formatVersion else {
       throw BarnardAdoptionProtocolError.invalidB005V2
     }
@@ -1025,8 +1030,8 @@ public final class BarnardAutoAdoptionSelfCheck {
 /// device secret and a *verified* stable credential ID; EventCode methods stay
 /// available exclusively for the legacy B005 v1 path.
 public enum BarnardAdoptionKeyDerivation {
-  public static func deriveTek(deviceSecret: Data, credentialId: Data) -> Data {
-    BarnardCrypto.deriveTekForAdoptionCredential(
+  public static func deriveTek(deviceSecret: Data, credentialId: Data) throws -> Data {
+    try BarnardCrypto.deriveTekForAdoptionCredential(
       deviceSecret: deviceSecret,
       credentialId: credentialId
     )

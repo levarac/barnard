@@ -93,7 +93,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     XCTAssertEqual(b005.eventDisplayName, try vectors.string("display_name"))
     XCTAssertEqual(try BarnardB005V2Codec.serialize(b005), try vectors.bytes("b005_v2_positive"))
     XCTAssertEqual(
-      BarnardAdoptionKeyDerivation.deriveTek(
+      try BarnardAdoptionKeyDerivation.deriveTek(
         deviceSecret: try vectors.bytes("adoption_device_secret"),
         credentialId: verifiedCredential.credentialId
       ),
@@ -443,6 +443,25 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     XCTAssertThrowsError(try BarnardB005V2Codec.decode(malformed)) { error in
       XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidDisplayName)
     }
+  }
+
+  /// `Data` slices preserve the original buffer's indices instead of
+  /// renumbering from zero (e.g. `someData.dropFirst(n)`), which is a
+  /// completely normal shape for a TLV value a host extracted from a larger
+  /// scan-record buffer upstream. `decode` must normalize offsets internally
+  /// rather than assume a zero-based buffer.
+  func testDecodeAcceptsNonZeroBasedDataSlice() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let validB005 = try vectors.bytes("b005_v2_positive")
+
+    let prefixJunk = Data(repeating: 0xFF, count: 16)
+    let slicedB005 = (prefixJunk + validB005).dropFirst(prefixJunk.count)
+    XCTAssertEqual(slicedB005.startIndex, prefixJunk.count)
+    XCTAssertEqual(Data(slicedB005), validB005)
+
+    let payload = try BarnardB005V2Codec.decode(slicedB005)
+    XCTAssertEqual(payload.eventDisplayName, try vectors.string("display_name"))
+    XCTAssertEqual(try BarnardB005V2Codec.serialize(payload), validB005)
   }
 
   func testVectorParserDecodesEscapesAndRejectsDuplicateKeys() throws {

@@ -19,6 +19,22 @@ final class BarnardCryptoTests: XCTestCase {
     XCTAssertNotEqual(tekA, tekB)
   }
 
+  func testDeriveTekForAdoptionCredentialThrowsOnMalformedCredentialIdLength() {
+    let deviceSecret = Data(repeating: 0xAB, count: 32)
+
+    for malformedLength in [31, 33] {
+      let malformedCredentialId = Data(repeating: 0xEF, count: malformedLength)
+      XCTAssertThrowsError(
+        try BarnardCrypto.deriveTekForAdoptionCredential(
+          deviceSecret: deviceSecret,
+          credentialId: malformedCredentialId
+        )
+      ) { error in
+        XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidLength)
+      }
+    }
+  }
+
   func testDeriveTekForAnonymousDiffersFromEventMode() {
     let deviceSecret = Data(repeating: 0xCD, count: 32)
     let anonymousTek = BarnardCrypto.deriveTekForAnonymous(deviceSecret: deviceSecret)

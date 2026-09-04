@@ -58,11 +58,15 @@ enum BarnardCrypto {
   static func deriveTekForAdoptionCredential(
     deviceSecret: Data,
     credentialId: Data
-  ) -> Data {
-    Data(BarnardCoreCrypto.deriveTekForAdoptionCredential(
-      deviceSecret: Array(deviceSecret),
-      credentialId: Array(credentialId)
-    ))
+  ) throws -> Data {
+    do {
+      return Data(try BarnardCoreCrypto.deriveTekForAdoptionCredential(
+        deviceSecret: Array(deviceSecret),
+        credentialId: Array(credentialId)
+      ))
+    } catch {
+      throw BarnardAdoptionProtocolError.invalidLength
+    }
   }
 
   static func deriveTekForAnonymous(deviceSecret: Data) -> Data {

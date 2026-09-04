@@ -61,9 +61,15 @@ object BarnardCrypto {
      * Derive the code-less v2 TEK from DeviceSecret and a verified stable
      * AdoptionCredential ID. The distinct info label prevents a credential
      * from being interpreted as a legacy EventCode input.
+     *
+     * Throws rather than returning a zero-filled key on a malformed
+     * [credentialId], so a caller can never silently derive and use a
+     * garbage TEK.
      */
     fun deriveTekForAdoptionCredential(deviceSecret: ByteArray, credentialId: ByteArray): ByteArray {
-        if (credentialId.size != 32) return ByteArray(16)
+        if (credentialId.size != 32) {
+            throw BarnardAdoptionProtocolException(BarnardAdoptionProtocolError.INVALID_LENGTH)
+        }
         return hkdfSha256(
             deviceSecret + credentialId,
             "barnard-adoption-tek:v1".toByteArray(Charsets.UTF_8),
