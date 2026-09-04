@@ -793,6 +793,22 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     )
     XCTAssertEqual(tracker.observe(unverifiedPeer, inWindow: local.windowIndex + 2), .ignored)
 
+    // Repeated confirmation from the same rotating peer handle must not
+    // inflate any internal state: re-observing the identical valid peer
+    // still reports `.peerConfirmed`, but must have no additional effect -
+    // asserted below via completeWindow's suppression staying identical to
+    // a single confirmation.
+    XCTAssertEqual(tracker.observe(validPeer, inWindow: local.windowIndex + 2), .peerConfirmed)
+
+    // The confirmed peer must actually suppress the switch prompt: complete
+    // the required number of windows on the tracker that already reached
+    // .peerConfirmed (not a fresh tracker) and assert it never presents the
+    // prompt. An implementation that always shows the prompt after enough
+    // windows regardless of confirmation would fail this.
+    XCTAssertEqual(tracker.completeWindow(local.windowIndex + 1), .continueChecking)
+    XCTAssertEqual(tracker.completeWindow(local.windowIndex + 2), .continueChecking)
+    XCTAssertEqual(tracker.completeWindow(local.windowIndex + 3), .continueChecking)
+
     let noPeerTracker = BarnardAutoAdoptionSelfCheck(
       credentialId: local.credentialId,
       b004AdoptionScopeHash: try vectors.bytes("b004_adoption_scope_hash"),

@@ -831,6 +831,23 @@ class BarnardAdoptionCensusContractTest {
         )
         assertEquals(BarnardSelfCheckObservationResult.IGNORED, tracker.observe(unverifiedPeer, local.windowIndex + 2uL))
 
+        // Repeated confirmation from the same rotating peer handle must not
+        // inflate any internal state: re-observing the identical valid peer
+        // still reports PEER_CONFIRMED, but must have no additional effect -
+        // asserted below via completeWindow's suppression staying identical
+        // to a single confirmation.
+        assertEquals(BarnardSelfCheckObservationResult.PEER_CONFIRMED, tracker.observe(validPeer, local.windowIndex + 2uL))
+
+        // The confirmed peer must actually suppress the switch prompt:
+        // complete the required number of windows on the tracker that
+        // already reached PEER_CONFIRMED (not a fresh tracker) and assert it
+        // never presents the prompt. An implementation that always shows the
+        // prompt after enough windows regardless of confirmation would fail
+        // this.
+        assertEquals(BarnardSelfCheckWindowResult.CONTINUE_CHECKING, tracker.completeWindow(local.windowIndex + 1uL))
+        assertEquals(BarnardSelfCheckWindowResult.CONTINUE_CHECKING, tracker.completeWindow(local.windowIndex + 2uL))
+        assertEquals(BarnardSelfCheckWindowResult.CONTINUE_CHECKING, tracker.completeWindow(local.windowIndex + 3uL))
+
         val noPeerTracker = BarnardAutoAdoptionSelfCheck(
             credentialId = local.credentialId,
             b004AdoptionScopeHash = vectors.bytes("b004_adoption_scope_hash"),
