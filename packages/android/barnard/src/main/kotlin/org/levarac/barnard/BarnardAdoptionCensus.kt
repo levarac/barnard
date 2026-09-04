@@ -86,8 +86,11 @@ private object BarnardAdoptionWire {
     }
 
     fun recoveredPublicKey(signature: ByteArray, messageHash: ByteArray): ByteArray {
-        val (r, s, recoveryId) = canonicalSignature(signature)
-        return BarnardSigning.recoverPublicKey(recoveryId, r, s, messageHash)
+        val (_, _, recoveryId) = canonicalSignature(signature)
+        // recoverPublicKey takes the canonical 32-byte components (#160); ranges were checked above.
+        return BarnardSigning.recoverPublicKey(
+            recoveryId, signature.copyOfRange(0, 32), signature.copyOfRange(32, 64), messageHash,
+        )
             ?: adoptionFailure(BarnardAdoptionProtocolError.NON_CANONICAL_SIGNATURE)
     }
 

@@ -108,8 +108,8 @@ class BarnardSigningTest {
         val sig = BarnardSigning.signRecoverable(keyPair.privateKey, messageHash)
         val recovered = BarnardSigning.recoverPublicKey(
             sig.v,
-            java.math.BigInteger(1, sig.r),
-            java.math.BigInteger(1, sig.s),
+            sig.r,
+            sig.s,
             messageHash,
         )
 
@@ -128,8 +128,8 @@ class BarnardSigningTest {
         val sig = BarnardSigning.signRecoverable(keyPair.privateKey, sha256(original))
         val recovered = BarnardSigning.recoverPublicKey(
             sig.v,
-            java.math.BigInteger(1, sig.r),
-            java.math.BigInteger(1, sig.s),
+            sig.r,
+            sig.s,
             sha256(tampered),
         )
 
@@ -334,8 +334,8 @@ class BarnardSigningTest {
         )!!
         val recovered = BarnardSigning.recoverPublicKey(
             sig!!.v,
-            java.math.BigInteger(1, sig.r),
-            java.math.BigInteger(1, sig.s),
+            sig.r,
+            sig.s,
             sha256(message),
         )
         assertArrayEquals(owner.publicKeyCompressed, recovered)
@@ -414,8 +414,8 @@ class BarnardSigningTest {
         val message = BarnardSigning.buildWalletAcknowledgementMessage(walletAddress, walletSignature)!!
         val recovered = BarnardSigning.recoverPublicKey(
             sig!!.v,
-            java.math.BigInteger(1, sig.r),
-            java.math.BigInteger(1, sig.s),
+            sig.r,
+            sig.s,
             sha256(message),
         )
         assertArrayEquals(owner.publicKeyCompressed, recovered)

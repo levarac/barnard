@@ -89,14 +89,13 @@ public enum BarnardCoreSigning {
         BarnardCoreSecp256k1.curveOrder
       )
     }
-    let publicPoint = BarnardCoreSecp256k1.multiply(
-      privateKey,
-      BarnardCoreSecp256k1.generator
-    )
-    return BarnardCoreSigningKeyPair(
-      privateKey: privateKey.bytes,
-      publicKeyCompressed: BarnardCoreSecp256k1.compress(publicPoint)
-    )
+    let privateKeyBytes = privateKey.bytes
+#if BARNARD_LIBSECP256K1
+    let publicKey = BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: privateKeyBytes)!
+#else
+    let publicKey = pureSwiftCompressedPublicKey(privateKey: privateKeyBytes)!
+#endif
+    return BarnardCoreSigningKeyPair(privateKey: privateKeyBytes, publicKeyCompressed: publicKey)
   }
 
   public static func deriveOwnerKeyPair(
@@ -119,38 +118,23 @@ public enum BarnardCoreSigning {
         BarnardCoreSecp256k1.curveOrder
       )
     }
-    let publicPoint = BarnardCoreSecp256k1.multiply(
-      privateKey,
-      BarnardCoreSecp256k1.generator
-    )
-    return BarnardCoreSigningKeyPair(
-      privateKey: privateKey.bytes,
-      publicKeyCompressed: BarnardCoreSecp256k1.compress(publicPoint)
-    )
+    let privateKeyBytes = privateKey.bytes
+#if BARNARD_LIBSECP256K1
+    let publicKey = BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: privateKeyBytes)!
+#else
+    let publicKey = pureSwiftCompressedPublicKey(privateKey: privateKeyBytes)!
+#endif
+    return BarnardCoreSigningKeyPair(privateKey: privateKeyBytes, publicKeyCompressed: publicKey)
   }
 
   public static func serializeUncompressedPublicKey(
     _ compressedPublicKey: [UInt8]
   ) -> [UInt8]? {
-    guard
-      compressedPublicKey.count == 33,
-      compressedPublicKey[0] == 0x02 || compressedPublicKey[0] == 0x03
-    else {
-      return nil
-    }
-    let x = BarnardCoreSecp256k1.UInt256(
-      bytes: Array(compressedPublicKey.dropFirst())
-    )
-    guard
-      x < BarnardCoreSecp256k1.fieldPrime,
-      let point = BarnardCoreSecp256k1.decompress(
-        x: x,
-        yIsOdd: compressedPublicKey[0] == 0x03
-      )
-    else {
-      return nil
-    }
-    return BarnardCoreSecp256k1.serializeUncompressed(point)
+#if BARNARD_LIBSECP256K1
+    BarnardCoreLibsecp256k1Backend.expandedPublicKey(compressedPublicKey)
+#else
+    pureSwiftExpandedPublicKey(compressedPublicKey)
+#endif
   }
 
   public static func ethereumAddress(
@@ -180,6 +164,41 @@ public enum BarnardCoreSigning {
   }
 
   public static func signRecoverable(
+    privateKey: [UInt8],
+    messageHash32: [UInt8]
+  ) -> BarnardCoreRecoverableSignature {
+    precondition(privateKey.count == 32, "privateKey must be 32 bytes")
+    precondition(messageHash32.count == 32, "messageHash must be 32 bytes")
+    // Profile clause 1: 1 <= d < N, enforced before dispatch so both backends
+    // reject the same keys (the pure-Swift path would otherwise reduce N+1 to 1).
+    let privateScalar = BarnardCoreSecp256k1.UInt256(bytes: privateKey)
+    precondition(
+      !privateScalar.isZero && privateScalar < BarnardCoreSecp256k1.curveOrder,
+      "privateKey must be in [1, N)"
+    )
+#if BARNARD_LIBSECP256K1
+    guard let signature = BarnardCoreLibsecp256k1Backend.signRecoverable(privateKey: privateKey, hash32: messageHash32) else {
+      preconditionFailure("invalid private key or unsupported recovery id")
+    }
+    return signature
+#else
+    return pureSwiftSignRecoverable(privateKey: privateKey, messageHash32: messageHash32)
+#endif
+  }
+
+  public static func recoverPublicKey(
+    recoveryId: Int, r: [UInt8], s: [UInt8], messageHash32: [UInt8]
+  ) -> [UInt8]? {
+#if BARNARD_LIBSECP256K1
+    BarnardCoreLibsecp256k1Backend.recoverPublicKey(
+      signature: BarnardCoreRecoverableSignature(r: r, s: s, v: recoveryId), hash32: messageHash32
+    )
+#else
+    pureSwiftRecoverPublicKey(recoveryId: recoveryId, r: r, s: s, messageHash32: messageHash32)
+#endif
+  }
+
+  static func pureSwiftSignRecoverable(
     privateKey: [UInt8],
     messageHash32: [UInt8]
   ) -> BarnardCoreRecoverableSignature {
@@ -265,57 +284,53 @@ public enum BarnardCoreSigning {
     )
   }
 
-  public static func recoverPublicKey(
-    recoveryId: Int,
-    r: [UInt8],
-    s: [UInt8],
-    messageHash32: [UInt8]
+  private static func pureSwiftCompressedPublicKey(privateKey: [UInt8]) -> [UInt8]? {
+    guard privateKey.count == 32 else { return nil }
+    let scalar = BarnardCoreSecp256k1.UInt256(bytes: privateKey)
+    guard !scalar.isZero, scalar < BarnardCoreSecp256k1.curveOrder else { return nil }
+    return BarnardCoreSecp256k1.compress(
+      BarnardCoreSecp256k1.multiply(scalar, BarnardCoreSecp256k1.generator)
+    )
+  }
+
+  private static func pureSwiftExpandedPublicKey(_ compressed: [UInt8]) -> [UInt8]? {
+    guard compressed.count == 33, compressed[0] == 0x02 || compressed[0] == 0x03 else { return nil }
+    let x = BarnardCoreSecp256k1.UInt256(bytes: Array(compressed.dropFirst()))
+    guard x < BarnardCoreSecp256k1.fieldPrime,
+          let point = BarnardCoreSecp256k1.decompress(x: x, yIsOdd: compressed[0] == 0x03)
+    else { return nil }
+    return BarnardCoreSecp256k1.serializeUncompressed(point)
+  }
+
+  static func pureSwiftRecoverPublicKey(
+    recoveryId: Int, r: [UInt8], s: [UInt8], messageHash32: [UInt8]
   ) -> [UInt8]? {
-    guard recoveryId / 2 == 0, r.count == 32, s.count == 32, messageHash32.count == 32 else {
-      return nil
-    }
+    guard recoveryId == 0 || recoveryId == 1, r.count == 32, s.count == 32, messageHash32.count == 32 else { return nil }
     let rScalar = BarnardCoreSecp256k1.UInt256(bytes: r)
     let sScalar = BarnardCoreSecp256k1.UInt256(bytes: s)
-    if rScalar >= BarnardCoreSecp256k1.fieldPrime {
-      return nil
-    }
-    guard let rPoint = BarnardCoreSecp256k1.decompress(
-      x: rScalar,
-      yIsOdd: (recoveryId & 1) == 1
-    ) else {
-      return nil
-    }
-
+    // Profile clauses 6-8: r, s in [1, N), low-S only — same rejections as the
+    // libsecp256k1 backend so the mirrored (pure-Swift) build behaves identically.
+    guard !rScalar.isZero, rScalar < BarnardCoreSecp256k1.curveOrder,
+          !sScalar.isZero, !(sScalar > BarnardCoreSecp256k1.curveOrder.shiftedRight1())
+    else { return nil }
+    guard rScalar < BarnardCoreSecp256k1.fieldPrime,
+          let rPoint = BarnardCoreSecp256k1.decompress(x: rScalar, yIsOdd: (recoveryId & 1) == 1)
+    else { return nil }
     let messageScalar = BarnardCoreSecp256k1.Field.reduceOnce(
-      BarnardCoreSecp256k1.UInt256(bytes: messageHash32),
-      BarnardCoreSecp256k1.curveOrder
+      BarnardCoreSecp256k1.UInt256(bytes: messageHash32), BarnardCoreSecp256k1.curveOrder
     )
-    let negativeMessage = BarnardCoreSecp256k1.curveOrder.subtracting(messageScalar)
-    let rInverse = BarnardCoreSecp256k1.Field.inverseMod(
-      rScalar,
-      BarnardCoreSecp256k1.curveOrder
-    )
-    let signatureFactor = BarnardCoreSecp256k1.Field.multiplyMod(
-      rInverse,
-      sScalar,
-      BarnardCoreSecp256k1.curveOrder
-    )
+    let rInverse = BarnardCoreSecp256k1.Field.inverseMod(rScalar, BarnardCoreSecp256k1.curveOrder)
+    let signatureFactor = BarnardCoreSecp256k1.Field.multiplyMod(rInverse, sScalar, BarnardCoreSecp256k1.curveOrder)
     let messageFactor = BarnardCoreSecp256k1.Field.multiplyMod(
-      rInverse,
-      negativeMessage,
-      BarnardCoreSecp256k1.curveOrder
+      rInverse, BarnardCoreSecp256k1.curveOrder.subtracting(messageScalar), BarnardCoreSecp256k1.curveOrder
     )
-    let generatorTerm = BarnardCoreSecp256k1.multiply(
-      messageFactor,
-      BarnardCoreSecp256k1.generator
+    let publicPoint = BarnardCoreSecp256k1.add(
+      BarnardCoreSecp256k1.multiply(messageFactor, BarnardCoreSecp256k1.generator),
+      BarnardCoreSecp256k1.multiply(signatureFactor, rPoint)
     )
-    let signatureTerm = BarnardCoreSecp256k1.multiply(signatureFactor, rPoint)
-    let publicPoint = BarnardCoreSecp256k1.add(generatorTerm, signatureTerm)
-    if publicPoint.isInfinity {
-      return nil
-    }
-    return BarnardCoreSecp256k1.compress(publicPoint)
+    return publicPoint.isInfinity ? nil : BarnardCoreSecp256k1.compress(publicPoint)
   }
+
 
   public static func buildRpidProofMessage(
     eventIdHash: [UInt8],

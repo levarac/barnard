@@ -9,6 +9,11 @@ example `BarnardAdoptionCensus.swift`). Every vector is consumed byte-for-byte
 by the test suites of every other implementation (starting with
 `packages/android/barnard`'s Kotlin implementation).
 
+Negative/boundary profile files may instead name an independent reference in
+their header. `secp256k1-ecdsa-v1.txt` uses Python `ecdsa` 0.19.1 so the
+hand-rolled implementations are not used to manufacture their own expected
+answers. Invalid encodings and scalar boundaries are literal test inputs.
+
 ## Why this exists
 
 Some Barnard packages are C-ABI bindings to `BarnardCore` and inherit its
@@ -79,7 +84,10 @@ Each vector file (e.g. `owner-key-v1.txt`) follows this format:
    existing file.
 2. Compute every value by actually running the canonical Swift native-origin
    implementation against fixed, documented inputs — never by hand-
-   transcribing or hand-deriving a cryptographic output. Where a value is
+   transcribing or hand-deriving a cryptographic output. The one exception is
+   a backend-independence profile (e.g. `secp256k1-ecdsa-v1.txt`), whose
+   values come from an independent cryptographic implementation named in the
+   file header, never from the implementation under test. Where a value is
    already pinned in an existing Swift test (e.g.
    `packages/swift/barnard/Tests/BarnardCoreTests/`), copy it verbatim and
    comment which test it came from; where it is not yet pinned anywhere,

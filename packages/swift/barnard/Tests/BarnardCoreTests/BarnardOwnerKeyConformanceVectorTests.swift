@@ -124,6 +124,138 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
     )
   }
 
+  func testECDSAProfilePositiveVector() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    let signature = BarnardCoreSigning.signRecoverable(
+      privateKey: try vectors.bytes("private_key_valid"),
+      messageHash32: try vectors.bytes("message_hash")
+    )
+    XCTAssertEqual(hex(signature.r), try vectors.string("expected_r"))
+    XCTAssertEqual(hex(signature.s), try vectors.string("expected_s"))
+    XCTAssertEqual(signature.v, try vectors.int("expected_v"))
+    XCTAssertEqual(
+      BarnardCoreSigning.recoverPublicKey(
+        recoveryId: signature.v,
+        r: signature.r,
+        s: signature.s,
+        messageHash32: try vectors.bytes("message_hash")
+      ),
+      try vectors.bytes("public_key_compressed")
+    )
+  }
+
+  func testECDSAProfileRejectsPrivateKeyBoundariesAndOffCurveKey() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    for key in ["private_key_zero", "private_key_n", "private_key_n_plus_one"] {
+      XCTAssertNil(
+        BarnardCoreSigning.signWalletAcknowledgement(
+          ownerPrivateKey: try vectors.bytes(key),
+          walletAddress: [UInt8](repeating: 0, count: 20),
+          walletSignature: [1]
+        ),
+        key
+      )
+    }
+    XCTAssertNil(
+      BarnardCoreSigning.buildSelfProofMessage(
+        eventIdHash: [UInt8](repeating: 0, count: 32),
+        eventSigningPublicKey: try vectors.bytes("off_curve_public_key"),
+        eninStart: 0,
+        eninEnd: 0,
+        ownerPublicKey: try vectors.bytes("public_key_compressed")
+      )
+    )
+  }
+
+  func testECDSAProfileRejectsMalformedCompactComponents() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    let hash = try vectors.bytes("message_hash")
+    let r = try vectors.bytes("expected_r")
+    let s = try vectors.bytes("expected_s")
+    for malformedR in ["malformed_r_short", "malformed_r_long"] {
+      XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+        recoveryId: try vectors.int("expected_v"), r: try vectors.bytes(malformedR),
+        s: s, messageHash32: hash), malformedR)
+    }
+    for malformedS in ["malformed_s_short", "malformed_s_long"] {
+      XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+        recoveryId: try vectors.int("expected_v"), r: r,
+        s: try vectors.bytes(malformedS), messageHash32: hash), malformedS)
+    }
+  }
+
+  func testECDSAProfileRejectsHighSAndOutOfRangeRecoveryId() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    let hash = try vectors.bytes("message_hash")
+    let r = try vectors.bytes("expected_r")
+    XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+      recoveryId: try vectors.int("high_s_recovery_v"), r: r,
+      s: try vectors.bytes("high_s"), messageHash32: hash))
+    XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+      recoveryId: try vectors.int("out_of_range_recovery_id"), r: r,
+      s: try vectors.bytes("expected_s"), messageHash32: hash))
+    // The pure-Swift path (selected when CSecp256k1 is unavailable, i.e. the
+    // mirrored Flutter build) must apply the same rejections.
+    XCTAssertNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: try vectors.int("high_s_recovery_v"), r: r,
+      s: try vectors.bytes("high_s"), messageHash32: hash))
+    XCTAssertNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: try vectors.int("out_of_range_recovery_id"), r: r,
+      s: try vectors.bytes("expected_s"), messageHash32: hash))
+    XCTAssertNotNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: try vectors.int("expected_v"), r: r,
+      s: try vectors.bytes("expected_s"), messageHash32: hash))
+    // A negative recovery id must be rejected by both paths (only 0 and 1 are valid).
+    XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+      recoveryId: -1, r: r, s: try vectors.bytes("expected_s"), messageHash32: hash))
+    XCTAssertNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: -1, r: r, s: try vectors.bytes("expected_s"), messageHash32: hash))
+  }
+
+  /// Profile clauses 2, 4, 6, 7, and 8 require byte-identical compressed keys and
+  /// RFC 6979/no-extra-entropy, low-S compact recoverable signatures.
+  func testLibsecp256k1AndPureSwiftBackendsAreByteIdentical() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    var pairs: [([UInt8], [UInt8])] = [(
+      try vectors.bytes("private_key_valid"), try vectors.bytes("message_hash")
+    )]
+    let ownerVectors = try loadVectors()
+    pairs.append((
+      try ownerVectors.bytes("selfproof_owner_private_key"),
+      BarnardCorePrimitives.sha256(try ownerVectors.bytes("selfproof_expected_message"))
+    ))
+    pairs.append((
+      try ownerVectors.bytes("walletack_owner_private_key"),
+      BarnardCorePrimitives.sha256(try ownerVectors.bytes("walletack_expected_message"))
+    ))
+    let fixedKey = try vectors.bytes("private_key_valid")
+    pairs.append((fixedKey, [UInt8](repeating: 0xff, count: 32)))
+    pairs.append((fixedKey, try decodeRequiredHex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")))
+    var state = [UInt8](repeating: 0x42, count: 32)
+    // 200 pairs measured about 700 seconds under -O on an iOS Simulator.
+    for index in 0..<24 {
+      state = BarnardCorePrimitives.sha256(state + [UInt8(index & 0xff)])
+      var key = BarnardCorePrimitives.sha256([0x6b] + state)
+      while !BarnardCoreLibsecp256k1Backend.validatePrivateKey(key) {
+        key = BarnardCorePrimitives.sha256(key)
+      }
+      pairs.append((key, BarnardCorePrimitives.sha256([0x68] + state)))
+    }
+    for (key, hash) in pairs {
+      let pure = BarnardCoreSigning.pureSwiftSignRecoverable(privateKey: key, messageHash32: hash)
+      let native = BarnardCoreSigning.signRecoverable(privateKey: key, messageHash32: hash)
+      XCTAssertEqual(native.r, pure.r); XCTAssertEqual(native.s, pure.s); XCTAssertEqual(native.v, pure.v)
+      let purePublicKey = BarnardCoreSecp256k1.compress(BarnardCoreSecp256k1.multiply(
+        BarnardCoreSecp256k1.UInt256(bytes: key), BarnardCoreSecp256k1.generator))
+      XCTAssertEqual(BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: key), purePublicKey)
+    }
+  }
+
+  private func decodeRequiredHex(_ value: String) throws -> [UInt8] {
+    guard let bytes = decodeHex(value) else { throw VectorError.malformedHex(value) }
+    return bytes
+  }
+
   // MARK: - Vector file loading
 
   private struct VectorFile {
@@ -173,9 +305,9 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
     case directoryNotFound
   }
 
-  private func loadVectors() throws -> VectorFile {
+  private func loadVectors(named fileName: String = "owner-key-v1.txt") throws -> VectorFile {
     let vectorsDirectory = try findTestVectorsDirectory()
-    let fileURL = vectorsDirectory.appendingPathComponent("owner-key-v1.txt")
+    let fileURL = vectorsDirectory.appendingPathComponent(fileName)
     let contents = try String(contentsOf: fileURL, encoding: .utf8)
     return VectorFile(values: try parseVectorFile(contents))
   }

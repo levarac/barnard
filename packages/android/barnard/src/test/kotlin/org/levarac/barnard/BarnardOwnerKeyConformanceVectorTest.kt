@@ -8,6 +8,7 @@ import java.security.MessageDigest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -21,8 +22,12 @@ import org.junit.Test
 class BarnardOwnerKeyConformanceVectorTest {
 
     private val vectors: Map<String, String> by lazy { parseVectors(File(findRepoRoot(), "test-vectors/owner-key-v1.txt")) }
+    private val ecdsaVectors: Map<String, String> by lazy {
+        parseVectors(File(findRepoRoot(), "test-vectors/secp256k1-ecdsa-v1.txt"))
+    }
 
     private fun v(key: String): String = vectors[key] ?: error("missing vector key: $key")
+    private fun ev(key: String): String = ecdsaVectors[key] ?: error("missing ECDSA vector key: $key")
 
     private fun hex(value: String): ByteArray {
         require(value.length % 2 == 0) { "odd-length hex value: $value" }
@@ -154,10 +159,89 @@ class BarnardOwnerKeyConformanceVectorTest {
 
         val recovered = BarnardSigning.recoverPublicKey(
             sig.v,
-            BigInteger(1, sig.r),
-            BigInteger(1, sig.s),
+            sig.r,
+            sig.s,
             MessageDigest.getInstance("SHA-256").digest(message!!),
         )
         assertArrayEquals(ownerPublicKey, recovered)
+    }
+
+    @Test
+    fun ecdsaProfile_positiveVector() {
+        val signature = BarnardSigning.signRecoverable(BigInteger(ev("private_key_valid"), 16), hex(ev("message_hash")))
+        assertArrayEquals(hex(ev("expected_r")), signature.r)
+        assertArrayEquals(hex(ev("expected_s")), signature.s)
+        assertEquals(ev("expected_v").toInt(), signature.v)
+        assertArrayEquals(
+            hex(ev("public_key_compressed")),
+            BarnardSigning.recoverPublicKey(
+                signature.v,
+                signature.r,
+                signature.s,
+                hex(ev("message_hash")),
+            ),
+        )
+    }
+
+    @Test
+    fun ecdsaProfile_rejectsPrivateKeyBoundariesAndOffCurveKey() {
+        for (key in listOf("private_key_zero", "private_key_n", "private_key_n_plus_one")) {
+            assertNull(
+                key,
+                BarnardSigning.signWalletAcknowledgement(
+                    BigInteger(ev(key), 16), ByteArray(20), byteArrayOf(1),
+                ),
+            )
+        }
+        assertNull(
+            BarnardSigning.buildSelfProofMessage(
+                ByteArray(32), hex(ev("off_curve_public_key")), 0u, 0u,
+                hex(ev("public_key_compressed")),
+            ),
+        )
+    }
+
+    private fun assertMalformedComponentRejected(rKey: String = "expected_r", sKey: String = "expected_s") {
+        val hash = hex(ev("message_hash"))
+        assertNull(
+            "$rKey/$sKey",
+            BarnardSigning.recoverPublicKey(
+                ev("expected_v").toInt(), hex(ev(rKey)),
+                hex(ev(sKey)), hash,
+            ),
+        )
+    }
+
+    @Test
+    fun ecdsaProfile_rejectsShortR() = assertMalformedComponentRejected(rKey = "malformed_r_short")
+
+    @Test
+    fun ecdsaProfile_rejectsLongR() = assertMalformedComponentRejected(rKey = "malformed_r_long")
+
+    @Test
+    fun ecdsaProfile_rejectsShortS() = assertMalformedComponentRejected(sKey = "malformed_s_short")
+
+    @Test
+    fun ecdsaProfile_rejectsLongS() = assertMalformedComponentRejected(sKey = "malformed_s_long")
+
+    @Test
+    fun ecdsaProfile_rejectsHighS() {
+        val hash = hex(ev("message_hash"))
+        val r = hex(ev("expected_r"))
+        assertNull(
+            BarnardSigning.recoverPublicKey(
+                ev("high_s_recovery_v").toInt(), r, hex(ev("high_s")), hash,
+            ),
+        )
+    }
+
+    @Test
+    fun ecdsaProfile_rejectsOutOfRangeRecoveryId() {
+        assertNull(
+            BarnardSigning.recoverPublicKey(
+                ev("out_of_range_recovery_id").toInt(), hex(ev("expected_r")),
+                hex(ev("expected_s")), hex(ev("message_hash")),
+            ),
+        )
     }
 }
