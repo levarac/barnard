@@ -1,11 +1,16 @@
 # Cross-language conformance vectors
 
 This directory holds golden test vectors shared between Barnard's
-per-platform implementations. Every value in every file here is computed
-from the Swift `BarnardCore` reference implementation
+per-platform implementations. Positive values in the original owner-key file
+are computed from the Swift `BarnardCore` reference implementation
 (`packages/swift/barnard/Sources/BarnardCore`) and consumed byte-for-byte
 by the test suites of every other implementation (starting with
 `packages/android/barnard`'s Kotlin implementation).
+
+Negative/boundary profile files may instead name an independent reference in
+their header. `secp256k1-ecdsa-v1.txt` uses Python `ecdsa` 0.19.1 so the
+hand-rolled implementations are not used to manufacture their own expected
+answers. Invalid encodings and scalar boundaries are literal test inputs.
 
 ## Why this exists
 
@@ -75,9 +80,11 @@ Each vector file (e.g. `owner-key-v1.txt`) follows this format:
    `<n>` only if a later spec needs a second, incompatible generation of
    vectors for the same primitive family; otherwise add new keys to the
    existing file.
-2. Compute every value by actually running the Swift `BarnardCore`
-   reference implementation against fixed, documented inputs — never by
-   hand-transcribing or hand-deriving a cryptographic output. Where a value
+2. Compute every value with the reference named by the governing spec and the
+   vector file header. Existing golden files use Swift `BarnardCore`;
+   backend-independence profiles use an independent cryptographic
+   implementation. Never compute expected output with the implementation under
+   test. Where a value
    is already pinned in an existing Swift test (e.g.
    `packages/swift/barnard/Tests/BarnardCoreTests/`), copy it verbatim and
    comment which test it came from; where it is not yet pinned anywhere,

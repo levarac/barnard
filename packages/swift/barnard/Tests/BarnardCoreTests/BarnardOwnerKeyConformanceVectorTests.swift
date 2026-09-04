@@ -124,6 +124,78 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
     )
   }
 
+  func testECDSAProfilePositiveVector() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    let signature = BarnardCoreSigning.signRecoverable(
+      privateKey: try vectors.bytes("private_key_valid"),
+      messageHash32: try vectors.bytes("message_hash")
+    )
+    XCTAssertEqual(hex(signature.r), try vectors.string("expected_r"))
+    XCTAssertEqual(hex(signature.s), try vectors.string("expected_s"))
+    XCTAssertEqual(signature.v, try vectors.int("expected_v"))
+    XCTAssertEqual(
+      BarnardCoreSigning.recoverPublicKey(
+        recoveryId: signature.v,
+        r: signature.r,
+        s: signature.s,
+        messageHash32: try vectors.bytes("message_hash")
+      ),
+      try vectors.bytes("public_key_compressed")
+    )
+  }
+
+  func testECDSAProfileRejectsPrivateKeyBoundariesAndOffCurveKey() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    for key in ["private_key_zero", "private_key_n", "private_key_n_plus_one"] {
+      XCTAssertNil(
+        BarnardCoreSigning.signWalletAcknowledgement(
+          ownerPrivateKey: try vectors.bytes(key),
+          walletAddress: [UInt8](repeating: 0, count: 20),
+          walletSignature: [1]
+        ),
+        key
+      )
+    }
+    XCTAssertNil(
+      BarnardCoreSigning.buildSelfProofMessage(
+        eventIdHash: [UInt8](repeating: 0, count: 32),
+        eventSigningPublicKey: try vectors.bytes("off_curve_public_key"),
+        eninStart: 0,
+        eninEnd: 0,
+        ownerPublicKey: try vectors.bytes("public_key_compressed")
+      )
+    )
+  }
+
+  func testECDSAProfileRejectsMalformedCompactComponents() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    let hash = try vectors.bytes("message_hash")
+    let r = try vectors.bytes("expected_r")
+    let s = try vectors.bytes("expected_s")
+    for malformedR in ["malformed_r_short", "malformed_r_long"] {
+      XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+        recoveryId: try vectors.int("expected_v"), r: try vectors.bytes(malformedR),
+        s: s, messageHash32: hash), malformedR)
+    }
+    for malformedS in ["malformed_s_short", "malformed_s_long"] {
+      XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+        recoveryId: try vectors.int("expected_v"), r: r,
+        s: try vectors.bytes(malformedS), messageHash32: hash), malformedS)
+    }
+  }
+
+  func testECDSAProfileRejectsHighSAndOutOfRangeRecoveryId() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    let hash = try vectors.bytes("message_hash")
+    let r = try vectors.bytes("expected_r")
+    XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+      recoveryId: try vectors.int("high_s_recovery_v"), r: r,
+      s: try vectors.bytes("high_s"), messageHash32: hash))
+    XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+      recoveryId: try vectors.int("out_of_range_recovery_id"), r: r,
+      s: try vectors.bytes("expected_s"), messageHash32: hash))
+  }
+
   // MARK: - Vector file loading
 
   private struct VectorFile {
@@ -173,9 +245,9 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
     case directoryNotFound
   }
 
-  private func loadVectors() throws -> VectorFile {
+  private func loadVectors(named fileName: String = "owner-key-v1.txt") throws -> VectorFile {
     let vectorsDirectory = try findTestVectorsDirectory()
-    let fileURL = vectorsDirectory.appendingPathComponent("owner-key-v1.txt")
+    let fileURL = vectorsDirectory.appendingPathComponent(fileName)
     let contents = try String(contentsOf: fileURL, encoding: .utf8)
     return VectorFile(values: try parseVectorFile(contents))
   }
