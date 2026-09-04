@@ -647,6 +647,8 @@ public enum class BarnardAdoptionFallbackReason {
     WRONG_CENSUS_WINDOW,
     INCONSISTENT_ELIGIBILITY,
     DOMAIN_MISMATCH,
+    NO_AUTHORITATIVE_CENSUS,
+    INVALID_DOMAIN_POLICY,
 }
 
 public sealed class BarnardAdoptionDecisionResult {
@@ -676,8 +678,11 @@ public object BarnardAdoptionDecision {
         domainPolicy: BarnardCensusDomainPolicy,
         nowUnixSeconds: ULong,
     ): BarnardAdoptionDecisionResult {
-        if (candidates.isEmpty() || !domainPolicy.structurallyValid) {
-            return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.NO_CLEAR_MAJORITY)
+        if (candidates.isEmpty()) {
+            return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.NO_AUTHORITATIVE_CENSUS)
+        }
+        if (!domainPolicy.structurallyValid) {
+            return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.INVALID_DOMAIN_POLICY)
         }
         if (candidates.any { it.registryVerification != BarnardRegistryVerification.VERIFIED }) {
             return BarnardAdoptionDecisionResult.RequiresChooser(BarnardAdoptionFallbackReason.REGISTRY_UNVERIFIED)

@@ -289,6 +289,54 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     )
   }
 
+  /// An absent census (no verified candidates at all) is a non-answer, not
+  /// an evaluated non-majority - a host UI must be able to tell these apart.
+  func testAdoptionDecisionReturnsNoAuthoritativeCensusForEmptyCandidates() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let policy = try domainPolicy(vectors)
+
+    XCTAssertEqual(
+      BarnardAdoptionDecision.evaluate(
+        candidates: [],
+        domainPolicy: policy,
+        nowUnixSeconds: 1_550
+      ),
+      .requiresChooser(.noAuthoritativeCensus)
+    )
+  }
+
+  /// A structurally invalid domain policy is a host misconfiguration, not an
+  /// evaluated non-majority, even when candidates are present.
+  func testAdoptionDecisionReturnsInvalidDomainPolicyForStructurallyInvalidPolicy() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let validPolicy = try domainPolicy(vectors)
+    let invalidPolicy = BarnardCensusDomainPolicy(
+      censusDomainId: validPolicy.censusDomainId,
+      censusWindowSeconds: validPolicy.censusWindowSeconds,
+      authorityPolicyEpoch: validPolicy.authorityPolicyEpoch,
+      authorizedAuthorityKeyHash: validPolicy.authorizedAuthorityKeyHash,
+      minimumEligibleVoterCount: 1,
+      minimumQualifiedVoterCount: 10,
+      maximumCandidateAgeSeconds: validPolicy.maximumCandidateAgeSeconds
+    )
+    let present = try candidate(
+      vectors,
+      qualified: 4,
+      eligible: 7,
+      observedAt: 1_540,
+      credentialAuthorityKey: 1
+    )
+
+    XCTAssertEqual(
+      BarnardAdoptionDecision.evaluate(
+        candidates: [present],
+        domainPolicy: invalidPolicy,
+        nowUnixSeconds: 1_550
+      ),
+      .requiresChooser(.invalidDomainPolicy)
+    )
+  }
+
   func testRotationAndDomainAuthorityConflictsFailClosed() throws {
     let vectors = try AdoptionCensusVectors.load()
     let policy = try domainPolicy(vectors)

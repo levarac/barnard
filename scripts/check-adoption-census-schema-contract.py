@@ -157,6 +157,8 @@ def main() -> int:
     valid_cases = [
         decision("auto_adopt", identifier, None),
         decision("requires_chooser", None, "no_clear_majority"),
+        decision("requires_chooser", None, "no_authoritative_census"),
+        decision("requires_chooser", None, "invalid_domain_policy"),
         decision("domain_authority_inconsistency", None, None),
     ]
     invalid_cases = [

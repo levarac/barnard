@@ -337,6 +337,17 @@ Any registry-unverified, gated, stale, wrong-window, tie, no-majority,
 insufficient-evidence, or inconsistent-denominator case MUST show the chooser
 or confirmation fallback. A v2 `gated` credential MUST never auto-adopt.
 
+Before any of the checks above run, the SDK MUST distinguish two non-answers
+from an evaluated outcome. No verified candidate at all (`no_authoritative_census`)
+and a structurally invalid domain policy (`invalid_domain_policy`) are
+absence/configuration states — no authoritative census reached the SDK, or
+the host misconfigured the policy — not an evaluated non-majority. Only a
+completed evaluation that finds no unique qualified majority among present,
+policy-valid candidates is `no_clear_majority`. A host UI MUST be able to
+treat these differently: an evaluated `no_clear_majority` is a correct
+chooser outcome, while `no_authoritative_census` or `invalid_domain_policy`
+is a degraded fallback.
+
 A valid different authority key in the same configured
 domain/window/policy epoch is `domain_authority_inconsistency`; it MUST fail
 closed and MUST NOT form a separate majority group. Future multi-authority

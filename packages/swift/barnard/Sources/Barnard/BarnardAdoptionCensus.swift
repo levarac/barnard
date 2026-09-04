@@ -750,6 +750,8 @@ public enum BarnardAdoptionFallbackReason: Equatable {
   case wrongCensusWindow
   case inconsistentEligibility
   case domainMismatch
+  case noAuthoritativeCensus
+  case invalidDomainPolicy
 }
 
 public enum BarnardAdoptionDecisionResult: Equatable {
@@ -769,8 +771,11 @@ public enum BarnardAdoptionDecision {
     domainPolicy: BarnardCensusDomainPolicy,
     nowUnixSeconds: UInt64
   ) -> BarnardAdoptionDecisionResult {
-    guard !candidates.isEmpty, domainPolicy.isStructurallyValid else {
-      return .requiresChooser(.noClearMajority)
+    guard !candidates.isEmpty else {
+      return .requiresChooser(.noAuthoritativeCensus)
+    }
+    guard domainPolicy.isStructurallyValid else {
+      return .requiresChooser(.invalidDomainPolicy)
     }
     if candidates.contains(where: { $0.registryVerification != .verified }) {
       return .requiresChooser(.registryUnverified)

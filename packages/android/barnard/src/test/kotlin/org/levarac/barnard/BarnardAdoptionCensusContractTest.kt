@@ -309,6 +309,62 @@ class BarnardAdoptionCensusContractTest {
         )
     }
 
+    /**
+     * An absent census (no verified candidates at all) is a non-answer, not
+     * an evaluated non-majority - a host UI must be able to tell these apart.
+     */
+    @Test
+    fun adoptionDecisionReturnsNoAuthoritativeCensusForEmptyCandidates() {
+        val vectors = AdoptionCensusVectors.load()
+        val policy = domainPolicy(vectors)
+
+        val decision = BarnardAdoptionDecision.evaluate(
+            candidates = emptyList(),
+            domainPolicy = policy,
+            nowUnixSeconds = 1_550uL,
+        )
+        assertEquals(
+            BarnardAdoptionFallbackReason.NO_AUTHORITATIVE_CENSUS,
+            (decision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
+        )
+    }
+
+    /**
+     * A structurally invalid domain policy is a host misconfiguration, not an
+     * evaluated non-majority, even when candidates are present.
+     */
+    @Test
+    fun adoptionDecisionReturnsInvalidDomainPolicyForStructurallyInvalidPolicy() {
+        val vectors = AdoptionCensusVectors.load()
+        val validPolicy = domainPolicy(vectors)
+        val invalidPolicy = BarnardCensusDomainPolicy(
+            censusDomainId = validPolicy.censusDomainId,
+            censusWindowSeconds = validPolicy.censusWindowSeconds,
+            authorityPolicyEpoch = validPolicy.authorityPolicyEpoch,
+            authorizedAuthorityKeyHash = validPolicy.authorizedAuthorityKeyHash,
+            minimumEligibleVoterCount = 1u,
+            minimumQualifiedVoterCount = 10u,
+            maximumCandidateAgeSeconds = validPolicy.maximumCandidateAgeSeconds,
+        )
+        val present = candidate(
+            vectors,
+            qualified = 4u,
+            eligible = 7u,
+            observedAt = 1_540u,
+            credentialAuthorityKey = 1,
+        )
+
+        val decision = BarnardAdoptionDecision.evaluate(
+            candidates = listOf(present),
+            domainPolicy = invalidPolicy,
+            nowUnixSeconds = 1_550uL,
+        )
+        assertEquals(
+            BarnardAdoptionFallbackReason.INVALID_DOMAIN_POLICY,
+            (decision as BarnardAdoptionDecisionResult.RequiresChooser).reason,
+        )
+    }
+
     @Test
     fun rotationAndDomainAuthorityConflicts_failClosed() {
         val vectors = AdoptionCensusVectors.load()
