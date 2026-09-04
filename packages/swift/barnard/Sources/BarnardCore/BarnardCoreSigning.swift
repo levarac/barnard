@@ -62,7 +62,7 @@ public enum BarnardCoreSigning {
       )
     }
     let privateKeyBytes = privateKey.bytes
-#if canImport(CSecp256k1)
+#if BARNARD_LIBSECP256K1
     let publicKey = BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: privateKeyBytes)!
 #else
     let publicKey = pureSwiftCompressedPublicKey(privateKey: privateKeyBytes)!
@@ -91,7 +91,7 @@ public enum BarnardCoreSigning {
       )
     }
     let privateKeyBytes = privateKey.bytes
-#if canImport(CSecp256k1)
+#if BARNARD_LIBSECP256K1
     let publicKey = BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: privateKeyBytes)!
 #else
     let publicKey = pureSwiftCompressedPublicKey(privateKey: privateKeyBytes)!
@@ -102,7 +102,7 @@ public enum BarnardCoreSigning {
   public static func serializeUncompressedPublicKey(
     _ compressedPublicKey: [UInt8]
   ) -> [UInt8]? {
-#if canImport(CSecp256k1)
+#if BARNARD_LIBSECP256K1
     BarnardCoreLibsecp256k1Backend.expandedPublicKey(compressedPublicKey)
 #else
     pureSwiftExpandedPublicKey(compressedPublicKey)
@@ -141,7 +141,14 @@ public enum BarnardCoreSigning {
   ) -> BarnardCoreRecoverableSignature {
     precondition(privateKey.count == 32, "privateKey must be 32 bytes")
     precondition(messageHash32.count == 32, "messageHash must be 32 bytes")
-#if canImport(CSecp256k1)
+    // Profile clause 1: 1 <= d < N, enforced before dispatch so both backends
+    // reject the same keys (the pure-Swift path would otherwise reduce N+1 to 1).
+    let privateScalar = BarnardCoreSecp256k1.UInt256(bytes: privateKey)
+    precondition(
+      !privateScalar.isZero && privateScalar < BarnardCoreSecp256k1.curveOrder,
+      "privateKey must be in [1, N)"
+    )
+#if BARNARD_LIBSECP256K1
     guard let signature = BarnardCoreLibsecp256k1Backend.signRecoverable(privateKey: privateKey, hash32: messageHash32) else {
       preconditionFailure("invalid private key or unsupported recovery id")
     }
@@ -154,7 +161,7 @@ public enum BarnardCoreSigning {
   public static func recoverPublicKey(
     recoveryId: Int, r: [UInt8], s: [UInt8], messageHash32: [UInt8]
   ) -> [UInt8]? {
-#if canImport(CSecp256k1)
+#if BARNARD_LIBSECP256K1
     BarnardCoreLibsecp256k1Backend.recoverPublicKey(
       signature: BarnardCoreRecoverableSignature(r: r, s: s, v: recoveryId), hash32: messageHash32
     )
@@ -270,7 +277,7 @@ public enum BarnardCoreSigning {
   static func pureSwiftRecoverPublicKey(
     recoveryId: Int, r: [UInt8], s: [UInt8], messageHash32: [UInt8]
   ) -> [UInt8]? {
-    guard recoveryId / 2 == 0, r.count == 32, s.count == 32, messageHash32.count == 32 else { return nil }
+    guard recoveryId == 0 || recoveryId == 1, r.count == 32, s.count == 32, messageHash32.count == 32 else { return nil }
     let rScalar = BarnardCoreSecp256k1.UInt256(bytes: r)
     let sScalar = BarnardCoreSecp256k1.UInt256(bytes: s)
     // Profile clauses 6-8: r, s in [1, N), low-S only — same rejections as the

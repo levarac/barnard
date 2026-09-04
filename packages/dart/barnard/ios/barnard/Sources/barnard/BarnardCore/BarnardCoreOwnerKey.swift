@@ -666,7 +666,7 @@ public extension BarnardCoreSigning {
     guard privateKey.count == 32 else {
       return false
     }
-#if canImport(CSecp256k1)
+#if BARNARD_LIBSECP256K1
     return BarnardCoreLibsecp256k1Backend.validatePrivateKey(privateKey)
 #else
     let scalar = BarnardCoreSecp256k1.UInt256(bytes: privateKey)
@@ -678,7 +678,7 @@ public extension BarnardCoreSigning {
     guard isValidPrivateKey(privateKey) else {
       return nil
     }
-#if canImport(CSecp256k1)
+#if BARNARD_LIBSECP256K1
     return BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: privateKey)
 #else
     return BarnardCoreSecp256k1.compress(BarnardCoreSecp256k1.multiply(

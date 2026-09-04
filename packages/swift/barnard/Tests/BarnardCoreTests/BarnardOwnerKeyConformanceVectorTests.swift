@@ -205,6 +205,11 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
     XCTAssertNotNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
       recoveryId: try vectors.int("expected_v"), r: r,
       s: try vectors.bytes("expected_s"), messageHash32: hash))
+    // A negative recovery id must be rejected by both paths (only 0 and 1 are valid).
+    XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
+      recoveryId: -1, r: r, s: try vectors.bytes("expected_s"), messageHash32: hash))
+    XCTAssertNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: -1, r: r, s: try vectors.bytes("expected_s"), messageHash32: hash))
   }
 
   /// Profile clauses 2, 4, 6, 7, and 8 require byte-identical compressed keys and

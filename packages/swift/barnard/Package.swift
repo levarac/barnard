@@ -38,7 +38,10 @@ let package = Package(
         ),
         .target(
             name: "BarnardCore",
-            dependencies: ["CSecp256k1"]
+            dependencies: ["CSecp256k1"],
+            // Explicit backend selection: mirrored builds without this define
+            // (Flutter/CocoaPods) compile the pure-Swift path.
+            swiftSettings: [.define("BARNARD_LIBSECP256K1")]
         ),
         .target(
             name: "BarnardCoreC",
