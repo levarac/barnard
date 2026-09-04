@@ -30,6 +30,18 @@ at Xcode first (this needs sudo, so a human has to run it):
 sudo xcode-select -s /Applications/Xcode.app
 ```
 
+Two traps if you skip that step and try to fall back to SwiftPM on the host:
+
+- `swift test` fails with `no such module 'XCTest'` for every target. The
+  Command Line Tools do not ship XCTest; only a full Xcode does. So no Swift
+  test in this repository is runnable without the step above.
+- `swift build --target Barnard` fails with `no such module 'UIKit'`. The
+  `Barnard` target is iOS-only and builds only against an iOS destination, so
+  a host build is not a substitute for compiling it.
+
+`swift build --target BarnardCore` is the exception — it is stdlib-only and
+does build on the host, which is why it is the purity check below.
+
 ```
 cd packages/swift/barnard
 UDID=$(xcrun simctl list devices available iOS -j | \
@@ -54,7 +66,11 @@ grep -RnwE 'Foundation|FoundationEssentials|CryptoKit|CoreBluetooth|Security|UIK
   Sources/BarnardCore Sources/BarnardCoreC && echo "FORBIDDEN DEPENDENCY" && exit 1
 ```
 
-### Android — packages/android/barnard (requires JDK 17)
+### Android — packages/android/barnard (requires JDK 17 and an Android SDK)
+
+Gradle needs `JAVA_HOME` and `ANDROID_HOME` set, and an untracked
+`local.properties` pointing at the SDK (`sdk.dir=...`); `local.properties` is
+gitignored and must stay that way.
 
 ```
 cd packages/android/barnard
