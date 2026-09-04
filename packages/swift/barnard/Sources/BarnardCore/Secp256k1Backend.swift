@@ -1,5 +1,8 @@
 // Use of this source code is governed by a BSD-style license.
 
+// Compiled only when the manifest links the vendored libsecp256k1 target
+// (Apple platforms); Linux hosts build the pure-Swift backend instead.
+#if BARNARD_LIBSECP256K1
 import CSecp256k1
 
 /// The deliberately small cryptographic boundary required by the Barnard ECDSA profile.
@@ -106,3 +109,4 @@ enum BarnardCoreLibsecp256k1Backend: BarnardCoreSecp256k1Backend {
     }
   }
 }
+#endif
