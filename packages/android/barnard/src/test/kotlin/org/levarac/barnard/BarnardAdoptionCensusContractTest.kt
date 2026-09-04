@@ -505,6 +505,32 @@ class BarnardAdoptionCensusContractTest {
             ),
         )
 
+        // A same-window replacement would let two credentials claim one
+        // census window; it MUST fail closed.
+        assertEquals(
+            BarnardCredentialRotationResult.CREDENTIAL_ROTATION_INCONSISTENCY,
+            BarnardCredentialRotation.validate(
+                activeCredentialId = active.credentialId,
+                replacementCredentialId = rotatedId,
+                replacesCredentialId = active.credentialId,
+                activeWindowIndex = active.windowIndex,
+                effectiveWindowIndex = active.windowIndex,
+            ),
+        )
+
+        // A backdated rotation could reactivate a superseded credential; it
+        // MUST fail closed.
+        assertEquals(
+            BarnardCredentialRotationResult.CREDENTIAL_ROTATION_INCONSISTENCY,
+            BarnardCredentialRotation.validate(
+                activeCredentialId = active.credentialId,
+                replacementCredentialId = rotatedId,
+                replacesCredentialId = active.credentialId,
+                activeWindowIndex = active.windowIndex,
+                effectiveWindowIndex = active.windowIndex - 1uL,
+            ),
+        )
+
         val otherAuthority = candidate(
             vectors,
             qualified = 4u,

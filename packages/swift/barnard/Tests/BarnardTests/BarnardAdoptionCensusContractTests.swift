@@ -471,6 +471,32 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       .validBoundaryReplacement
     )
 
+    // A same-window replacement would let two credentials claim one census
+    // window; it MUST fail closed.
+    XCTAssertEqual(
+      BarnardCredentialRotation.validate(
+        activeCredentialId: active.credentialId,
+        replacementCredentialId: rotatedId,
+        replacesCredentialId: active.credentialId,
+        activeWindowIndex: active.windowIndex,
+        effectiveWindowIndex: active.windowIndex
+      ),
+      .credentialRotationInconsistency
+    )
+
+    // A backdated rotation could reactivate a superseded credential; it MUST
+    // fail closed.
+    XCTAssertEqual(
+      BarnardCredentialRotation.validate(
+        activeCredentialId: active.credentialId,
+        replacementCredentialId: rotatedId,
+        replacesCredentialId: active.credentialId,
+        activeWindowIndex: active.windowIndex,
+        effectiveWindowIndex: active.windowIndex - 1
+      ),
+      .credentialRotationInconsistency
+    )
+
     let otherAuthority = try candidate(
       vectors,
       qualified: 4,
