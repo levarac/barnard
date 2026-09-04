@@ -32,8 +32,8 @@ class BarnardRpidProofTest {
         val message = BarnardSigning.buildRpidProofMessage(idHash, proof.enin, proof.rpi, null)
         val recovered = BarnardSigning.recoverPublicKey(
             proof.sig.v,
-            java.math.BigInteger(1, proof.sig.r),
-            java.math.BigInteger(1, proof.sig.s),
+            proof.sig.r,
+            proof.sig.s,
             MessageDigest.getInstance("SHA-256").digest(message),
         )
         assertNotNull(recovered)
@@ -67,8 +67,8 @@ class BarnardRpidProofTest {
         val messageForB = BarnardSigning.buildRpidProofMessage(proofB.eventIdHash, proofA.enin, proofA.rpi, null)
         val recoveredWrong = BarnardSigning.recoverPublicKey(
             proofA.sig.v,
-            BigInteger(1, proofA.sig.r),
-            BigInteger(1, proofA.sig.s),
+            proofA.sig.r,
+            proofA.sig.s,
             MessageDigest.getInstance("SHA-256").digest(messageForB),
         )
         assertFalse(proofA.signingPublicKey.contentEquals(recoveredWrong ?: ByteArray(0)))
@@ -85,8 +85,8 @@ class BarnardRpidProofTest {
         val messageForEnin6 = BarnardSigning.buildRpidProofMessage(idHash, 6L, proofEnin5.rpi, null)
         val recoveredWrong = BarnardSigning.recoverPublicKey(
             proofEnin5.sig.v,
-            BigInteger(1, proofEnin5.sig.r),
-            BigInteger(1, proofEnin5.sig.s),
+            proofEnin5.sig.r,
+            proofEnin5.sig.s,
             MessageDigest.getInstance("SHA-256").digest(messageForEnin6),
         )
         assertFalse(proofEnin5.signingPublicKey.contentEquals(recoveredWrong ?: ByteArray(0)))
@@ -118,8 +118,8 @@ class BarnardRpidProofTest {
         val message = BarnardSigning.buildKeyBindingMessage(eventCodeHash, displayId)
         val recovered = BarnardSigning.recoverPublicKey(
             sig.v,
-            BigInteger(1, sig.r),
-            BigInteger(1, sig.s),
+            sig.r,
+            sig.s,
             MessageDigest.getInstance("SHA-256").digest(message),
         )
 
