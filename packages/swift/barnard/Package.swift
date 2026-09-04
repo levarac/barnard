@@ -18,6 +18,18 @@ let package = Package(
     dependencies: [],
     targets: [
         .target(
+            name: "CSecp256k1",
+            exclude: [
+                "vendor/src/asm",
+                "vendor/src/bench.c", "vendor/src/bench_ecmult.c",
+                "vendor/src/bench_internal.c", "vendor/src/ctime_tests.c",
+                "vendor/src/precompute_ecmult.c", "vendor/src/precompute_ecmult_gen.c",
+                "vendor/src/secp256k1.c", "vendor/src/tests.c",
+                "vendor/src/tests_exhaustive.c"
+            ],
+            cSettings: [.define("ENABLE_MODULE_RECOVERY")]
+        ),
+        .target(
             name: "Barnard",
             dependencies: ["BarnardCore"],
             resources: [
@@ -26,7 +38,7 @@ let package = Package(
         ),
         .target(
             name: "BarnardCore",
-            dependencies: []
+            dependencies: ["CSecp256k1"]
         ),
         .target(
             name: "BarnardCoreC",

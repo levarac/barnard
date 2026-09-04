@@ -196,6 +196,41 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
       s: try vectors.bytes("expected_s"), messageHash32: hash))
   }
 
+  /// Profile clauses 2, 4, 6, 7, and 8 require byte-identical compressed keys and
+  /// RFC 6979/no-extra-entropy, low-S compact recoverable signatures.
+  func testLibsecp256k1AndPureSwiftBackendsAreByteIdentical() throws {
+    let vectors = try loadVectors(named: "secp256k1-ecdsa-v1.txt")
+    var pairs: [([UInt8], [UInt8])] = [(
+      try vectors.bytes("private_key_valid"), try vectors.bytes("message_hash")
+    )]
+    let ownerVectors = try loadVectors()
+    pairs.append((
+      try ownerVectors.bytes("selfproof_owner_private_key"),
+      BarnardCorePrimitives.sha256(try ownerVectors.bytes("selfproof_expected_message"))
+    ))
+    pairs.append((
+      try ownerVectors.bytes("walletack_owner_private_key"),
+      BarnardCorePrimitives.sha256(try ownerVectors.bytes("walletack_expected_message"))
+    ))
+    var state = [UInt8](repeating: 0x42, count: 32)
+    for index in 0..<200 {
+      state = BarnardCorePrimitives.sha256(state + [UInt8(index & 0xff)])
+      var key = BarnardCorePrimitives.sha256([0x6b] + state)
+      while !BarnardCoreLibsecp256k1Backend.validatePrivateKey(key) {
+        key = BarnardCorePrimitives.sha256(key)
+      }
+      pairs.append((key, BarnardCorePrimitives.sha256([0x68] + state)))
+    }
+    for (key, hash) in pairs {
+      let pure = BarnardCoreSigning.pureSwiftSignRecoverable(privateKey: key, messageHash32: hash)
+      let native = BarnardCoreSigning.signRecoverable(privateKey: key, messageHash32: hash)
+      XCTAssertEqual(native.r, pure.r); XCTAssertEqual(native.s, pure.s); XCTAssertEqual(native.v, pure.v)
+      let purePublicKey = BarnardCoreSecp256k1.compress(BarnardCoreSecp256k1.multiply(
+        BarnardCoreSecp256k1.UInt256(bytes: key), BarnardCoreSecp256k1.generator))
+      XCTAssertEqual(BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: key), purePublicKey)
+    }
+  }
+
   // MARK: - Vector file loading
 
   private struct VectorFile {

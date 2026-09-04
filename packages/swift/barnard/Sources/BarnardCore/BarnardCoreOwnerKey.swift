@@ -666,19 +666,14 @@ public extension BarnardCoreSigning {
     guard privateKey.count == 32 else {
       return false
     }
-    let scalar = BarnardCoreSecp256k1.UInt256(bytes: privateKey)
-    return !scalar.isZero && scalar < BarnardCoreSecp256k1.curveOrder
+    return BarnardCoreLibsecp256k1Backend.validatePrivateKey(privateKey)
   }
 
   private static func publicKey(forPrivateKey privateKey: [UInt8]) -> [UInt8]? {
     guard isValidPrivateKey(privateKey) else {
       return nil
     }
-    let point = BarnardCoreSecp256k1.multiply(
-      BarnardCoreSecp256k1.UInt256(bytes: privateKey),
-      BarnardCoreSecp256k1.generator
-    )
-    return BarnardCoreSecp256k1.compress(point)
+    return BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: privateKey)
   }
 
   private static func isValidCompressedPublicKey(_ publicKey: [UInt8]) -> Bool {
