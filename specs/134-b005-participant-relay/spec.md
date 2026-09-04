@@ -1,6 +1,6 @@
 # B005 Participant Relay with Density Control
 
-**Status:** Draft
+**Status:** Accepted (maintainer decision 2026-09-04, levarac/barnard#168). Implementation tracked in #128; signed-envelope bytes depend on #122.
 
 ## Problem statement
 
@@ -295,26 +295,26 @@ It MUST NOT re-sign, edit, extend, manufacture, or count the envelope.
 Unit, simulator, and mock-Transport tests do not replace the two real multi-
 device scenarios.
 
-## Open questions for the maintainer
+## Decisions (maintainer, 2026-09-04)
 
-1. **Should B005 v2 use the four-byte delivery container above or an additive
-   v1 TLV?** Tentative choice: v2 container, because authenticated trust semantics
-   are incompatible with v1 and nesting preserves the signed envelope exactly.
-2. **Is a 12-ENIN maximum relay lifetime operationally acceptable?** Tentative
-   choice: yes; hourly refresh bounds replay while avoiding per-window signing.
-   Issue #122 must decide whether direct authority signing or delegated liveness
-   signing performs the refresh.
-3. **May an unjoined but fully verified receiver relay?** Tentative choice: yes,
-   because early and edge coverage is the feature's purpose; joined-only remains
-   an optional host privacy policy.
-4. **Should the default one-event tie-break prefer lowest hop or require explicit
-   host selection when no event is joined?** Tentative choice: lowest hop plus a
-   five-minute pin, because it is deterministic and avoids a new UI dependency,
-   while remaining reversible before implementation.
-5. **Are `k = 3`, `T = 30 seconds`, two hops, and a 32-handle density cap the
-   initial cross-platform defaults?** Tentative choice: yes; they are small,
-   bounded starting values that the required real-device tests can validate
-   before any protocol constant is made permanent.
+The questions raised in the draft were settled as follows (levarac/barnard#168).
+
+1. **Delivery container**: B005 v2 uses the four-byte delivery container above, not an
+   additive v1 TLV. Authenticated trust semantics are incompatible with v1, and nesting
+   preserves the signed envelope exactly.
+2. **Maximum relay lifetime**: 12 ENIN. Hourly refresh bounds replay while avoiding
+   per-window signing. Issue #122 decides whether direct authority signing or delegated
+   liveness signing performs the refresh.
+3. **Unjoined relays**: an unjoined but fully verified receiver MAY relay. Early and edge
+   coverage is the feature's purpose; joined-only remains an optional host privacy policy.
+4. **One-event tie-break**: lowest hop plus a five-minute pin. It is deterministic and adds
+   no UI dependency. Note for consumers: in beid v1.0 the join surface is always one
+   explicit tap (a single candidate is preselected, several are listed), so relayed
+   candidates simply appear in that list; the automatic choice takes effect together with
+   the prevalence-based selection planned for v2.0 (levarac/dispatch#32).
+5. **Defaults**: `k = 3`, `T = 30 seconds`, two hops, and a 32-handle density cap are the
+   initial cross-platform defaults. They are bounded starting values that the required
+   real-device tests validate before any constant is made permanent.
 
 ## Compatibility and implementation boundary
 
