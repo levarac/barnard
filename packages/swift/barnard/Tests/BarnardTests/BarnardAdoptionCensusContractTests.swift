@@ -119,7 +119,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       validFromUnixSeconds: verifiedCredential.unsignedBody.validFromUnixSeconds,
       validUntilUnixSeconds: verifiedCredential.unsignedBody.validUntilUnixSeconds,
       admissionMode: verifiedCredential.unsignedBody.admissionMode,
-      censusDomainPolicy: domainPolicy(vectors)
+      censusDomainPolicy: try domainPolicy(vectors)
     )
     XCTAssertEqual(
       registryDefinition.verify(
@@ -138,7 +138,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       validFromUnixSeconds: verifiedCredential.unsignedBody.validFromUnixSeconds,
       validUntilUnixSeconds: verifiedCredential.unsignedBody.validUntilUnixSeconds,
       admissionMode: verifiedCredential.unsignedBody.admissionMode,
-      censusDomainPolicy: domainPolicy(vectors),
+      censusDomainPolicy: try domainPolicy(vectors),
       replacesCredentialId: verifiedCredential.credentialId,
       effectiveWindowIndex: 6
     )
@@ -171,7 +171,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
 
   func testRegistryGateAndCrossEventMajorityChooseOnlyAQualifiedOpenWinner() throws {
     let vectors = try AdoptionCensusVectors.load()
-    let policy = domainPolicy(vectors)
+    let policy = try domainPolicy(vectors)
     let winner = try candidate(
       vectors,
       qualified: 4,
@@ -291,7 +291,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
 
   func testRotationAndDomainAuthorityConflictsFailClosed() throws {
     let vectors = try AdoptionCensusVectors.load()
-    let policy = domainPolicy(vectors)
+    let policy = try domainPolicy(vectors)
     let active = try candidate(
       vectors,
       qualified: 4,
@@ -343,7 +343,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
 
   func testVerifiedCandidateFactoryPreservesSignedCountsAndRejectsUnboundBytes() throws {
     let vectors = try AdoptionCensusVectors.load()
-    let policy = domainPolicy(vectors)
+    let policy = try domainPolicy(vectors)
     let signedZero = try candidate(
       vectors,
       qualified: 0,
@@ -558,16 +558,16 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
   private func domainPolicy(
     _ vectors: AdoptionCensusVectors,
     authorityPublicKey: Data? = nil
-  ) -> BarnardCensusDomainPolicy {
+  ) throws -> BarnardCensusDomainPolicy {
     BarnardCensusDomainPolicy(
-      censusDomainId: try! vectors.bytes("census_domain_id"),
-      censusWindowSeconds: UInt32(try! vectors.int("census_window_seconds")),
-      authorityPolicyEpoch: UInt32(try! vectors.int("census_authority_policy_epoch")),
+      censusDomainId: try vectors.bytes("census_domain_id"),
+      censusWindowSeconds: UInt32(try vectors.int("census_window_seconds")),
+      authorityPolicyEpoch: UInt32(try vectors.int("census_authority_policy_epoch")),
       authorizedAuthorityKeyHash: BarnardCrypto.sha256(
-        authorityPublicKey ?? (try! vectors.bytes("census_authority_public_key"))
+        authorityPublicKey ?? (try vectors.bytes("census_authority_public_key"))
       ),
-      minimumEligibleVoterCount: UInt16(try! vectors.int("minimum_eligible_voters")),
-      minimumQualifiedVoterCount: UInt16(try! vectors.int("minimum_qualified_voters"))
+      minimumEligibleVoterCount: UInt16(try vectors.int("minimum_eligible_voters")),
+      minimumQualifiedVoterCount: UInt16(try vectors.int("minimum_qualified_voters"))
     )
   }
 
@@ -613,8 +613,8 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     censusAuthorityKey: Int = 2,
     windowIndex: UInt64? = nil
   ) throws -> BoundCandidateInput {
-    let credentialAuthority = authorityKey(vectors, index: credentialAuthorityKey)
-    let censusAuthority = authorityKey(vectors, index: censusAuthorityKey)
+    let credentialAuthority = try authorityKey(vectors, index: credentialAuthorityKey)
+    let censusAuthority = try authorityKey(vectors, index: censusAuthorityKey)
     let displayName = try vectors.string("display_name")
     let unsignedCredential = try BarnardAdoptionCredential.UnsignedBody(
       admissionMode: admissionMode,
@@ -659,7 +659,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       validFromUnixSeconds: credential.unsignedBody.validFromUnixSeconds,
       validUntilUnixSeconds: credential.unsignedBody.validUntilUnixSeconds,
       admissionMode: credential.unsignedBody.admissionMode,
-      censusDomainPolicy: domainPolicy(vectors, authorityPublicKey: censusAuthority.publicKey)
+      censusDomainPolicy: try domainPolicy(vectors, authorityPublicKey: censusAuthority.publicKey)
     )
     return BoundCandidateInput(b005Bytes: b005Bytes, registryDefinition: registryDefinition)
   }
@@ -667,17 +667,17 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
   private func authorityKey(
     _ vectors: AdoptionCensusVectors,
     index: Int
-  ) -> (privateKey: Data, publicKey: Data) {
+  ) throws -> (privateKey: Data, publicKey: Data) {
     switch index {
     case 1:
       return (
-        try! vectors.bytes("credential_authority_test_private_key"),
-        try! vectors.bytes("credential_authority_public_key")
+        try vectors.bytes("credential_authority_test_private_key"),
+        try vectors.bytes("credential_authority_public_key")
       )
     case 2:
       return (
-        try! vectors.bytes("census_authority_test_private_key"),
-        try! vectors.bytes("census_authority_public_key")
+        try vectors.bytes("census_authority_test_private_key"),
+        try vectors.bytes("census_authority_public_key")
       )
     default:
       fatalError("unsupported deterministic authority test key")
