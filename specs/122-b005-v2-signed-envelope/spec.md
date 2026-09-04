@@ -212,6 +212,19 @@ Steps 1–7 require no network and produce the `authenticated` tier. Step 8 is t
      values are CBOR unsigned integers up to 2⁵³ and MUST be decoded as 64-bit.
    - Verify the COSE signature over `Sig_structure = ["Signature1", protected, h'', payload]`.
 
+   **Why one signature is sufficient, and why a lifted one cannot be reattached.** The signed range
+   `tbs` runs from offset 0 to the start of the signature, so it covers — verbatim, not by digest —
+   the complete `eventId` preimage (`registrar`, `anchorOperator`, `nonce` and every authority key),
+   the entire certificate byte range, `validFromEnin`, `validThroughEnin`, `relayExpiresAtEnin`,
+   `eninSeconds`, `joinMode`, `eventCodeHash` and the display name. A separate liveness signature
+   binding `domain || eventId || H(core) || H(cert) || issuedEnin` would therefore be strictly
+   weaker than what is already signed here: this construction commits to the preimage that
+   *determines* `eventId` rather than to `eventId` alone, and to the certificate and core bytes
+   themselves rather than to digests of them. Consequently a signature cannot be lifted from one
+   envelope and reattached to another: changing any covered byte — the certificate, the event
+   identity, the name, or any window field — changes `sigDigest`, and recovery then yields a key
+   that is neither a member of `authorityKeys` nor the certificate's `delegatePublicKey`.
+
    **Ordering.** A receiver MUST deduplicate by `SHA256(signedEnvelope)` before doing any
    cryptography, and within a single envelope MUST run every cheap check — structure, display name,
    key-set digest, `eventId` recomputation and its equality with `cert.eventId`, `roles`, both ENIN
@@ -406,11 +419,12 @@ low-S on both platforms and vectors the output.
 ## Testable scenarios
 
 1. **Positive.** Both vectors verify on Swift and Kotlin, byte-identically, in both modes.
-2. **Structural rejection.** Every bound in steps 1–3: wrong `formatVersion`, length not ending at
-   the container boundary, `n` out of range, non-ascending or duplicate keys, `threshold != 1`,
-   `maxRelayHops != 2`, `joinMode` outside `{0,1}`, `eninSeconds == 0`, `signerIndex >= n`, `L`
-   out of range, non-NFC name, forbidden control character, and arithmetic that does not land on the
-   envelope boundary.
+2. **Structural rejection.** Every bound in steps 1–2: wrong `formatVersion`, length not ending at
+   the container boundary, `relayHopCount > 2`, `n` out of range, non-ascending or duplicate
+   authority keys, an authority key that is not a valid compressed point, `maxRelayHops != 2`,
+   `joinMode` outside `{0,1}`, `eninSeconds == 0`, `L` out of range, a `certLength` that overruns
+   the envelope, non-NFC name, forbidden control character, and arithmetic that does not land
+   exactly on the envelope boundary.
 3. **Cryptographic rejection.** Single-byte mutation of each signed field and of each signature; a
    high-S counterpart of a valid signature; a certificate whose `eventId` does not match the
    recomputed one; a certificate with `roles == 0` or an unassigned role bit; a certificate outside
@@ -450,12 +464,13 @@ text** rather than in this specification; those are noted as such and corrected 
    *What this does not establish*.
 3. **Certificate size.** #122 estimated ~105 bytes. The published `DelegationCertV1` is **222
    bytes** measured. **Folded in** throughout the byte budget.
-4. **A liveness signature must bind more than the ENIN.** Correct: signing a bare window number
-   lets a fresh signature be moved onto unrelated content. **Deferred with Proposal B**, which this
-   version does not implement. Recorded as binding for when it lands: it MUST cover a domain tag,
-   `eventId`, a digest of the signed core, a digest of the certificate, and `issuedEnin`. Note the
-   present envelope signature already spans the entire `tbs`, including the certificate, so this
-   version has no bare-window signature to weaken.
+4. **A liveness signature must bind more than the ENIN.** Correct as a criticism of signing a bare
+   window number. **Already satisfied by construction**, so nothing is deferred on this point: this
+   version has no separate liveness signature, and its single envelope signature covers a strict
+   superset of the proposed binding — the `eventId` preimage rather than `eventId`, and the
+   certificate and core bytes themselves rather than digests of them. See *Why one signature is
+   sufficient* in the verification section. Should Proposal B later add a per-window signature, it
+   MUST NOT weaken this range.
 5. **"The serving device is organizer-designated" is not provable.** Correct, and sharpened by
    spec 134: any participant may re-serve the bytes, so the serving peer is frequently not the
    signer. **Folded in** as an explicit bullet in *What this does not establish*.
