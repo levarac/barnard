@@ -3,6 +3,34 @@
 
 import PackageDescription
 
+// libsecp256k1 backend (issue #159). The vendored C target crashes the Linux
+// SwiftPM build planner (swift-build Signal 11 during pre-planning, seen on the
+// Linux-native/Android cross-compile lanes), so on Linux hosts BarnardCore is
+// built without it and selects the pure-Swift backend; the dual-run test keeps
+// both backends byte-identical.
+#if os(Linux)
+let libsecp256k1Targets: [Target] = []
+let libsecp256k1Dependencies: [Target.Dependency] = []
+let libsecp256k1SwiftSettings: [SwiftSetting] = []
+#else
+let libsecp256k1Targets: [Target] = [
+        .target(
+            name: "CSecp256k1",
+            exclude: [
+                "vendor/src/asm",
+                "vendor/src/bench.c", "vendor/src/bench_ecmult.c",
+                "vendor/src/bench_internal.c", "vendor/src/ctime_tests.c",
+                "vendor/src/precompute_ecmult.c", "vendor/src/precompute_ecmult_gen.c",
+                "vendor/src/secp256k1.c", "vendor/src/tests.c",
+                "vendor/src/tests_exhaustive.c"
+            ],
+            cSettings: [.define("ENABLE_MODULE_RECOVERY")]
+        )
+]
+let libsecp256k1Dependencies: [Target.Dependency] = ["CSecp256k1"]
+let libsecp256k1SwiftSettings: [SwiftSetting] = [.define("BARNARD_LIBSECP256K1")]
+#endif
+
 let package = Package(
     name: "Barnard",
     platforms: [
@@ -16,7 +44,7 @@ let package = Package(
         .library(name: "BarnardCoreC", type: .dynamic, targets: ["BarnardCoreC"])
     ],
     dependencies: [],
-    targets: [
+    targets: libsecp256k1Targets + [
         .target(
             name: "Barnard",
             dependencies: ["BarnardCore"],
@@ -26,7 +54,10 @@ let package = Package(
         ),
         .target(
             name: "BarnardCore",
-            dependencies: []
+            dependencies: libsecp256k1Dependencies,
+            // Explicit backend selection: mirrored builds without this define
+            // (Flutter/CocoaPods) compile the pure-Swift path.
+            swiftSettings: libsecp256k1SwiftSettings
         ),
         .target(
             name: "BarnardCoreC",
