@@ -40,18 +40,24 @@ public data class BarnardOwnerKeyPair(
  * TEK, but the private signing key it derives never leaves this type —
  * only the public key and signatures do.
  */
-public class BarnardIdentity(private val appContext: Context) {
+public class BarnardIdentity internal constructor(
+    private val appContext: Context,
+    private val deriveSigningKeyPair: (ByteArray, String) -> BarnardSigning.SigningKeyPair,
+) {
+    public constructor(appContext: Context) : this(appContext, BarnardSigning::deriveSigningKeyPair)
+
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences("barnard", Context.MODE_PRIVATE)
+    private val signingKeyCache = BarnardSigningKeyCache()
 
     public fun signingPublicKey(eventCode: String): String {
-        val keyPair = BarnardSigning.deriveSigningKeyPair(getOrCreateDeviceSecret(), eventCode)
+        val keyPair = signingKeyPair(eventCode)
         return keyPair.publicKeyCompressed.toHex()
     }
 
     /** Signs `SHA256(bytes)` with the per-event signing key derived from [eventCode]. */
     public fun sign(eventCode: String, bytes: ByteArray): BarnardRecoverableSignature {
-        val keyPair = BarnardSigning.deriveSigningKeyPair(getOrCreateDeviceSecret(), eventCode)
+        val keyPair = signingKeyPair(eventCode)
         val messageHash = MessageDigest.getInstance("SHA-256").digest(bytes)
         val sig = BarnardSigning.signRecoverable(keyPair.privateKey, messageHash)
         return BarnardRecoverableSignature(r = sig.r.toHex(), s = sig.s.toHex(), v = sig.v)
@@ -208,6 +214,9 @@ public class BarnardIdentity(private val appContext: Context) {
     // signing identity and the sensing client are rooted in the same
     // DeviceSecret, but this type never exposes it (unlike
     // BarnardEngine.exportCurrentTek, which is the TEK, not the raw secret).
+
+    private fun signingKeyPair(eventCode: String): BarnardSigning.SigningKeyPair =
+        signingKeyCache.keyPair(getOrCreateDeviceSecret(), eventCode, deriveSigningKeyPair)
 
     private fun getOrCreateDeviceSecret(): ByteArray {
         val key = "rpidSeed"
