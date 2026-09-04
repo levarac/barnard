@@ -137,6 +137,26 @@ A receiver MUST, in this order:
 If clock or ENIN configuration cannot establish step 5, the device MUST NOT
 relay or show the value as verified.
 
+*Erratum (2026-09-05), display only:* step 6 is relaxed for **candidate display**
+and unchanged for **relay**. A receiver that has completed steps 1, 2 and 5 but
+not step 3 — because the registry is unreachable — MAY surface the event as a
+discovery candidate in a distinct `RADIO_SELF_VERIFIED` state, meaning the
+signature verifies and `eventId` is self-consistent with the key set the envelope
+carries, while registration is **not** confirmed. That state MUST NOT be
+presented to a user as verified or registered.
+
+Relay, joining, per-event key generation and observation recording continue to
+require step 3 against the pinned block. Testable scenario 2 is unaffected: an
+unavailable definition still yields no *verified* display and no relay lease.
+
+The rationale is that radio alone cannot prove registration — an attacker can
+mint a self-consistent unregistered event freely — so offline verification earns
+an earlier candidate display, not an earlier trust decision. What it does buy is
+that impersonating an existing event, or pairing a genuine event-code hash with a
+misleading display name, become infeasible for a third party at first sight. The
+byte layout that makes this possible is fixed by
+[`specification 122`](../122-b005-v2-signed-envelope/spec.md).
+
 ## Relay eligibility and the one-event cap
 
 A device is eligible after all checks pass, Peripheral operation is available,
