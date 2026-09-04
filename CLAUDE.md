@@ -72,6 +72,13 @@ Gradle needs `JAVA_HOME` and `ANDROID_HOME` set, and an untracked
 `local.properties` pointing at the SDK (`sdk.dir=...`); `local.properties` is
 gitignored and must stay that way.
 
+Set `JAVA_HOME` explicitly rather than relying on a default — a stock macOS has
+no system JDK, and `/usr/bin/java` is a stub that only prints "Unable to locate
+a Java Runtime". On one machine set up for this repo the working values were
+`JAVA_HOME=/opt/homebrew/opt/openjdk@17` (Homebrew `openjdk@17`) and
+`ANDROID_HOME=/opt/homebrew/share/android-commandlinetools` (Homebrew cask
+`android-commandlinetools`); adjust to wherever your JDK 17 and SDK live.
+
 ```
 cd packages/android/barnard
 ./gradlew assembleDebug assembleRelease
