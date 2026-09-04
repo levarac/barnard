@@ -128,14 +128,25 @@ A receiver MUST, in this order:
 1. enforce the 512-byte container bound and canonical envelope structure;
 2. verify the authority key or delegation chain and signature;
 3. obtain the authoritative on-chain definition for `eventId`;
-4. require exact `eventId`, `eventCodeHash`, display-name, validity-window, and
-   signer-authority agreement with that definition;
+4. require exact `eventId`, `eventCodeHash`, validity-window, and signer-authority
+   agreement with that definition;
 5. require `validFromEnin <= currentEnin < relayExpiresAtEnin <=
    validThroughEnin`; and
 6. only then expose the event to host display or relay APIs.
 
 If clock or ENIN configuration cannot establish step 5, the device MUST NOT
 relay or show the value as verified.
+
+*Erratum (2026-09-05), display name:* step 4 originally also required display-name
+agreement with the on-chain definition. That comparison is not performable:
+`EventDefinitionV1` has no display-name field, so there is nothing on chain to
+compare against, with or without connectivity. The display name is instead
+authenticated by the event authority's signature over the envelope, which is the
+authoritative source for it, and it is not compared to the registry. The other
+four agreements in step 4 are unaffected — `eventCodeHash` in particular is
+comparable, since it is label 15 of `EventDefinitionV1`, and for an open event it
+is additionally derivable offline from `eventId`. See
+[`specification 122`](../122-b005-v2-signed-envelope/spec.md).
 
 *Erratum (2026-09-05), display only:* step 6 is relaxed for **candidate display**
 and unchanged for **relay**. A receiver that has completed steps 1, 2 and 5 but
