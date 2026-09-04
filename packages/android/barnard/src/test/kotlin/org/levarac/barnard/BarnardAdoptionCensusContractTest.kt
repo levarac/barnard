@@ -31,11 +31,6 @@ class BarnardAdoptionCensusContractTest {
         assertArrayEquals(unsignedCredential, credential.canonicalBytes())
         assertEquals(vectors.string("credential_id"), credential.credentialId.toHex())
 
-        // A re-signature changes no unsigned byte and therefore cannot split
-        // TEK, signing, census, relay, or equivocation identity.
-        val reissued = BarnardAdoptionCredential.UnsignedBody.decode(unsignedCredential)
-        assertArrayEquals(credential.credentialId, reissued.credentialId)
-
         val rotated = BarnardAdoptionCredential.UnsignedBody.decode(
             vectors.bytes("rotated_credential_unsigned_body"),
         )
@@ -59,6 +54,16 @@ class BarnardAdoptionCensusContractTest {
             BarnardAdoptionCredential.decode(highS)
         }
         assertEquals(BarnardAdoptionProtocolError.NON_CANONICAL_SIGNATURE, highSError.reason)
+
+        // The same unsigned body must retain the same credentialId across two
+        // independently-nonced but equally *valid* signatures over it - not
+        // just two decodes of identical signature bytes, which can never
+        // disagree regardless of whether re-signing actually preserves
+        // identity.
+        val secondSignedCredential = unsignedCredential + vectors.bytes("credential_signature_second_valid")
+        val secondVerifiedCredential = BarnardAdoptionCredential.decode(secondSignedCredential)
+        assertFalse(secondVerifiedCredential.canonicalBytes().contentEquals(fullCredential))
+        assertArrayEquals(verifiedCredential.credentialId, secondVerifiedCredential.credentialId)
 
         val census = BarnardSignedWindowCensus.UnsignedBody(
             credentialId = credential.credentialId,

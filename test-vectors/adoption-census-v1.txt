@@ -26,6 +26,16 @@ credential_full=01010f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b
 # canonical re-signature. This is intentionally a negative high-S signature.
 credential_signature_high_s=0000000000000000000000000000000000000000000000000000000000000001fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036414000
 
+# A second, independently-nonced but equally VALID canonical low-S signature
+# over the exact same credential_unsigned_body and the same credential
+# authority test private key as credential_full's signature above (nonce k=2
+# rather than this implementation's RFC 6979 deterministic nonce; both are
+# still standard ECDSA signatures over the same message and key, and both
+# recover to credential_authority_public_key). Proves the same unsigned body
+# retains the same credentialId across two genuinely different valid
+# signatures, not just two decodes of one signature.
+credential_signature_second_valid=c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5136da90425299e79c3c32f783266f7422ec903b661e009e6db1d7f82fd84cf4801
+
 # A registry-authorized boundary rotation changes unsigned bytes and ID.
 rotated_credential_unsigned_body=01010f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554a1a2a3a4a5a6a7a8e226a79338cf7cb126935d5cdad64aa2ca6ec0b3347a6bc80a4c1a86e85f1a9d0000000069a012c00000000069a024b80000012c
 rotated_credential_id=8e25334856f5c1e48387b21ac1bc197a259d3ec47cb69343133f0edc7085a950

@@ -19,11 +19,6 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     XCTAssertEqual(credential.canonicalBytes(), unsignedCredential)
     XCTAssertEqual(hex(credential.credentialId), try vectors.string("credential_id"))
 
-    // A re-signature changes no unsigned byte and therefore cannot split the
-    // TEK, signing, census, relay, or equivocation identity.
-    let reissued = try BarnardAdoptionCredential.UnsignedBody.decode(unsignedCredential)
-    XCTAssertEqual(reissued.credentialId, credential.credentialId)
-
     let rotated = try BarnardAdoptionCredential.UnsignedBody.decode(
       try vectors.bytes("rotated_credential_unsigned_body")
     )
@@ -46,6 +41,15 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     XCTAssertThrowsError(try BarnardAdoptionCredential.decode(highSFullCredential)) { error in
       XCTAssertEqual(error as? BarnardAdoptionProtocolError, .nonCanonicalSignature)
     }
+
+    // The same unsigned body must retain the same credentialId across two
+    // independently-nonced but equally *valid* signatures over it - not just
+    // two decodes of identical signature bytes, which can never disagree
+    // regardless of whether re-signing actually preserves identity.
+    let secondSignedCredential = unsignedCredential + (try vectors.bytes("credential_signature_second_valid"))
+    let secondVerifiedCredential = try BarnardAdoptionCredential.decode(secondSignedCredential)
+    XCTAssertNotEqual(secondVerifiedCredential.canonicalBytes, fullCredential)
+    XCTAssertEqual(secondVerifiedCredential.credentialId, verifiedCredential.credentialId)
 
     let census = try BarnardSignedWindowCensus.UnsignedBody(
       credentialId: credential.credentialId,
