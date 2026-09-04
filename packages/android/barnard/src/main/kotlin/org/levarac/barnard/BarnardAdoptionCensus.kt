@@ -862,7 +862,11 @@ public class BarnardAutoAdoptionSelfCheck(
 /** Code-less per-device derivations; legacy EventCode APIs remain v1-only. */
 public object BarnardAdoptionKeyDerivation {
     public fun deriveTek(deviceSecret: ByteArray, credentialId: ByteArray): ByteArray =
-        BarnardCrypto.deriveTekForAdoptionCredential(deviceSecret, credentialId)
+        try {
+            BarnardCrypto.deriveTekForAdoptionCredential(deviceSecret, credentialId)
+        } catch (_: BarnardCryptoInputException) {
+            adoptionFailure(BarnardAdoptionProtocolError.INVALID_LENGTH)
+        }
 
     public fun deriveSigningPublicKey(deviceSecret: ByteArray, credentialId: ByteArray): ByteArray =
         BarnardSigning.deriveSigningKeyPairForAdoptionCredential(deviceSecret, credentialId).publicKeyCompressed

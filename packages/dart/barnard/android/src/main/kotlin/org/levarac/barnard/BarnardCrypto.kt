@@ -11,6 +11,16 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
+ * Thrown by [BarnardCrypto] entry points that must fail rather than return a
+ * zero-filled placeholder key on malformed input. This file is mirrored
+ * byte-for-byte into the Dart plugin's Android sources (see
+ * `scripts/mirror-manifest.sh`), where it must compile standalone without
+ * `BarnardAdoptionCensus.kt`'s richer `BarnardAdoptionProtocolException`, so
+ * it defines this minimal exception itself.
+ */
+class BarnardCryptoInputException(message: String) : Exception(message)
+
+/**
  * GAEN v1.2-compatible cryptographic utilities for Resolvable ID.
  *
  * Key derivation chain:
@@ -68,7 +78,7 @@ object BarnardCrypto {
      */
     fun deriveTekForAdoptionCredential(deviceSecret: ByteArray, credentialId: ByteArray): ByteArray {
         if (credentialId.size != 32) {
-            throw BarnardAdoptionProtocolException(BarnardAdoptionProtocolError.INVALID_LENGTH)
+            throw BarnardCryptoInputException("credentialId must be exactly 32 bytes")
         }
         return hkdfSha256(
             deviceSecret + credentialId,

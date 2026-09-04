@@ -35,10 +35,14 @@ class BarnardCryptoTest {
 
         for (malformedLength in listOf(31, 33)) {
             val malformedCredentialId = ByteArray(malformedLength) { 0xEF.toByte() }
-            val error = assertThrows(BarnardAdoptionProtocolException::class.java) {
+            // BarnardCrypto.kt is mirrored standalone into the Dart plugin
+            // (see scripts/mirror-manifest.sh) and must not take on a
+            // compile-time dependency on BarnardAdoptionCensus.kt's
+            // BarnardAdoptionProtocolException, so it throws its own local
+            // BarnardCryptoInputException instead.
+            assertThrows(BarnardCryptoInputException::class.java) {
                 BarnardCrypto.deriveTekForAdoptionCredential(deviceSecret, malformedCredentialId)
             }
-            assertEquals(BarnardAdoptionProtocolError.INVALID_LENGTH, error.reason)
         }
 
         // The valid 32-byte contract is unaffected.
