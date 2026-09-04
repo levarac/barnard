@@ -102,6 +102,8 @@ android {
         }
 
         compileOnly(files(flutterEmbeddingJar))
+        // Mirrors packages/android/barnard: secp256k1 backend (issue #160).
+        implementation("org.bouncycastle:bcprov-jdk18on:1.81")
         testImplementation(files(flutterEmbeddingJar))
         testImplementation("org.jetbrains.kotlin:kotlin-test")
         testImplementation("junit:junit:4.13.2")
