@@ -157,6 +157,55 @@ final class BarnardCoreTests: XCTestCase {
     )
   }
 
+  func testDeriveTekForAdoptionCredentialThrowsOnMalformedCredentialIdLength() {
+    let deviceSecret = (0..<32).map(UInt8.init)
+
+    for malformedLength in [31, 33] {
+      let malformedCredentialId = [UInt8](repeating: 0xAB, count: malformedLength)
+      XCTAssertThrowsError(
+        try BarnardCoreCrypto.deriveTekForAdoptionCredential(
+          deviceSecret: deviceSecret,
+          credentialId: malformedCredentialId
+        )
+      ) { error in
+        XCTAssertEqual(error as? BarnardCoreCryptoError, .invalidCredentialIdLength)
+      }
+    }
+
+    // The valid 32-byte contract is unaffected.
+    let validCredentialId = [UInt8](repeating: 0xCD, count: 32)
+    XCTAssertNoThrow(
+      try BarnardCoreCrypto.deriveTekForAdoptionCredential(
+        deviceSecret: deviceSecret,
+        credentialId: validCredentialId
+      )
+    )
+  }
+
+  func testDeriveSigningKeyPairForAdoptionCredentialThrowsOnMalformedCredentialIdLength() throws {
+    let deviceSecret = (0..<32).map(UInt8.init)
+
+    for malformedLength in [31, 33] {
+      let malformedCredentialId = [UInt8](repeating: 0xAB, count: malformedLength)
+      XCTAssertThrowsError(
+        try BarnardCoreSigning.deriveSigningKeyPairForAdoptionCredential(
+          deviceSecret: deviceSecret,
+          credentialId: malformedCredentialId
+        )
+      ) { error in
+        XCTAssertEqual(error as? BarnardCoreCryptoError, .invalidCredentialIdLength)
+      }
+    }
+
+    let validCredentialId = [UInt8](repeating: 0xCD, count: 32)
+    let keyPair = try BarnardCoreSigning.deriveSigningKeyPairForAdoptionCredential(
+      deviceSecret: deviceSecret,
+      credentialId: validCredentialId
+    )
+    XCTAssertEqual(keyPair.privateKey.count, 32)
+    XCTAssertEqual(keyPair.publicKeyCompressed.count, 33)
+  }
+
   private func hex(_ bytes: [UInt8]) -> String {
     bytes.map {
       let value = String($0, radix: 16)

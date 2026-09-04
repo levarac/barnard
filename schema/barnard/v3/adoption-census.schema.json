@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v3/adoption-census.schema.json",
+  "title": "Barnard AdoptionCredential and Census (v3)",
+  "description": "Versioned host-facing projections for B005 wire formatVersion 2. A parsed candidate remains non-voting and non-admitting until registry verification and the decision gate complete.",
+  "oneOf": [
+    { "$ref": "#/$defs/AdoptionCredential" },
+    { "$ref": "#/$defs/SignedWindowCensus" },
+    { "$ref": "#/$defs/RegistryEventDefinition" },
+    { "$ref": "#/$defs/VerifiedCensusCandidate" },
+    { "$ref": "#/$defs/AdoptionDecision" },
+    { "$ref": "#/$defs/RelayConflict" }
+  ],
+  "$defs": {
+    "CensusDomainPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "censusDomainId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "censusWindowSeconds": { "type": "integer", "minimum": 12, "maximum": 3600 },
+        "authorityPolicyEpoch": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "authorizedAuthorityKeyHash": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "minimumEligibleVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "minimumQualifiedVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "maximumCandidateAgeSeconds": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "censusDomainId",
+        "censusWindowSeconds",
+        "authorityPolicyEpoch",
+        "authorizedAuthorityKeyHash",
+        "minimumEligibleVoterCount",
+        "minimumQualifiedVoterCount",
+        "maximumCandidateAgeSeconds"
+      ]
+    },
+    "AdoptionCredential": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "adoption_credential" },
+        "formatVersion": { "const": 1 },
+        "bytes": { "$ref": "common.schema.json#/$defs/CredentialBytes" },
+        "credentialId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "eventId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "admissionMode": { "$ref": "common.schema.json#/$defs/AdmissionMode" },
+        "b004AdoptionScopeHash": { "$ref": "common.schema.json#/$defs/Hex8" },
+        "displayNameHash": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "validFromUnixSeconds": { "type": "integer", "minimum": 0 },
+        "validUntilUnixSeconds": { "type": "integer", "minimum": 1 },
+        "censusWindowSeconds": { "type": "integer", "minimum": 12, "maximum": 3600 }
+      },
+      "required": [
+        "type", "formatVersion", "bytes", "credentialId", "eventId", "admissionMode",
+        "b004AdoptionScopeHash", "displayNameHash", "validFromUnixSeconds",
+        "validUntilUnixSeconds", "censusWindowSeconds"
+      ]
+    },
+    "SignedWindowCensus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "signed_window_census" },
+        "formatVersion": { "const": 1 },
+        "bytes": { "$ref": "common.schema.json#/$defs/CensusBytes" },
+        "credentialId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "windowIndex": { "type": "integer", "minimum": 0 },
+        "qualifiedVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "eligibleVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "countedSetMerkleRoot": {
+          "const": "0000000000000000000000000000000000000000000000000000000000000000",
+          "description": "Census v1 reserves this field; a non-zero root is rejected."
+        }
+      },
+      "required": [
+        "type", "formatVersion", "bytes", "credentialId", "windowIndex",
+        "qualifiedVoterCount", "eligibleVoterCount", "countedSetMerkleRoot"
+      ]
+    },
+    "RegistryEventDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "registry_event_definition" },
+        "eventId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "credentialId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "b004AdoptionScopeHash": { "$ref": "common.schema.json#/$defs/Hex8" },
+        "displayNameHash": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "validFromUnixSeconds": { "type": "integer", "minimum": 0 },
+        "validUntilUnixSeconds": { "type": "integer", "minimum": 1 },
+        "admissionMode": { "$ref": "common.schema.json#/$defs/AdmissionMode" },
+        "censusDomainPolicy": { "$ref": "#/$defs/CensusDomainPolicy" },
+        "replacesCredentialId": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/Hex32" },
+            { "type": "null" }
+          ],
+          "description": "Authenticated registry-only rotation reference; never carried in B005."
+        },
+        "effectiveWindowIndex": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ],
+          "description": "Authenticated registry-only future census window for a replacement."
+        }
+      },
+      "required": [
+        "type", "eventId", "credentialId", "b004AdoptionScopeHash", "displayNameHash",
+        "validFromUnixSeconds", "validUntilUnixSeconds", "admissionMode", "censusDomainPolicy",
+        "replacesCredentialId", "effectiveWindowIndex"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "replacesCredentialId": { "type": "null" } } },
+          "then": { "properties": { "effectiveWindowIndex": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "effectiveWindowIndex": { "type": "null" } } },
+          "then": { "properties": { "replacesCredentialId": { "type": "null" } } }
+        }
+      ]
+    },
+    "VerifiedCensusCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "verified_census_candidate" },
+        "b005FormatVersion": { "const": 2 },
+        "b005Bytes": { "$ref": "common.schema.json#/$defs/B005V2Bytes" },
+        "credentialId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "eventId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "admissionMode": { "$ref": "common.schema.json#/$defs/AdmissionMode" },
+        "censusDomainId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "censusWindowSeconds": { "type": "integer", "minimum": 12, "maximum": 3600 },
+        "authorityPolicyEpoch": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "censusAuthorityKeyHash": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "windowIndex": { "type": "integer", "minimum": 0 },
+        "qualifiedVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "eligibleVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "observedAtUnixSeconds": { "type": "integer", "minimum": 0 },
+        "registryVerification": {
+          "const": "verified",
+          "description": "The only construction path (decodeAndBind) requires a verified registry binding before a candidate exists at all; an unverified candidate is never represented here."
+        }
+      },
+      "required": [
+        "type", "b005FormatVersion", "b005Bytes", "credentialId", "eventId", "admissionMode",
+        "censusDomainId", "censusWindowSeconds", "authorityPolicyEpoch", "censusAuthorityKeyHash",
+        "windowIndex", "qualifiedVoterCount", "eligibleVoterCount", "observedAtUnixSeconds",
+        "registryVerification"
+      ]
+    },
+    "AdoptionFallbackReason": {
+      "type": "string",
+      "enum": [
+        "registry_unverified", "gated", "no_clear_majority", "insufficient_evidence",
+        "stale_candidate", "wrong_census_window", "inconsistent_eligibility", "domain_mismatch",
+        "no_authoritative_census", "invalid_domain_policy", "no_candidate_in_domain"
+      ]
+    },
+    "AdoptionDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "adoption_decision" },
+        "result": {
+          "type": "string",
+          "enum": ["auto_adopt", "requires_chooser", "domain_authority_inconsistency"]
+        },
+        "credentialId": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/Hex32" },
+            { "type": "null" }
+          ]
+        },
+        "reason": {
+          "oneOf": [
+            { "$ref": "#/$defs/AdoptionFallbackReason" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["type", "result", "credentialId", "reason"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "result": { "const": "auto_adopt" } }
+          },
+          "then": {
+            "properties": {
+              "credentialId": { "$ref": "common.schema.json#/$defs/Hex32" },
+              "reason": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "result": { "const": "requires_chooser" } }
+          },
+          "then": {
+            "properties": {
+              "credentialId": { "type": "null" },
+              "reason": { "$ref": "#/$defs/AdoptionFallbackReason" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "result": { "const": "domain_authority_inconsistency" } }
+          },
+          "then": {
+            "properties": {
+              "credentialId": { "type": "null" },
+              "reason": { "type": "null" }
+            }
+          }
+        }
+      ]
+    },
+    "RelayConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "census_equivocation" },
+        "credentialId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "censusDomainId": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "authorityPolicyEpoch": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "censusAuthorityKeyHash": { "$ref": "common.schema.json#/$defs/Hex32" },
+        "windowIndex": { "type": "integer", "minimum": 0 },
+        "retainedPayloadCount": { "type": "integer", "minimum": 2, "maximum": 2 }
+      },
+      "required": [
+        "type", "credentialId", "censusDomainId", "authorityPolicyEpoch",
+        "censusAuthorityKeyHash", "windowIndex", "retainedPayloadCount"
+      ]
+    }
+  }
+}

@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -26,6 +27,27 @@ class BarnardCryptoTest {
         val tekA = BarnardCrypto.deriveTekForEvent(deviceSecret, "EVT-A")
         val tekB = BarnardCrypto.deriveTekForEvent(deviceSecret, "EVT-B")
         assertFalse(tekA.contentEquals(tekB))
+    }
+
+    @Test
+    fun deriveTekForAdoptionCredentialThrowsOnMalformedCredentialIdLength() {
+        val deviceSecret = ByteArray(32) { 0xAB.toByte() }
+
+        for (malformedLength in listOf(31, 33)) {
+            val malformedCredentialId = ByteArray(malformedLength) { 0xEF.toByte() }
+            // BarnardCrypto.kt is mirrored standalone into the Dart plugin
+            // (see scripts/mirror-manifest.sh) and must not take on a
+            // compile-time dependency on BarnardAdoptionCensus.kt's
+            // BarnardAdoptionProtocolException, so it throws its own local
+            // BarnardCryptoInputException instead.
+            assertThrows(BarnardCryptoInputException::class.java) {
+                BarnardCrypto.deriveTekForAdoptionCredential(deviceSecret, malformedCredentialId)
+            }
+        }
+
+        // The valid 32-byte contract is unaffected.
+        val validCredentialId = ByteArray(32) { 0xCD.toByte() }
+        assertEquals(16, BarnardCrypto.deriveTekForAdoptionCredential(deviceSecret, validCredentialId).size)
     }
 
     @Test

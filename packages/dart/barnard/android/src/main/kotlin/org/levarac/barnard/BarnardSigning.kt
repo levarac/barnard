@@ -26,6 +26,7 @@ import java.math.BigInteger
  */
 internal object BarnardSigning {
     const val signingKeyInfo = "barnard-sign"
+    const val adoptionSigningKeyInfo = "barnard-adoption-sign:v1"
     const val ownerKeyInfo = "barnard-owner"
 
     /** Domain-separation tag for [buildRpidProofMessage] (barnard#63). */
@@ -53,8 +54,25 @@ internal object BarnardSigning {
      * Derive the per-event signing keypair from [deviceSecret] and [eventCode].
      */
     fun deriveSigningKeyPair(deviceSecret: ByteArray, eventCode: String): SigningKeyPair {
-        val combined = deviceSecret + eventCode.toByteArray(Charsets.UTF_8)
-        var seed = BarnardCrypto.hkdfSha256(combined, signingKeyInfo.toByteArray(Charsets.UTF_8), 32)
+        return deriveSigningKeyPairFromInput(
+            deviceSecret + eventCode.toByteArray(Charsets.UTF_8),
+            signingKeyInfo,
+        )
+    }
+
+    /** Derive the code-less v2 per-device signing identity from credentialId. */
+    fun deriveSigningKeyPairForAdoptionCredential(
+        deviceSecret: ByteArray,
+        credentialId: ByteArray,
+    ): SigningKeyPair {
+        if (credentialId.size != 32) {
+            throw BarnardCryptoInputException("credentialId must be exactly 32 bytes")
+        }
+        return deriveSigningKeyPairFromInput(deviceSecret + credentialId, adoptionSigningKeyInfo)
+    }
+
+    private fun deriveSigningKeyPairFromInput(inputKeyMaterial: ByteArray, info: String): SigningKeyPair {
+        var seed = BarnardCrypto.hkdfSha256(inputKeyMaterial, info.toByteArray(Charsets.UTF_8), 32)
         var d = BigInteger(1, seed).mod(SECP256K1_N)
         while (d.signum() == 0) {
             seed = sha256(seed)

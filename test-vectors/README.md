@@ -1,9 +1,11 @@
 # Cross-language conformance vectors
 
 This directory holds golden test vectors shared between Barnard's
-per-platform implementations. Positive values in the original owner-key file
-are computed from the Swift `BarnardCore` reference implementation
-(`packages/swift/barnard/Sources/BarnardCore`) and consumed byte-for-byte
+per-platform implementations. Every value in every file here is computed
+from the canonical Swift native-origin implementation: `BarnardCore`
+(`packages/swift/barnard/Sources/BarnardCore`) for core primitives, or the
+versioned Swift protocol source that owns a newer public wire surface (for
+example `BarnardAdoptionCensus.swift`). Every vector is consumed byte-for-byte
 by the test suites of every other implementation (starting with
 `packages/android/barnard`'s Kotlin implementation).
 
@@ -80,12 +82,13 @@ Each vector file (e.g. `owner-key-v1.txt`) follows this format:
    `<n>` only if a later spec needs a second, incompatible generation of
    vectors for the same primitive family; otherwise add new keys to the
    existing file.
-2. Compute every value with the reference named by the governing spec and the
-   vector file header. Existing golden files use Swift `BarnardCore`;
-   backend-independence profiles use an independent cryptographic
-   implementation. Never compute expected output with the implementation under
-   test. Where a value
-   is already pinned in an existing Swift test (e.g.
+2. Compute every value by actually running the canonical Swift native-origin
+   implementation against fixed, documented inputs — never by hand-
+   transcribing or hand-deriving a cryptographic output. The one exception is
+   a backend-independence profile (e.g. `secp256k1-ecdsa-v1.txt`), whose
+   values come from an independent cryptographic implementation named in the
+   file header, never from the implementation under test. Where a value is
+   already pinned in an existing Swift test (e.g.
    `packages/swift/barnard/Tests/BarnardCoreTests/`), copy it verbatim and
    comment which test it came from; where it is not yet pinned anywhere,
    generate it with a throwaway `print()` in a scratch test, capture the

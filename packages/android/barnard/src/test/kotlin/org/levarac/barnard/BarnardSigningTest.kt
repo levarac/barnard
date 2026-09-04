@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -36,6 +37,22 @@ class BarnardSigningTest {
         val b = BarnardSigning.deriveSigningKeyPair(secret, "event-B")
 
         assertFalse(a.publicKeyCompressed.contentEquals(b.publicKeyCompressed))
+    }
+
+    @Test
+    fun deriveSigningKeyPairForAdoptionCredentialThrowsOnMalformedCredentialIdLength() {
+        val secret = deviceSecret(1)
+
+        for (malformedLength in listOf(31, 33)) {
+            val malformedCredentialId = ByteArray(malformedLength) { 0xEF.toByte() }
+            assertThrows(BarnardCryptoInputException::class.java) {
+                BarnardSigning.deriveSigningKeyPairForAdoptionCredential(secret, malformedCredentialId)
+            }
+        }
+
+        val validCredentialId = ByteArray(32) { 0xCD.toByte() }
+        val keyPair = BarnardSigning.deriveSigningKeyPairForAdoptionCredential(secret, validCredentialId)
+        assertEquals(33, keyPair.publicKeyCompressed.size)
     }
 
     @Test
