@@ -139,13 +139,24 @@
         "qualifiedVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "eligibleVoterCount": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "observedAtUnixSeconds": { "type": "integer", "minimum": 0 },
-        "registryVerification": { "$ref": "common.schema.json#/$defs/RegistryVerification" }
+        "registryVerification": {
+          "const": "verified",
+          "description": "The only construction path (decodeAndBind) requires a verified registry binding before a candidate exists at all; an unverified candidate is never represented here."
+        }
       },
       "required": [
         "type", "b005FormatVersion", "b005Bytes", "credentialId", "eventId", "admissionMode",
         "censusDomainId", "censusWindowSeconds", "authorityPolicyEpoch", "censusAuthorityKeyHash",
         "windowIndex", "qualifiedVoterCount", "eligibleVoterCount", "observedAtUnixSeconds",
         "registryVerification"
+      ]
+    },
+    "AdoptionFallbackReason": {
+      "type": "string",
+      "enum": [
+        "registry_unverified", "gated", "no_clear_majority", "insufficient_evidence",
+        "stale_candidate", "wrong_census_window", "inconsistent_eligibility", "domain_mismatch",
+        "no_authoritative_census", "invalid_domain_policy"
       ]
     },
     "AdoptionDecision": {
@@ -165,14 +176,7 @@
         },
         "reason": {
           "oneOf": [
-            {
-              "type": "string",
-              "enum": [
-                "registry_unverified", "gated", "no_clear_majority", "insufficient_evidence",
-                "stale_candidate", "wrong_census_window", "inconsistent_eligibility", "domain_mismatch",
-                "no_authoritative_census", "invalid_domain_policy"
-              ]
-            },
+            { "$ref": "#/$defs/AdoptionFallbackReason" },
             { "type": "null" }
           ]
         }
@@ -197,14 +201,7 @@
           "then": {
             "properties": {
               "credentialId": { "type": "null" },
-              "reason": {
-                "type": "string",
-                "enum": [
-                  "registry_unverified", "gated", "no_clear_majority", "insufficient_evidence",
-                  "stale_candidate", "wrong_census_window", "inconsistent_eligibility", "domain_mismatch",
-                  "no_authoritative_census", "invalid_domain_policy"
-                ]
-              }
+              "reason": { "$ref": "#/$defs/AdoptionFallbackReason" }
             }
           }
         },
