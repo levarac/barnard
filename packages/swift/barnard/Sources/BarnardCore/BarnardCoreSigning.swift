@@ -32,6 +32,7 @@ public struct BarnardCoreRpidOwnershipProof {
 
 public enum BarnardCoreSigning {
   public static let signingKeyInfo = "barnard-sign"
+  public static let adoptionSigningKeyInfo = "barnard-adoption-sign:v1"
   public static let ownerKeyInfo = "barnard-owner"
   public static let rpidProofDomainTag = "barnard-rpid-proof:v1"
   public static let keyBindingDomainTag = "barnard-key-binding:v1"
@@ -45,9 +46,36 @@ public enum BarnardCoreSigning {
     deviceSecret: [UInt8],
     eventCode: String
   ) -> BarnardCoreSigningKeyPair {
-    var seed = BarnardCorePrimitives.hkdfSha256(
+    deriveSigningKeyPair(
       inputKeyMaterial: deviceSecret + Array(eventCode.utf8),
-      info: Array(signingKeyInfo.utf8),
+      info: signingKeyInfo
+    )
+  }
+
+  /// Derives the per-device signing identity for a verified AdoptionCredential
+  /// without accepting or exposing a raw EventCode. This is deliberately
+  /// domain-separated from both the legacy EventCode signing key and the v2
+  /// adoption TEK.
+  public static func deriveSigningKeyPairForAdoptionCredential(
+    deviceSecret: [UInt8],
+    credentialId: [UInt8]
+  ) throws -> BarnardCoreSigningKeyPair {
+    guard credentialId.count == 32 else {
+      throw BarnardCoreCryptoError.invalidCredentialIdLength
+    }
+    return deriveSigningKeyPair(
+      inputKeyMaterial: deviceSecret + credentialId,
+      info: adoptionSigningKeyInfo
+    )
+  }
+
+  private static func deriveSigningKeyPair(
+    inputKeyMaterial: [UInt8],
+    info: String
+  ) -> BarnardCoreSigningKeyPair {
+    var seed = BarnardCorePrimitives.hkdfSha256(
+      inputKeyMaterial: inputKeyMaterial,
+      info: Array(info.utf8),
       outputByteCount: 32
     )
     var privateKey = BarnardCoreSecp256k1.Field.reduceOnce(

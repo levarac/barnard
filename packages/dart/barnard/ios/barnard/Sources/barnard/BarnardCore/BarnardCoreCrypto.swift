@@ -101,7 +101,39 @@ public enum BarnardCoreKeyManager {
   }
 }
 
+/// Thrown by `BarnardCoreCrypto` entry points that must fail rather than
+/// return a zero-filled placeholder key on malformed input. `BarnardCore` has
+/// no dependency on the `Barnard` target's richer
+/// `BarnardAdoptionProtocolError`, so it defines this minimal error itself;
+/// `Barnard`-level callers map it to their own idiomatic error type.
+public enum BarnardCoreCryptoError: Error, Equatable {
+  case invalidCredentialIdLength
+}
+
 public enum BarnardCoreCrypto {
+  /// Domain-separated v2 AdoptionCredential TEK derivation. The credential
+  /// identifier is the stable hash of the signed credential's unsigned body;
+  /// it replaces the raw EventCode as the event-specific IKM suffix for the
+  /// code-less admission path. The legacy EventCode derivation below remains
+  /// byte-for-byte unchanged for B005 v1 deployments.
+  ///
+  /// Throws rather than returning a zero-filled key on a malformed
+  /// `credentialId`, so a caller can never silently derive and use a
+  /// garbage TEK.
+  public static func deriveTekForAdoptionCredential(
+    deviceSecret: [UInt8],
+    credentialId: [UInt8]
+  ) throws -> [UInt8] {
+    guard credentialId.count == 32 else {
+      throw BarnardCoreCryptoError.invalidCredentialIdLength
+    }
+    return BarnardCorePrimitives.hkdfSha256(
+      inputKeyMaterial: deviceSecret + credentialId,
+      info: Array("barnard-adoption-tek:v1".utf8),
+      outputByteCount: 16
+    )
+  }
+
   /// Calculates ENIN without trapping when an input cannot fit in `UInt32`.
   ///
   /// This is the boundary-safe counterpart to `calculateEnin`. It shares the

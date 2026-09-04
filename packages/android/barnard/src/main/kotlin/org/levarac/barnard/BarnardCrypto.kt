@@ -11,6 +11,16 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
+ * Thrown by [BarnardCrypto] entry points that must fail rather than return a
+ * zero-filled placeholder key on malformed input. This file is mirrored
+ * byte-for-byte into the Dart plugin's Android sources (see
+ * `scripts/mirror-manifest.sh`), where it must compile standalone without
+ * `BarnardAdoptionCensus.kt`'s richer `BarnardAdoptionProtocolException`, so
+ * it defines this minimal exception itself.
+ */
+class BarnardCryptoInputException(message: String) : Exception(message)
+
+/**
  * GAEN v1.2-compatible cryptographic utilities for Resolvable ID.
  *
  * Key derivation chain:
@@ -55,6 +65,26 @@ object BarnardCrypto {
         val eventCodeBytes = eventCode.toByteArray(Charsets.UTF_8)
         val combined = deviceSecret + eventCodeBytes
         return hkdfSha256(combined, "barnard-tek".toByteArray(Charsets.UTF_8), 16)
+    }
+
+    /**
+     * Derive the code-less v2 TEK from DeviceSecret and a verified stable
+     * AdoptionCredential ID. The distinct info label prevents a credential
+     * from being interpreted as a legacy EventCode input.
+     *
+     * Throws rather than returning a zero-filled key on a malformed
+     * [credentialId], so a caller can never silently derive and use a
+     * garbage TEK.
+     */
+    fun deriveTekForAdoptionCredential(deviceSecret: ByteArray, credentialId: ByteArray): ByteArray {
+        if (credentialId.size != 32) {
+            throw BarnardCryptoInputException("credentialId must be exactly 32 bytes")
+        }
+        return hkdfSha256(
+            deviceSecret + credentialId,
+            "barnard-adoption-tek:v1".toByteArray(Charsets.UTF_8),
+            16,
+        )
     }
 
     /**
