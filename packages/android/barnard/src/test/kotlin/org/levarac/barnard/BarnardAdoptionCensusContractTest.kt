@@ -169,6 +169,25 @@ class BarnardAdoptionCensusContractTest {
     }
 
     @Test
+    fun deriveSigningPublicKeyRejectsMalformedCredentialIdLength() {
+        val deviceSecret = ByteArray(32) { 0xAB.toByte() }
+
+        for (malformedLength in listOf(31, 33)) {
+            val malformedCredentialId = ByteArray(malformedLength) { 0xEF.toByte() }
+            val error = assertThrows(BarnardAdoptionProtocolException::class.java) {
+                BarnardAdoptionKeyDerivation.deriveSigningPublicKey(deviceSecret, malformedCredentialId)
+            }
+            assertEquals(BarnardAdoptionProtocolError.INVALID_LENGTH, error.reason)
+        }
+
+        val validCredentialId = ByteArray(32) { 0xCD.toByte() }
+        assertEquals(
+            33,
+            BarnardAdoptionKeyDerivation.deriveSigningPublicKey(deviceSecret, validCredentialId).size,
+        )
+    }
+
+    @Test
     fun legacyV1B005AndEventCodeB004_remainLegacyOnly() {
         val legacyCode = "LEGACY-123"
         val legacyB004 = BarnardCrypto.computeEventCodeHash(legacyCode)

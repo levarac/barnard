@@ -104,7 +104,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       try vectors.bytes("adoption_tek")
     )
     XCTAssertEqual(
-      BarnardAdoptionKeyDerivation.deriveSigningPublicKey(
+      try BarnardAdoptionKeyDerivation.deriveSigningPublicKey(
         deviceSecret: try vectors.bytes("adoption_device_secret"),
         credentialId: verifiedCredential.credentialId
       ),
@@ -149,6 +149,31 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
         nowUnixSeconds: verifiedCredential.unsignedBody.validFromUnixSeconds + 1
       ),
       .unverified
+    )
+  }
+
+  func testDeriveSigningPublicKeyRejectsMalformedCredentialIdLength() throws {
+    let deviceSecret = Data(repeating: 0xAB, count: 32)
+
+    for malformedLength in [31, 33] {
+      let malformedCredentialId = Data(repeating: 0xEF, count: malformedLength)
+      XCTAssertThrowsError(
+        try BarnardAdoptionKeyDerivation.deriveSigningPublicKey(
+          deviceSecret: deviceSecret,
+          credentialId: malformedCredentialId
+        )
+      ) { error in
+        XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidLength)
+      }
+    }
+
+    let validCredentialId = Data(repeating: 0xCD, count: 32)
+    XCTAssertEqual(
+      try BarnardAdoptionKeyDerivation.deriveSigningPublicKey(
+        deviceSecret: deviceSecret,
+        credentialId: validCredentialId
+      ).count,
+      33
     )
   }
 

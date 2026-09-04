@@ -59,8 +59,10 @@ public enum BarnardCoreSigning {
   public static func deriveSigningKeyPairForAdoptionCredential(
     deviceSecret: [UInt8],
     credentialId: [UInt8]
-  ) -> BarnardCoreSigningKeyPair {
-    precondition(credentialId.count == 32, "credentialId must be 32 bytes")
+  ) throws -> BarnardCoreSigningKeyPair {
+    guard credentialId.count == 32 else {
+      throw BarnardCoreCryptoError.invalidCredentialIdLength
+    }
     return deriveSigningKeyPair(
       inputKeyMaterial: deviceSecret + credentialId,
       info: adoptionSigningKeyInfo

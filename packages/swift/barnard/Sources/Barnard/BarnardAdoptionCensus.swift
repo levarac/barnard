@@ -1047,8 +1047,8 @@ public enum BarnardAdoptionKeyDerivation {
     )
   }
 
-  public static func deriveSigningPublicKey(deviceSecret: Data, credentialId: Data) -> Data {
-    BarnardSigning.deriveSigningKeyPairForAdoptionCredential(
+  public static func deriveSigningPublicKey(deviceSecret: Data, credentialId: Data) throws -> Data {
+    try BarnardSigning.deriveSigningKeyPairForAdoptionCredential(
       deviceSecret: deviceSecret,
       credentialId: credentialId
     ).publicKeyCompressed

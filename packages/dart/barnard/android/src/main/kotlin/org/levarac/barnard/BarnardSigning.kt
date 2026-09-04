@@ -169,7 +169,9 @@ internal object BarnardSigning {
         deviceSecret: ByteArray,
         credentialId: ByteArray,
     ): SigningKeyPair {
-        require(credentialId.size == 32) { "credentialId must be 32 bytes" }
+        if (credentialId.size != 32) {
+            throw BarnardCryptoInputException("credentialId must be exactly 32 bytes")
+        }
         return deriveSigningKeyPairFromInput(deviceSecret + credentialId, adoptionSigningKeyInfo)
     }
 

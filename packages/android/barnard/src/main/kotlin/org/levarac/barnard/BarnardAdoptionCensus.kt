@@ -884,5 +884,9 @@ public object BarnardAdoptionKeyDerivation {
         }
 
     public fun deriveSigningPublicKey(deviceSecret: ByteArray, credentialId: ByteArray): ByteArray =
-        BarnardSigning.deriveSigningKeyPairForAdoptionCredential(deviceSecret, credentialId).publicKeyCompressed
+        try {
+            BarnardSigning.deriveSigningKeyPairForAdoptionCredential(deviceSecret, credentialId).publicKeyCompressed
+        } catch (_: BarnardCryptoInputException) {
+            adoptionFailure(BarnardAdoptionProtocolError.INVALID_LENGTH)
+        }
 }
