@@ -564,7 +564,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       censusWindowSeconds: UInt32(try vectors.int("census_window_seconds")),
       authorityPolicyEpoch: UInt32(try vectors.int("census_authority_policy_epoch")),
       authorizedAuthorityKeyHash: BarnardCrypto.sha256(
-        authorityPublicKey ?? (try vectors.bytes("census_authority_public_key"))
+        try (authorityPublicKey ?? vectors.bytes("census_authority_public_key"))
       ),
       minimumEligibleVoterCount: UInt16(try vectors.int("minimum_eligible_voters")),
       minimumQualifiedVoterCount: UInt16(try vectors.int("minimum_qualified_voters"))
@@ -635,7 +635,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       BarnardSignedWindowCensus.encodeSigned(
         unsignedBody: try BarnardSignedWindowCensus.UnsignedBody(
           credentialId: credential.credentialId,
-          windowIndex: windowIndex ?? (try vectors.uint64("census_window_index")),
+          windowIndex: try (windowIndex ?? vectors.uint64("census_window_index")),
           qualifiedVoterCount: qualified,
           eligibleVoterCount: eligible,
           countedSetMerkleRoot: try vectors.bytes("counted_set_merkle_root_v1")
