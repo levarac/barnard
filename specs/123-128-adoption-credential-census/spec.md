@@ -184,7 +184,7 @@ The value begins with `0x02`, followed by strictly increasing TLVs:
 
 | Type | Name | Length | Rule |
 |---:|---|---:|---|
-| `0x01` | `eventDisplayName` | 1–64 | NFC UTF-8, no controls |
+| `0x01` | `eventDisplayName` | 1–64 | NFC UTF-8, no controls; length is a UTF-8 byte count, not a Unicode character count |
 | `0x02` | `b004AdoptionScopeHash` | 8 | exactly the credential scope and B004 value |
 | `0x20` | `adoptionCredential` | 159 | exact signed credential bytes |
 | `0x21` | `signedWindowCensus` | 142 | exact signed census bytes |

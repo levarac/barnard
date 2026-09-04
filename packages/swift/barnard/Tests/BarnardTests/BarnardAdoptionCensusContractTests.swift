@@ -187,6 +187,13 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       credentialAuthorityKey: 2
     )
 
+    // The vector's precomputed authority key hash must match what the SDK
+    // actually derives (SHA-256 of the census authority's public key) for
+    // both the configured domain policy and a real verified candidate.
+    let expectedPrimaryAuthorityKeyHash = try vectors.bytes("authority_key_hash_primary")
+    XCTAssertEqual(policy.authorizedAuthorityKeyHash, expectedPrimaryAuthorityKeyHash)
+    XCTAssertEqual(winner.censusAuthorityKeyHash, expectedPrimaryAuthorityKeyHash)
+
     XCTAssertEqual(
       BarnardAdoptionDecision.evaluate(
         candidates: [winner, runnerUp],
@@ -512,6 +519,71 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
     )
 
     XCTAssertThrowsError(try BarnardB005V2Codec.decode(malformed)) { error in
+      XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidDisplayName)
+    }
+  }
+
+  /// `eventDisplayName`'s 1-64 length limit is a UTF-8 byte count, not a
+  /// Unicode character count (spec.md B005 format version 2 table). A name
+  /// at the exact 64-byte boundary using multi-byte UTF-8 characters must be
+  /// accepted; one byte over must be rejected.
+  func testB005AcceptsDisplayNameAtUtf8ByteBoundaryAndRejectsOneByteOver() throws {
+    let vectors = try AdoptionCensusVectors.load()
+    let boundaryName = try vectors.string("boundary_display_name")
+    XCTAssertEqual(Data(boundaryName.utf8).count, 64)
+    XCTAssertLessThan(boundaryName.count, 64)
+
+    let unsignedCredential = try BarnardAdoptionCredential.UnsignedBody(
+      admissionMode: .open,
+      eventId: try vectors.bytes("event_id"),
+      b004AdoptionScopeHash: try vectors.bytes("b004_adoption_scope_hash"),
+      displayNameHash: BarnardCrypto.sha256(Data(boundaryName.utf8)),
+      validFromUnixSeconds: try vectors.uint64("valid_from_unix_seconds"),
+      validUntilUnixSeconds: try vectors.uint64("valid_until_unix_seconds"),
+      censusWindowSeconds: UInt32(try vectors.int("census_window_seconds"))
+    )
+    let credential = try BarnardAdoptionCredential.decode(
+      try BarnardAdoptionCredential.encodeSigned(
+        unsignedBody: unsignedCredential,
+        authorityPrivateKey: try vectors.bytes("credential_authority_test_private_key")
+      )
+    )
+    let census = try BarnardSignedWindowCensus.decode(
+      try BarnardSignedWindowCensus.encodeSigned(
+        unsignedBody: try BarnardSignedWindowCensus.UnsignedBody(
+          credentialId: credential.credentialId,
+          windowIndex: try vectors.uint64("census_window_index"),
+          qualifiedVoterCount: try vectors.uint16("qualified_voter_count"),
+          eligibleVoterCount: try vectors.uint16("eligible_voter_count"),
+          countedSetMerkleRoot: try vectors.bytes("counted_set_merkle_root_v1")
+        ),
+        authorityPrivateKey: try vectors.bytes("census_authority_test_private_key")
+      )
+    )
+
+    let accepted = try BarnardB005V2Codec.serialize(
+      BarnardB005V2Payload(
+        eventDisplayName: boundaryName,
+        b004AdoptionScopeHash: try vectors.bytes("b004_adoption_scope_hash"),
+        credential: credential,
+        census: census
+      )
+    )
+    let decoded = try BarnardB005V2Codec.decode(accepted)
+    XCTAssertEqual(decoded.eventDisplayName, boundaryName)
+
+    let oneByteOverName = boundaryName + "!"
+    XCTAssertEqual(Data(oneByteOverName.utf8).count, 65)
+    XCTAssertThrowsError(
+      try BarnardB005V2Codec.serialize(
+        BarnardB005V2Payload(
+          eventDisplayName: oneByteOverName,
+          b004AdoptionScopeHash: try vectors.bytes("b004_adoption_scope_hash"),
+          credential: credential,
+          census: census
+        )
+      )
+    ) { error in
       XCTAssertEqual(error as? BarnardAdoptionProtocolError, .invalidDisplayName)
     }
   }

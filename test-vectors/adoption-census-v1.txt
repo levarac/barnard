@@ -62,7 +62,6 @@ adoption_signing_public_key=022bebcf4ec320808f39d3e999fe52c97a5c0c9ec0b892d27766
 # --- Cross-event and direct GATT self-check contract inputs ----------------
 census_domain_id=c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0
 authority_key_hash_primary=b1c9938f01121e159887ac2c8d393a22e4476ff8212de13fe1939de2a236f0a7
-authority_key_hash_conflict=d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2
 census_authority_policy_epoch=7
 minimum_eligible_voters=3
 minimum_qualified_voters=2
@@ -70,3 +69,9 @@ self_check_complete_windows=3
 valid_peer_b002=01abababababababababababababababab
 malformed_peer_b002=01ababababababababababababababab
 maximum_b005_v2_bytes=386
+
+# eventDisplayName's 1-64 length limit (spec.md B005 format version 2 table)
+# is a UTF-8 byte count, not a Unicode character count. This name is 21
+# copies of U+4E2D (3 UTF-8 bytes each) plus one ASCII byte: exactly 64 UTF-8
+# bytes, only 22 Unicode characters.
+boundary_display_name=中中中中中中中中中中中中中中中中中中中中中A

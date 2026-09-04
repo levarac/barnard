@@ -204,6 +204,13 @@ class BarnardAdoptionCensusContractTest {
             credentialAuthorityKey = 2,
         )
 
+        // The vector's precomputed authority key hash must match what the SDK
+        // actually derives (SHA-256 of the census authority's public key) for
+        // both the configured domain policy and a real verified candidate.
+        val expectedPrimaryAuthorityKeyHash = vectors.bytes("authority_key_hash_primary")
+        assertArrayEquals(expectedPrimaryAuthorityKeyHash, policy.authorizedAuthorityKeyHash)
+        assertArrayEquals(expectedPrimaryAuthorityKeyHash, winner.censusAuthorityKeyHash)
+
         val winnerDecision = BarnardAdoptionDecision.evaluate(
             candidates = listOf(winner, runnerUp),
             domainPolicy = policy,
@@ -541,6 +548,73 @@ class BarnardAdoptionCensusContractTest {
         )
         val error = assertThrows(BarnardAdoptionProtocolException::class.java) {
             BarnardB005V2Codec.decode(malformed)
+        }
+        assertEquals(BarnardAdoptionProtocolError.INVALID_DISPLAY_NAME, error.reason)
+    }
+
+    /**
+     * eventDisplayName's 1-64 length limit is a UTF-8 byte count, not a
+     * Unicode character count (spec.md B005 format version 2 table). A name
+     * at the exact 64-byte boundary using multi-byte UTF-8 characters must be
+     * accepted; one byte over must be rejected.
+     */
+    @Test
+    fun b005_acceptsDisplayNameAtUtf8ByteBoundaryAndRejectsOneByteOver() {
+        val vectors = AdoptionCensusVectors.load()
+        val boundaryName = vectors.string("boundary_display_name")
+        assertEquals(64, boundaryName.toByteArray(Charsets.UTF_8).size)
+        assertTrue(boundaryName.length < 64)
+
+        val unsignedCredential = BarnardAdoptionCredential.UnsignedBody(
+            admissionMode = BarnardAdoptionAdmissionMode.OPEN,
+            eventId = vectors.bytes("event_id"),
+            b004AdoptionScopeHash = vectors.bytes("b004_adoption_scope_hash"),
+            displayNameHash = sha256(boundaryName.toByteArray(Charsets.UTF_8)),
+            validFromUnixSeconds = vectors.ulong("valid_from_unix_seconds"),
+            validUntilUnixSeconds = vectors.ulong("valid_until_unix_seconds"),
+            censusWindowSeconds = vectors.int("census_window_seconds").toUInt(),
+        )
+        val credential = BarnardAdoptionCredential.decode(
+            BarnardAdoptionCredential.encodeSigned(
+                unsignedCredential,
+                vectors.bytes("credential_authority_test_private_key"),
+            ),
+        )
+        val census = BarnardSignedWindowCensus.decode(
+            BarnardSignedWindowCensus.encodeSigned(
+                BarnardSignedWindowCensus.UnsignedBody(
+                    credentialId = credential.credentialId,
+                    windowIndex = vectors.ulong("census_window_index"),
+                    qualifiedVoterCount = vectors.ushort("qualified_voter_count"),
+                    eligibleVoterCount = vectors.ushort("eligible_voter_count"),
+                    countedSetMerkleRoot = vectors.bytes("counted_set_merkle_root_v1"),
+                ),
+                vectors.bytes("census_authority_test_private_key"),
+            ),
+        )
+
+        val accepted = BarnardB005V2Codec.serialize(
+            BarnardB005V2Payload(
+                eventDisplayName = boundaryName,
+                b004AdoptionScopeHash = vectors.bytes("b004_adoption_scope_hash"),
+                credential = credential,
+                census = census,
+            ),
+        )
+        val decoded = BarnardB005V2Codec.decode(accepted)
+        assertEquals(boundaryName, decoded.eventDisplayName)
+
+        val oneByteOverName = boundaryName + "!"
+        assertEquals(65, oneByteOverName.toByteArray(Charsets.UTF_8).size)
+        val error = assertThrows(BarnardAdoptionProtocolException::class.java) {
+            BarnardB005V2Codec.serialize(
+                BarnardB005V2Payload(
+                    eventDisplayName = oneByteOverName,
+                    b004AdoptionScopeHash = vectors.bytes("b004_adoption_scope_hash"),
+                    credential = credential,
+                    census = census,
+                ),
+            )
         }
         assertEquals(BarnardAdoptionProtocolError.INVALID_DISPLAY_NAME, error.reason)
     }
