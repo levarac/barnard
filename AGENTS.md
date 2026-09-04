@@ -129,6 +129,13 @@ Add or update tests proportional to the change:
 
 ## Definition of done (quick checklist)
 
+## Linking PRs to issues (Development sidebar)
+
+1. A PR that closes an issue puts `Closes #N` (one per issue) in its body. When the base is `main` the link appears automatically; editing the body after merge also creates it.
+2. Closing keywords are not evaluated when the base is not `main` (stacked PRs, `release/*` targets). Temporarily retarget with `gh pr edit <n> --base main`, confirm the link via GraphQL (`issue.closedByPullRequestsReferences`), then set the base back. The link persists after the base is restored. Changing the base does not trigger CI (it is a `pull_request` `edited` event, not a default trigger type).
+3. The pre-merge checklist comment (review and verification results posted on the PR) states `Development link: done`, or `no issue` for PRs that close nothing.
+4. Comments and mentions are not links; verify with GraphQL.
+
 - Spec updated and readable without code.
 - Schema updated first (or explicitly “no public shape changes”).
 - Implementation matches spec; no extra behavior.
