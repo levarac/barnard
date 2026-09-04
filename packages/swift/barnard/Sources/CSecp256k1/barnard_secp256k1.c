@@ -5,8 +5,18 @@
 #include "vendor/src/secp256k1.c"
 #include "vendor/src/modules/recovery/main_impl.h"
 static secp256k1_context *barnard_global_context;
-__attribute__((constructor)) static void barnard_context_create(void) { barnard_global_context = secp256k1_context_create(SECP256K1_CONTEXT_NONE); }
-__attribute__((destructor)) static void barnard_context_destroy(void) { secp256k1_context_destroy(barnard_global_context); }
+int barnard_secp256k1_context_create(const uint8_t seed32[32]) {
+  if (barnard_global_context != NULL) return 1;
+  barnard_global_context = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+  if (barnard_global_context == NULL) return 0;
+  if (!secp256k1_context_randomize(barnard_global_context, seed32)) {
+    secp256k1_context_destroy(barnard_global_context);
+    barnard_global_context = NULL;
+    return 0;
+  }
+  return 1;
+}
+__attribute__((destructor)) static void barnard_context_destroy(void) { if (barnard_global_context != NULL) secp256k1_context_destroy(barnard_global_context); }
 static const secp256k1_context *barnard_context(void) { return barnard_global_context; }
 int barnard_secp256k1_seckey_verify(const uint8_t key32[32]) { return secp256k1_ec_seckey_verify(barnard_context(), key32); }
 int barnard_secp256k1_pubkey_create(const uint8_t key32[32], uint8_t output33[33]) { secp256k1_pubkey p; size_t n=33; return secp256k1_ec_pubkey_create(barnard_context(),&p,key32) && secp256k1_ec_pubkey_serialize(barnard_context(),output33,&n,&p,SECP256K1_EC_COMPRESSED) && n==33; }

@@ -15,6 +15,16 @@ protocol BarnardCoreSecp256k1Backend {
 enum BarnardCoreLibsecp256k1Backend: BarnardCoreSecp256k1Backend {
   private static let order = bytes("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
   private static let halfOrder = bytes("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0")
+  private static let contextInitialized: Void = {
+    var generator = SystemRandomNumberGenerator()
+    var seed = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+    let initialized = seed.withUnsafeMutableBufferPointer {
+      barnard_secp256k1_context_create($0.baseAddress)
+    }
+    precondition(initialized == 1, "libsecp256k1 context randomization failed")
+  }()
+
+  private static func requireContext() { _ = contextInitialized }
 
   static func normalizedPrivateKey(_ candidate: [UInt8]) -> [UInt8]? {
     guard candidate.count == 32 else { return nil }
@@ -31,6 +41,7 @@ enum BarnardCoreLibsecp256k1Backend: BarnardCoreSecp256k1Backend {
   }
 
   static func validatePrivateKey(_ candidate: [UInt8]) -> Bool {
+    requireContext()
     guard candidate.count == 32 else { return false }
     var key = candidate
     let valid = key.withUnsafeMutableBufferPointer {
@@ -40,6 +51,7 @@ enum BarnardCoreLibsecp256k1Backend: BarnardCoreSecp256k1Backend {
   }
 
   static func compressedPublicKey(privateKey: [UInt8]) -> [UInt8]? {
+    requireContext()
     guard validatePrivateKey(privateKey) else { return nil }
     var key = privateKey, output = [UInt8](repeating: 0, count: 33)
     let ok = key.withUnsafeMutableBufferPointer { keyPointer in
@@ -51,6 +63,7 @@ enum BarnardCoreLibsecp256k1Backend: BarnardCoreSecp256k1Backend {
   }
 
   static func signRecoverable(privateKey: [UInt8], hash32: [UInt8]) -> BarnardCoreRecoverableSignature? {
+    requireContext()
     guard validatePrivateKey(privateKey), hash32.count == 32 else { return nil }
     var key = privateKey, hash = hash32, compact = [UInt8](repeating: 0, count: 64), recoveryId: Int32 = -1
     let ok = key.withUnsafeMutableBufferPointer { kp in hash.withUnsafeMutableBufferPointer { hp in
@@ -62,6 +75,7 @@ enum BarnardCoreLibsecp256k1Backend: BarnardCoreSecp256k1Backend {
   }
 
   static func recoverPublicKey(signature: BarnardCoreRecoverableSignature, hash32: [UInt8]) -> [UInt8]? {
+    requireContext()
     // Profile clauses 6–8 require canonical 32-byte, low-S components and v in {0,1}.
     guard signature.r.count == 32, signature.s.count == 32, hash32.count == 32,
           signature.v == 0 || signature.v == 1,
@@ -76,6 +90,7 @@ enum BarnardCoreLibsecp256k1Backend: BarnardCoreSecp256k1Backend {
   }
 
   static func expandedPublicKey(_ compressed: [UInt8]) -> [UInt8]? {
+    requireContext()
     guard compressed.count == 33 else { return nil }
     var input = compressed, output = [UInt8](repeating: 0, count: 65)
     let ok = input.withUnsafeMutableBufferPointer { ip in output.withUnsafeMutableBufferPointer { op in

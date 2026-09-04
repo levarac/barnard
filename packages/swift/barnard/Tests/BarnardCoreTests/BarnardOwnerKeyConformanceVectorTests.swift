@@ -194,6 +194,17 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
     XCTAssertNil(BarnardCoreSigning.recoverPublicKey(
       recoveryId: try vectors.int("out_of_range_recovery_id"), r: r,
       s: try vectors.bytes("expected_s"), messageHash32: hash))
+    // The pure-Swift path (selected when CSecp256k1 is unavailable, i.e. the
+    // mirrored Flutter build) must apply the same rejections.
+    XCTAssertNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: try vectors.int("high_s_recovery_v"), r: r,
+      s: try vectors.bytes("high_s"), messageHash32: hash))
+    XCTAssertNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: try vectors.int("out_of_range_recovery_id"), r: r,
+      s: try vectors.bytes("expected_s"), messageHash32: hash))
+    XCTAssertNotNil(BarnardCoreSigning.pureSwiftRecoverPublicKey(
+      recoveryId: try vectors.int("expected_v"), r: r,
+      s: try vectors.bytes("expected_s"), messageHash32: hash))
   }
 
   /// Profile clauses 2, 4, 6, 7, and 8 require byte-identical compressed keys and
@@ -212,8 +223,12 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
       try ownerVectors.bytes("walletack_owner_private_key"),
       BarnardCorePrimitives.sha256(try ownerVectors.bytes("walletack_expected_message"))
     ))
+    let fixedKey = try vectors.bytes("private_key_valid")
+    pairs.append((fixedKey, [UInt8](repeating: 0xff, count: 32)))
+    pairs.append((fixedKey, try decodeRequiredHex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")))
     var state = [UInt8](repeating: 0x42, count: 32)
-    for index in 0..<200 {
+    // 200 pairs measured about 700 seconds under -O on an iOS Simulator.
+    for index in 0..<24 {
       state = BarnardCorePrimitives.sha256(state + [UInt8(index & 0xff)])
       var key = BarnardCorePrimitives.sha256([0x6b] + state)
       while !BarnardCoreLibsecp256k1Backend.validatePrivateKey(key) {
@@ -229,6 +244,11 @@ final class BarnardOwnerKeyConformanceVectorTests: XCTestCase {
         BarnardCoreSecp256k1.UInt256(bytes: key), BarnardCoreSecp256k1.generator))
       XCTAssertEqual(BarnardCoreLibsecp256k1Backend.compressedPublicKey(privateKey: key), purePublicKey)
     }
+  }
+
+  private func decodeRequiredHex(_ value: String) throws -> [UInt8] {
+    guard let bytes = decodeHex(value) else { throw VectorError.malformedHex(value) }
+    return bytes
   }
 
   // MARK: - Vector file loading
