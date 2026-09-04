@@ -161,7 +161,7 @@ final class BarnardAdoptionCensusContractTests: XCTestCase {
       try BarnardEventInfoCodec.parse(legacyPayload),
       BarnardEventInfo(eventDisplayName: "Legacy Event", eventCodeHash: legacyB004)
     )
-    XCTAssertNotEqual(legacyPayload.first, 0x02)
+    XCTAssertEqual(legacyPayload.first, 0x01)
     XCTAssertNotEqual(legacyB004, try AdoptionCensusVectors.load().bytes("b004_adoption_scope_hash"))
   }
 
