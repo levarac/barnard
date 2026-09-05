@@ -1,0 +1,14 @@
+# B005 participant relay shared density vectors.
+k=3
+window_ms=30000
+contention_max_ms=15000
+r0_enter_numerator=3
+r1_enter_numerator=2
+r2_enter_numerator=1
+r3_enter_numerator=0
+r4_enter_numerator=0
+r0_keep_numerator=3
+r1_keep_numerator=3
+r2_keep_numerator=3
+r3_keep_numerator=3
+r4_keep_numerator=3

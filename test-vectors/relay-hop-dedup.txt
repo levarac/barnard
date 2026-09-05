@@ -1,0 +1,10 @@
+# B005 participant relay shared hop/dedup vectors.
+format_version=03
+envelope=01020304
+hop_zero_container=0300000401020304
+hop_one_container=0301000401020304
+hop_two_container=0302000401020304
+served_from_zero=0301000401020304
+served_from_one=0302000401020304
+handle_cap=32
+relay_lifetime_enins=12
