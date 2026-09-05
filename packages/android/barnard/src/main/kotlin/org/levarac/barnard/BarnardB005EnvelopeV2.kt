@@ -202,30 +202,37 @@ object BarnardB005EnvelopeV2 {
      * responsibility of the component that performed the authenticated registry read (the host
      * app), per spec 122's receiver policy; tracked as beid#367 / dispatch#11 (P4).
      *
-     * Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment. Per
-     * spec 122's byte layout table (`validFromEnin` at A+3, `validThroughEnin` at A+7) and its
-     * receiver-policy inequality `validFromEnin <= currentEnin < relayExpiresAtEnin <=
-     * validThroughEnin`, `currentEnin` can never reach `validThroughEnin` itself, so
-     * `validThroughEnin` is already the exclusive end of the envelope's ENIN window: the window
-     * is the half-open range `[validFromEnin, validThroughEnin)`. `eninSeconds`-denominated ENINs
-     * cover the half-open second range `[enin * eninSeconds, (enin + 1) * eninSeconds)`, so the
-     * registry's Unix-second window is converted to that same half-open ENIN shape conservatively
-     * (start rounded up, end rounded down) before the two windows are compared for exact equality.
-     * A registry window that does not fall on ENIN boundaries converts to an empty range and can
-     * never agree with anything.
+     * Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment.
+     * `validThroughEnin` is treated as the INCLUSIVE last valid ENIN (window `[validFromEnin,
+     * validThroughEnin]`): spec 122 never states its own convention for this field, but parallax's
+     * `event-definition.md` (`validFrom`/`validUntil`, lines 52-53) is explicitly inclusive on both
+     * ends, and spec 122's only other ENIN range (the delegation cert's `eninStart`/`eninEnd`,
+     * spec 122:211) is likewise inclusive -- this is an issuer derivation erratum, tracked in the
+     * spec 122 errata. `eninSeconds`-denominated ENINs each cover `eninSeconds` consecutive Unix
+     * seconds, so the registry's inclusive Unix-second window is converted to the same inclusive
+     * ENIN shape conservatively (start rounded up, end rounded down) before the two windows are
+     * compared for exact equality. A registry window that does not fall on ENIN boundaries
+     * converts to an empty range and can never agree with anything.
      */
     fun registryAgreement(verified: BarnardB005VerifiedEnvelope, definition: BarnardEventDefinitionV1): BarnardRegistryAgreement {
         val eninPerSecond = verified.eninSeconds.toLong()
-        // Conservative half-open ENIN window: start rounded up so it never precedes the real
-        // registry start, end (exclusive) rounded down so it never extends past the real registry end.
+        // Conservative inclusive ENIN window: start rounded up so it never precedes the real
+        // registry start, end rounded down so it never extends past the real registry's inclusive
+        // last second. The end conversion is floorDiv(validUntilUnixSeconds + 1, eninPerSecond),
+        // computed via the floorMod identity below rather than literally adding 1, since
+        // validUntilUnixSeconds may be Long.MAX_VALUE for an adversarial registry read.
         val registryStartEnin = if (verified.eninSeconds <= 0) null else -Math.floorDiv(-definition.validFromUnixSeconds, eninPerSecond)
-        val registryEndEninExclusive = if (verified.eninSeconds <= 0) null else Math.floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
+        val registryEndEnin = if (verified.eninSeconds <= 0) null else {
+            val q = Math.floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
+            val r = Math.floorMod(definition.validUntilUnixSeconds, eninPerSecond)
+            if (r == eninPerSecond - 1 && q != Long.MAX_VALUE) q + 1 else q
+        }
         val mismatches = buildSet {
             if (!verified.eventId.contentEquals(definition.eventId)) add(BarnardRegistryMismatchField.EVENT_ID)
             if (!verified.eventCodeHash.contentEquals(definition.eventCodeHash)) add(BarnardRegistryMismatchField.EVENT_CODE_HASH)
             if (!verified.keySetDigest.contentEquals(definition.keySetDigest)) add(BarnardRegistryMismatchField.KEY_SET_DIGEST)
             if (verified.joinMode != definition.joinMode) add(BarnardRegistryMismatchField.JOIN_MODE)
-            if (registryStartEnin != verified.validFromEnin || registryEndEninExclusive != verified.validThroughEnin) add(BarnardRegistryMismatchField.VALIDITY_WINDOW)
+            if (registryStartEnin != verified.validFromEnin || registryEndEnin != verified.validThroughEnin) add(BarnardRegistryMismatchField.VALIDITY_WINDOW)
         }
         return if (mismatches.isEmpty()) BarnardRegistryAgreement.Agrees else BarnardRegistryAgreement.Mismatched(mismatches)
     }

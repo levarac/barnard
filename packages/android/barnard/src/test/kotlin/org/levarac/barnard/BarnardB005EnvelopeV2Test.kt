@@ -139,35 +139,42 @@ class BarnardB005EnvelopeV2Test {
     }
 
     @Test fun registryAgreementRejectsMisalignedValidityWindowExample() {
-        // Reviewer's exact counter-example: eninSeconds=300, registry half-open seconds window
-        // [3001, 3300). 3001 / 300 == 10 (floor division), which is what let the old
-        // implementation wrongly accept an envelope valid from ENIN 10 -- but ENIN 10 covers
-        // seconds [3000, 3300), which starts one second BEFORE the registry's real start of 3001.
-        // Conservative conversion (ceil the start, floor the end) yields registryStart=11,
-        // registryEnd=11, mismatching the envelope's declared validFromEnin=10 -- rejected.
-        // (Per spec 122's receiver-policy inequality `validFromEnin <= currentEnin <
-        // relayExpiresAtEnin <= validThroughEnin`, validThroughEnin is already the exclusive end
-        // of the ENIN window, so a one-ENIN-wide envelope validFromEnin=10, validThroughEnin=11
-        // -- i.e. the half-open range [10, 11) -- is a normal, minimal window.)
+        // eninSeconds=300, envelope declares the inclusive ENIN window [10, 11] (validFromEnin=10,
+        // validThroughEnin=11 -- see registryAgreement's doc comment on the inclusive convention).
+        // Registry inclusive-seconds window [3001, 3299]: ceil(3001/300)=11 for the start, mismatching
+        // the envelope's declared validFromEnin=10 -- rejected.
         val misaligned = synthesizeWindow(eninSeconds = 300, validFromEnin = 10, validThroughEnin = 11)
         val registryDefinition = BarnardEventDefinitionV1(
             misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
-            validFromUnixSeconds = 3001, validUntilUnixSeconds = 3300,
+            validFromUnixSeconds = 3001, validUntilUnixSeconds = 3299,
         )
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, registryDefinition), "misaligned window must not agree")
 
-        // Aligned: registry [3000, 3300) exactly matches the ENIN [10, 11) half-open range -- accepted.
+        // Aligned: registry inclusive [3000, 3299] exactly matches the inclusive ENIN [10, 11] range -- accepted.
         val aligned = BarnardEventDefinitionV1(
             misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
-            validFromUnixSeconds = 3000, validUntilUnixSeconds = 3300,
+            validFromUnixSeconds = 3000, validUntilUnixSeconds = 3299,
         )
         assertEquals(BarnardRegistryAgreement.Agrees, BarnardB005EnvelopeV2.registryAgreement(misaligned, aligned), "aligned window must agree")
 
         // Off-by-one ENIN at both ends of the aligned registry window must still be rejected.
         val startOffByOne = aligned.copy(validFromUnixSeconds = 2700)
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, startOffByOne), "start off-by-one must not agree")
-        val endOffByOne = aligned.copy(validUntilUnixSeconds = 3600)
+        val endOffByOne = aligned.copy(validUntilUnixSeconds = 3599)
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, endOffByOne), "end off-by-one must not agree")
+    }
+
+    @Test fun registryAgreementEndConversionIsOverflowSafeAtLongMaxValue() {
+        // eninPerSecond=1 makes floorMod(Long.MAX_VALUE, 1)==0==eninPerSecond-1, which is exactly
+        // the branch that would try to compute Long.MAX_VALUE + 1 (overflowing to Long.MIN_VALUE)
+        // without the floorMod-identity guard in registryAgreement. Must not throw or wrap to a
+        // negative "registryEndEnin" that could spuriously agree with a small validThroughEnin.
+        val envelope = synthesizeWindow(eninSeconds = 1, validFromEnin = 10, validThroughEnin = 11)
+        val definition = BarnardEventDefinitionV1(
+            envelope.eventId, envelope.keySetDigest, envelope.joinMode, envelope.eventCodeHash,
+            validFromUnixSeconds = 10, validUntilUnixSeconds = Long.MAX_VALUE,
+        )
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(envelope, definition), "must not overflow into a spurious agreement")
     }
 
     @Test fun verifiedEnvelopeHasNoPublicConstructorOrCopy() {

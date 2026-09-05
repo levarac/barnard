@@ -215,29 +215,36 @@ public enum BarnardB005EnvelopeV2 {
   /// responsibility of the component that performed the authenticated registry read (the host
   /// app), per spec 122's receiver policy; tracked as beid#367 / dispatch#11 (P4).
   ///
-  /// Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment. Per
-  /// spec 122's byte layout table (`validFromEnin` at A+3, `validThroughEnin` at A+7) and its
-  /// receiver-policy inequality `validFromEnin <= currentEnin < relayExpiresAtEnin <=
-  /// validThroughEnin`, `currentEnin` can never reach `validThroughEnin` itself, so
-  /// `validThroughEnin` is already the exclusive end of the envelope's ENIN window: the window is
-  /// the half-open range `[validFromEnin, validThroughEnin)`. `eninSeconds`-denominated ENINs
-  /// cover the half-open second range `[enin * eninSeconds, (enin + 1) * eninSeconds)`, so the
-  /// registry's Unix-second window is converted to that same half-open ENIN shape conservatively
-  /// (start rounded up, end rounded down) before the two windows are compared for exact equality.
-  /// A registry window that does not fall on ENIN boundaries converts to an empty range and can
-  /// never agree with anything.
+  /// Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment.
+  /// `validThroughEnin` is treated as the INCLUSIVE last valid ENIN (window `[validFromEnin,
+  /// validThroughEnin]`): spec 122 never states its own convention for this field, but parallax's
+  /// `event-definition.md` (`validFrom`/`validUntil`, lines 52-53) is explicitly inclusive on both
+  /// ends, and spec 122's only other ENIN range (the delegation cert's `eninStart`/`eninEnd`, spec
+  /// 122:211) is likewise inclusive -- this is an issuer derivation erratum, tracked in the spec
+  /// 122 errata. `eninSeconds`-denominated ENINs each cover `eninSeconds` consecutive Unix seconds,
+  /// so the registry's inclusive Unix-second window is converted to the same inclusive ENIN shape
+  /// conservatively (start rounded up, end rounded down) before the two windows are compared for
+  /// exact equality. A registry window that does not fall on ENIN boundaries converts to an empty
+  /// range and can never agree with anything.
   public static func registryAgreement(_ verified: BarnardB005VerifiedEnvelope, definition: BarnardEventDefinitionV1) -> BarnardRegistryAgreement {
     let eninPerSecond = Int64(verified.eninSeconds)
-    // Conservative half-open ENIN window: start rounded up so it never precedes the real
-    // registry start, end (exclusive) rounded down so it never extends past the real registry end.
+    // Conservative inclusive ENIN window: start rounded up so it never precedes the real registry
+    // start, end rounded down so it never extends past the real registry's inclusive last second.
+    // The end conversion is floorDiv(validUntilUnixSeconds + 1, eninPerSecond), computed via the
+    // floorMod identity below rather than literally adding 1, since validUntilUnixSeconds may be
+    // Int64.max for an adversarial registry read.
     let registryStartEnin: Int64? = verified.eninSeconds > 0 ? -floorDiv(-definition.validFromUnixSeconds, eninPerSecond) : nil
-    let registryEndEninExclusive: Int64? = verified.eninSeconds > 0 ? floorDiv(definition.validUntilUnixSeconds, eninPerSecond) : nil
+    let registryEndEnin: Int64? = verified.eninSeconds > 0 ? {
+      let q = floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
+      let r = floorMod(definition.validUntilUnixSeconds, eninPerSecond)
+      return (r == eninPerSecond - 1 && q != Int64.max) ? q + 1 : q
+    }() : nil
     var mismatches: Set<BarnardRegistryMismatchField> = []
     if verified.eventId != definition.eventId { mismatches.insert(.EVENT_ID) }
     if verified.eventCodeHash != definition.eventCodeHash { mismatches.insert(.EVENT_CODE_HASH) }
     if verified.keySetDigest != definition.keySetDigest { mismatches.insert(.KEY_SET_DIGEST) }
     if verified.joinMode != definition.joinMode { mismatches.insert(.JOIN_MODE) }
-    if registryStartEnin != verified.validFromEnin || registryEndEninExclusive != verified.validThroughEnin { mismatches.insert(.VALIDITY_WINDOW) }
+    if registryStartEnin != verified.validFromEnin || registryEndEnin != verified.validThroughEnin { mismatches.insert(.VALIDITY_WINDOW) }
     return mismatches.isEmpty ? .agrees : .mismatched(mismatchedFields: mismatches)
   }
 
@@ -246,6 +253,13 @@ public enum BarnardB005EnvelopeV2 {
   private static func floorDiv(_ a: Int64, _ b: Int64) -> Int64 {
     let q = a / b, r = a % b
     return (r != 0 && (r < 0) != (b < 0)) ? q - 1 : q
+  }
+
+  /// Floor modulo for `Int64`, matching Kotlin's `Math.floorMod`: the result always has the same
+  /// sign as `b` (Swift's `%` can return a negative remainder for a positive `b`).
+  private static func floorMod(_ a: Int64, _ b: Int64) -> Int64 {
+    let r = a % b
+    return (r != 0 && (r < 0) != (b < 0)) ? r + b : r
   }
 
   public static func buildSigStructure(protected: [UInt8], payload: [UInt8]) -> [UInt8]? {

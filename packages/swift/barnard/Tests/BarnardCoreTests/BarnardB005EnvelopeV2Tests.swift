@@ -149,27 +149,33 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
   }
 
   func testRegistryAgreementRejectsMisalignedValidityWindowExample() throws {
-    // Reviewer's exact counter-example: eninSeconds=300, registry half-open seconds window
-    // [3001, 3300). 3001 / 300 == 10 (floor division), which is what let the old implementation
-    // wrongly accept an envelope valid from ENIN 10 -- but ENIN 10 covers seconds [3000, 3300),
-    // which starts one second BEFORE the registry's real start of 3001. Conservative conversion
-    // (ceil the start, floor the end) yields registryStart=11, registryEnd=11, mismatching the
-    // envelope's declared validFromEnin=10 -- rejected. (A verified envelope's expiry must
-    // strictly precede validThroughEnin, so the narrowest window this synthetic construction can
-    // express is two ENINs wide: validFromEnin=10, validThroughEnin=11, i.e. [10, 12).)
+    // eninSeconds=300, envelope declares the inclusive ENIN window [10, 11] (validFromEnin=10,
+    // validThroughEnin=11 -- see registryAgreement's doc comment on the inclusive convention).
+    // Registry inclusive-seconds window [3001, 3299]: ceil(3001/300)=11 for the start, mismatching
+    // the envelope's declared validFromEnin=10 -- rejected.
     let misaligned = synthesizeWindow(eninSeconds: 300, validFromEnin: 10, validThroughEnin: 11)
-    let registryDefinition = BarnardEventDefinitionV1(eventId: misaligned.eventId, keySetDigest: misaligned.keySetDigest, joinMode: misaligned.joinMode, eventCodeHash: misaligned.eventCodeHash, validFromUnixSeconds: 3001, validUntilUnixSeconds: 3300)
+    let registryDefinition = BarnardEventDefinitionV1(eventId: misaligned.eventId, keySetDigest: misaligned.keySetDigest, joinMode: misaligned.joinMode, eventCodeHash: misaligned.eventCodeHash, validFromUnixSeconds: 3001, validUntilUnixSeconds: 3299)
     XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: registryDefinition), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "misaligned window must not agree")
 
-    // Aligned: registry [3000, 3300) exactly matches the ENIN [10, 11) half-open range -- accepted.
-    let aligned = BarnardEventDefinitionV1(eventId: misaligned.eventId, keySetDigest: misaligned.keySetDigest, joinMode: misaligned.joinMode, eventCodeHash: misaligned.eventCodeHash, validFromUnixSeconds: 3000, validUntilUnixSeconds: 3300)
+    // Aligned: registry inclusive [3000, 3299] exactly matches the inclusive ENIN [10, 11] range -- accepted.
+    let aligned = BarnardEventDefinitionV1(eventId: misaligned.eventId, keySetDigest: misaligned.keySetDigest, joinMode: misaligned.joinMode, eventCodeHash: misaligned.eventCodeHash, validFromUnixSeconds: 3000, validUntilUnixSeconds: 3299)
     XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: aligned), .agrees, "aligned window must agree")
 
     // Off-by-one ENIN at both ends of the aligned registry window must still be rejected.
     let startOffByOne = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: 2700, validUntilUnixSeconds: aligned.validUntilUnixSeconds)
     XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: startOffByOne), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "start off-by-one must not agree")
-    let endOffByOne = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: aligned.validFromUnixSeconds, validUntilUnixSeconds: 3600)
+    let endOffByOne = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: aligned.validFromUnixSeconds, validUntilUnixSeconds: 3599)
     XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: endOffByOne), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "end off-by-one must not agree")
+  }
+
+  func testRegistryAgreementEndConversionIsOverflowSafeAtInt64Max() throws {
+    // eninPerSecond=1 makes floorMod(Int64.max, 1)==0==eninPerSecond-1, which is exactly the
+    // branch that would try to compute Int64.max + 1 (overflowing/trapping) without the
+    // floorMod-identity guard in registryAgreement. Must not crash or wrap to a value that could
+    // spuriously agree with a small validThroughEnin.
+    let envelope = synthesizeWindow(eninSeconds: 1, validFromEnin: 10, validThroughEnin: 11)
+    let definition = BarnardEventDefinitionV1(eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, validFromUnixSeconds: 10, validUntilUnixSeconds: Int64.max)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(envelope, definition: definition), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "must not overflow into a spurious agreement")
   }
 
   /// Builds a structurally-valid `RADIO_SELF_VERIFIED` envelope with a caller-chosen
