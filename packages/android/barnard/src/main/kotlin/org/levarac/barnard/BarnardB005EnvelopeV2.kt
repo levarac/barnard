@@ -2,6 +2,7 @@
 
 package org.levarac.barnard
 
+import java.nio.charset.CharacterCodingException
 import java.security.MessageDigest
 import org.bouncycastle.crypto.digests.KeccakDigest
 
@@ -141,8 +142,13 @@ object BarnardB005EnvelopeV2 {
         return (0..1).any { recoverer.recover(it, r, s, digest)?.contentEquals(key) == true }
     }
     private fun strictDisplayName(bytes: ByteArray): String? {
-        val value = bytes.decodeToString(throwOnInvalidSequence = true)
-        if (value.any { it.code in 0..31 || it.code == 127 || it.code in 0x300..0x36f }) return null
+        val value = try {
+            bytes.decodeToString(throwOnInvalidSequence = true)
+        } catch (e: CharacterCodingException) {
+            return null
+        }
+        if (value.any { it.code in 0..31 || it.code == 127 }) return null
+        if (java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFC) != value) return null
         return value
     }
     private fun cborBytes(bytes: ByteArray) = if (bytes.size < 24) byteArrayOf((0x40 or bytes.size).toByte()) + bytes else byteArrayOf(0x58, bytes.size.toByte()) + bytes
