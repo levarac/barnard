@@ -1,5 +1,16 @@
 // Use of this source code is governed by a BSD-style license.
 
+// BarnardCore is stdlib-only: full Unicode NFC normalization needs composition and
+// decomposition tables the bare standard library does not expose, so the NFC check spec 122
+// step 3 requires is injected via this protocol rather than done in-tree. The concrete
+// implementation backed by the platform's own Unicode support lives in the outer Barnard
+// module (see `BarnardB005NativeDisplayNameNormalizer`), matching how
+// `BarnardB005PublicKeyRecovering` keeps the crypto backend out of BarnardCore.
+public protocol BarnardB005DisplayNameNormalizing {
+  /// Returns whether `value` is already in Unicode Normalization Form C.
+  func isNormalizedNFC(_ value: String) -> Bool
+}
+
 public enum BarnardB005ReceiverState: Equatable {
   case UNVERIFIED
   case RADIO_SELF_VERIFIED
@@ -69,7 +80,7 @@ public enum BarnardB005EnvelopeV2 {
     return [3, relayHopCount, UInt8(signedEnvelope.count >> 8), UInt8(signedEnvelope.count & 255)] + signedEnvelope
   }
 
-  public static func verify(container: [UInt8], currentEnin: Int64?, registryConfirmed: Bool = false, recoverer: any BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer()) -> BarnardB005VerifiedEnvelope? {
+  public static func verify(container: [UInt8], currentEnin: Int64?, nameValidator: any BarnardB005DisplayNameNormalizing, registryConfirmed: Bool = false, recoverer: any BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer()) -> BarnardB005VerifiedEnvelope? {
     guard container.count <= 512, container.count >= 4, container[0] == 3, container[1] <= 2 else { return nil }
     let envelopeLength = Int(container[2]) << 8 | Int(container[3])
     guard envelopeLength <= 508, envelopeLength == container.count - 4, let now = currentEnin, now >= 0 else { return nil }
@@ -95,7 +106,7 @@ public enum BarnardB005EnvelopeV2 {
     let certLength = Int(envelope[certLengthOffset]), expected = 165 + 33 * n + nameLength + certLength
     guard expected == envelope.count else { return nil }
     let nameBytes = Array(envelope[nameStart..<certLengthOffset])
-    guard let name = strictDisplayName(nameBytes) else { return nil }
+    guard let name = strictDisplayName(nameBytes, nameValidator: nameValidator) else { return nil }
     guard let ksDigest = keySetDigest(keys), let eventId = computeEventId(registrar: registrar, anchorOperator: anchor, nonce: nonce, keySetDigest: ksDigest) else { return nil }
     guard validFrom <= now, now < expires, expires <= validThrough, expires >= validFrom, expires - validFrom <= 12 else { return nil }
     if joinMode == 0 {
@@ -160,13 +171,14 @@ public enum BarnardB005EnvelopeV2 {
     return (0...1).contains { recoverer.recover(recoveryId: $0, r: r, s: s, digest: digest) == key }
   }
 
-  private static func strictDisplayName(_ bytes: [UInt8]) -> String? {
+  private static func strictDisplayName(_ bytes: [UInt8], nameValidator: any BarnardB005DisplayNameNormalizing) -> String? {
     let value = String(decoding: bytes, as: UTF8.self)
     guard Array(value.utf8) == bytes else { return nil }
     for scalar in value.unicodeScalars {
       let v = scalar.value
-      if v <= 0x1f || v == 0x7f || (0x0300...0x036f).contains(v) { return nil }
+      if v <= 0x1f || v == 0x7f { return nil }
     }
+    guard nameValidator.isNormalizedNFC(value) else { return nil }
     return value
   }
   private static func lexicographicallyLess(_ a: [UInt8], _ b: [UInt8]) -> Bool { for i in a.indices { if a[i] != b[i] { return a[i] < b[i] } }; return false }
