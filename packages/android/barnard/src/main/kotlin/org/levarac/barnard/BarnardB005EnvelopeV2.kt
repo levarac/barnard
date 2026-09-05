@@ -23,24 +23,43 @@ object BarnardB005NativeRecoverer : BarnardB005PublicKeyRecovering {
  * A plain (non-`data`) class with a private constructor: `data class` would generate a public
  * `copy()` (and, from Java, a callable constructor) that lets a caller fabricate
  * `receiverState = REGISTRY_VERIFIED` directly. There is no public or `internal` constructor at
- * all -- the only way to obtain one is [BarnardB005EnvelopeV2.verify] (always
- * `RADIO_SELF_VERIFIED`) or [BarnardB005EnvelopeV2.confirmAgainstRegistry] (re-tiers an existing
- * one). Both reach the private constructor through the `internal` factory functions in
- * [Companion], which are themselves members of this class and so have access to it.
+ * all -- the only way to obtain one is [BarnardB005EnvelopeV2.verify], which always produces
+ * `UNVERIFIED` or `RADIO_SELF_VERIFIED`. This SDK never assigns `REGISTRY_VERIFIED`: doing so is
+ * the responsibility of the component that performed the authenticated registry read (the host
+ * app), per spec 122's receiver policy; tracked as beid#367 / dispatch#11 (P4). It reaches the
+ * private constructor through the `internal` factory function in [Companion], which is a member
+ * of this class and so has access to it.
+ *
+ * Kotlin's codegen for "private constructor + companion factory" unconditionally emits a second,
+ * JVM-`public` constructor overload carrying a trailing `kotlin.jvm.internal.DefaultConstructorMarker`
+ * parameter -- a synthetic bridge letting the companion, a distinct JVM class, reach the private
+ * constructor (confirmed empirically via javap; no combination of Kotlin visibility keywords
+ * avoids it once a companion touches the private constructor). This bridge is `ACC_SYNTHETIC` and
+ * reachable only via raw JVM reflection from within this same process; it is accepted as outside
+ * this SDK's threat model, which is a hostile *peer* over the radio, not a hostile co-resident
+ * process reflecting into this class's own bytecode.
  */
 class BarnardB005VerifiedEnvelope private constructor(
     val receiverState: BarnardB005ReceiverState,
     val relayHopCount: Int,
-    val eventId: ByteArray,
-    val keySetDigest: ByteArray,
+    private val eventIdBacking: ByteArray,
+    private val keySetDigestBacking: ByteArray,
     val joinMode: Int,
-    val eventCodeHash: ByteArray,
+    private val eventCodeHashBacking: ByteArray,
     val eventDisplayName: String,
     val validFromEnin: Long,
     val validThroughEnin: Long,
     val eninSeconds: Int,
-    val signedEnvelope: ByteArray,
+    private val signedEnvelopeBacking: ByteArray,
 ) {
+    // Every ByteArray getter returns a defensive copy: the backing arrays are the only mutable
+    // state on this otherwise-immutable type, and returning them directly would let a caller
+    // mutate a supposedly-verified envelope's fields in place after the fact.
+    val eventId: ByteArray get() = eventIdBacking.copyOf()
+    val keySetDigest: ByteArray get() = keySetDigestBacking.copyOf()
+    val eventCodeHash: ByteArray get() = eventCodeHashBacking.copyOf()
+    val signedEnvelope: ByteArray get() = signedEnvelopeBacking.copyOf()
+
     internal companion object {
         internal fun radioSelfVerified(
             relayHopCount: Int,
@@ -56,12 +75,6 @@ class BarnardB005VerifiedEnvelope private constructor(
         ) = BarnardB005VerifiedEnvelope(
             BarnardB005ReceiverState.RADIO_SELF_VERIFIED, relayHopCount, eventId, keySetDigest, joinMode,
             eventCodeHash, eventDisplayName, validFromEnin, validThroughEnin, eninSeconds, signedEnvelope,
-        )
-
-        internal fun withState(verified: BarnardB005VerifiedEnvelope, newState: BarnardB005ReceiverState) = BarnardB005VerifiedEnvelope(
-            newState, verified.relayHopCount, verified.eventId, verified.keySetDigest, verified.joinMode,
-            verified.eventCodeHash, verified.eventDisplayName, verified.validFromEnin, verified.validThroughEnin,
-            verified.eninSeconds, verified.signedEnvelope,
         )
     }
 }
@@ -81,47 +94,19 @@ data class BarnardEventDefinitionV1(
     val validUntilUnixSeconds: Long,
 )
 
-/**
- * Wraps a [BarnardEventDefinitionV1] together with the evidence a host must have obtained from
- * its own registry read (spec 122 receiver policy, step 3): the pinned block the definition was
- * read at, and the registry's own proof/receipt bytes for that read. `confirmAgainstRegistry`
- * accepts ONLY this wrapper, never a bare [BarnardEventDefinitionV1] -- a definition built from
- * a radio result (which has a public constructor, since it is also the on-the-wire shape) cannot
- * be substituted for an actual registry read.
- *
- * This SDK cannot verify [pinnedBlockHash] or [anchorProof] against the chain itself; that
- * verification (confirming the block is the one actually pinned, and the proof/receipt is
- * genuine for that block) is the host's responsibility, tracked in beid#367. [fromRegistryRead]
- * validates only their shape (non-empty, minimum plausible length for a hash/receipt) -- it is
- * not a cryptographic check.
- */
-class BarnardRegistryAuthenticatedDefinition private constructor(
-    val definition: BarnardEventDefinitionV1,
-    val pinnedBlockNumber: Long,
-    val pinnedBlockHash: ByteArray,
-    val anchorProof: ByteArray,
-) {
-    companion object {
-        private const val MIN_PINNED_BLOCK_HASH_BYTES = 32
-        private const val MIN_ANCHOR_PROOF_BYTES = 32
+/** A single field on which [registryAgreement] can find a mismatch between an envelope and a registered `EventDefinitionV1`. */
+enum class BarnardRegistryMismatchField { EVENT_ID, EVENT_CODE_HASH, KEY_SET_DIGEST, JOIN_MODE, VALIDITY_WINDOW }
 
-        /**
-         * @param pinnedBlockNumber the block number the host read [definition] at.
-         * @param pinnedBlockHash the hash of that block, as read by the host (opaque, shape-checked only).
-         * @param anchorProof the registry's own proof/receipt bytes for that read (opaque, shape-checked only).
-         */
-        fun fromRegistryRead(
-            definition: BarnardEventDefinitionV1,
-            pinnedBlockNumber: Long,
-            pinnedBlockHash: ByteArray,
-            anchorProof: ByteArray,
-        ): BarnardRegistryAuthenticatedDefinition? {
-            if (pinnedBlockNumber < 0) return null
-            if (pinnedBlockHash.size < MIN_PINNED_BLOCK_HASH_BYTES) return null
-            if (anchorProof.size < MIN_ANCHOR_PROOF_BYTES) return null
-            return BarnardRegistryAuthenticatedDefinition(definition, pinnedBlockNumber, pinnedBlockHash, anchorProof)
-        }
-    }
+/**
+ * The result of comparing a `RADIO_SELF_VERIFIED` envelope against a registered `EventDefinitionV1`:
+ * either the two agree, or [mismatchedFields] names every field that disagreed. Either way this is
+ * a pure comparison -- it never changes the envelope's [BarnardB005ReceiverState]. Assigning
+ * `REGISTRY_VERIFIED` is the responsibility of the component that performed the authenticated
+ * registry read (the host app), per spec 122's receiver policy; tracked as beid#367 / dispatch#11 (P4).
+ */
+sealed class BarnardRegistryAgreement {
+    object Agrees : BarnardRegistryAgreement()
+    data class Mismatched(val mismatchedFields: Set<BarnardRegistryMismatchField>) : BarnardRegistryAgreement()
 }
 
 object BarnardB005EnvelopeV2 {
@@ -210,12 +195,12 @@ object BarnardB005EnvelopeV2 {
     }
 
     /**
-     * Confirms a `RADIO_SELF_VERIFIED` envelope against the authenticated, pinned-block
-     * `EventDefinitionV1` for this `eventId` (spec 122 receiver policy, step 8; spec 134 step 4 as
-     * amended by errata #173, which drops the unsatisfiable display-name agreement). This is the
-     * only path to `REGISTRY_VERIFIED`: `authenticated` can only have been produced by
-     * [BarnardRegistryAuthenticatedDefinition.fromRegistryRead], never fabricated from a bare
-     * `EventDefinitionV1` built from radio data.
+     * Pure comparison of a `RADIO_SELF_VERIFIED` envelope against a registered `EventDefinitionV1`
+     * for this `eventId` (spec 122 receiver policy, step 8; spec 134 step 4 as amended by errata
+     * #173, which drops the unsatisfiable display-name agreement). This never changes the
+     * envelope's [BarnardB005ReceiverState.receiverState] -- assigning `REGISTRY_VERIFIED` is the
+     * responsibility of the component that performed the authenticated registry read (the host
+     * app), per spec 122's receiver policy; tracked as beid#367 / dispatch#11 (P4).
      *
      * Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment. Per
      * spec 122's byte layout table (`validFromEnin` at A+3, `validThroughEnin` at A+7) and its
@@ -229,21 +214,20 @@ object BarnardB005EnvelopeV2 {
      * A registry window that does not fall on ENIN boundaries converts to an empty range and can
      * never agree with anything.
      */
-    fun confirmAgainstRegistry(verified: BarnardB005VerifiedEnvelope, authenticated: BarnardRegistryAuthenticatedDefinition): BarnardB005VerifiedEnvelope {
-        if (verified.eninSeconds <= 0) return BarnardB005VerifiedEnvelope.withState(verified, BarnardB005ReceiverState.RADIO_SELF_VERIFIED)
-        val definition = authenticated.definition
+    fun registryAgreement(verified: BarnardB005VerifiedEnvelope, definition: BarnardEventDefinitionV1): BarnardRegistryAgreement {
         val eninPerSecond = verified.eninSeconds.toLong()
         // Conservative half-open ENIN window: start rounded up so it never precedes the real
         // registry start, end (exclusive) rounded down so it never extends past the real registry end.
-        val registryStartEnin = -Math.floorDiv(-definition.validFromUnixSeconds, eninPerSecond)
-        val registryEndEninExclusive = Math.floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
-        val agrees = verified.eventId.contentEquals(definition.eventId) &&
-            verified.keySetDigest.contentEquals(definition.keySetDigest) &&
-            verified.joinMode == definition.joinMode &&
-            verified.eventCodeHash.contentEquals(definition.eventCodeHash) &&
-            registryStartEnin == verified.validFromEnin &&
-            registryEndEninExclusive == verified.validThroughEnin
-        return BarnardB005VerifiedEnvelope.withState(verified, if (agrees) BarnardB005ReceiverState.REGISTRY_VERIFIED else BarnardB005ReceiverState.RADIO_SELF_VERIFIED)
+        val registryStartEnin = if (verified.eninSeconds <= 0) null else -Math.floorDiv(-definition.validFromUnixSeconds, eninPerSecond)
+        val registryEndEninExclusive = if (verified.eninSeconds <= 0) null else Math.floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
+        val mismatches = buildSet {
+            if (!verified.eventId.contentEquals(definition.eventId)) add(BarnardRegistryMismatchField.EVENT_ID)
+            if (!verified.eventCodeHash.contentEquals(definition.eventCodeHash)) add(BarnardRegistryMismatchField.EVENT_CODE_HASH)
+            if (!verified.keySetDigest.contentEquals(definition.keySetDigest)) add(BarnardRegistryMismatchField.KEY_SET_DIGEST)
+            if (verified.joinMode != definition.joinMode) add(BarnardRegistryMismatchField.JOIN_MODE)
+            if (registryStartEnin != verified.validFromEnin || registryEndEninExclusive != verified.validThroughEnin) add(BarnardRegistryMismatchField.VALIDITY_WINDOW)
+        }
+        return if (mismatches.isEmpty()) BarnardRegistryAgreement.Agrees else BarnardRegistryAgreement.Mismatched(mismatches)
     }
 
     fun buildSigStructure(protectedBytes: ByteArray, payload: ByteArray): ByteArray? {
@@ -271,7 +255,7 @@ object BarnardB005EnvelopeV2 {
         val roles = p.uint() ?: return null; if (p.uint() != 5UL) return null
         val start = p.uint() ?: return null; if (p.uint() != 6UL) return null
         val end = p.uint() ?: return null
-        if (start > end || end > 9_007_199_254_740_992UL || !p.finished) return null
+        if (start > end || end > 9_007_199_254_740_991UL || !p.finished) return null
         return Cert(protected, payload, signature, kid, eventId, delegate, roles, start, end)
     }
     // secp256k1 group order n, and n/2 (BIP-62/146 low-S bound), both big-endian.

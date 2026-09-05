@@ -1,6 +1,7 @@
 package org.levarac.barnard
 
 import java.io.File
+import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -111,37 +112,33 @@ class BarnardB005EnvelopeV2Test {
         assertNull(BarnardB005EnvelopeV2.verify(mutated, 6_000_000))
     }
 
-    // --- Registry-tier confirmation (P1: cannot be forged from a bare bool) ---
+    // --- Registry agreement (pure comparison; this SDK never assigns REGISTRY_VERIFIED) ---
 
-    private fun authenticate(definition: BarnardEventDefinitionV1) =
-        BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1L, ByteArray(32) { 1 }, ByteArray(32) { 2 })
-            ?: error("expected fromRegistryRead to accept well-formed evidence")
-
-    @Test fun confirmAgainstRegistryRequiresFullAgreement() {
+    @Test fun registryAgreementRequiresFullAgreement() {
         val container = hex(v("v1_container"))
         val verified = BarnardB005EnvelopeV2.verify(container, 6_000_000) ?: error("expected RADIO_SELF_VERIFIED baseline")
         assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, verified.receiverState)
         // The exact half-open ENIN window is [validFromEnin, validThroughEnin) (validThroughEnin
-        // is already the exclusive end -- see confirmAgainstRegistry's doc comment); an aligned
+        // is already the exclusive end -- see registryAgreement's doc comment); an aligned
         // registry seconds window is exactly that range times eninSeconds.
         fun agreeing() = BarnardEventDefinitionV1(
             verified.eventId, verified.keySetDigest, verified.joinMode, verified.eventCodeHash,
             verified.validFromEnin * verified.eninSeconds, verified.validThroughEnin * verified.eninSeconds,
         )
-        assertEquals(BarnardB005ReceiverState.REGISTRY_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing())).receiverState)
+        assertEquals(BarnardRegistryAgreement.Agrees, BarnardB005EnvelopeV2.registryAgreement(verified, agreeing()))
 
         val wrongEventId = agreeing().eventId.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(eventId = wrongEventId))).receiverState, "eventId mismatch")
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.EVENT_ID)), BarnardB005EnvelopeV2.registryAgreement(verified, agreeing().copy(eventId = wrongEventId)), "eventId mismatch")
 
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(joinMode = if (verified.joinMode == 0) 1 else 0))).receiverState, "joinMode mismatch")
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.JOIN_MODE)), BarnardB005EnvelopeV2.registryAgreement(verified, agreeing().copy(joinMode = if (verified.joinMode == 0) 1 else 0)), "joinMode mismatch")
 
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(validFromUnixSeconds = verified.validThroughEnin * verified.eninSeconds))).receiverState, "window mismatch")
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(verified, agreeing().copy(validFromUnixSeconds = verified.validThroughEnin * verified.eninSeconds)), "window mismatch")
 
         val wrongKeySetDigest = verified.keySetDigest.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(keySetDigest = wrongKeySetDigest))).receiverState, "signer-authority (keySetDigest) mismatch")
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.KEY_SET_DIGEST)), BarnardB005EnvelopeV2.registryAgreement(verified, agreeing().copy(keySetDigest = wrongKeySetDigest)), "signer-authority (keySetDigest) mismatch")
     }
 
-    @Test fun confirmAgainstRegistryRejectsMisalignedValidityWindowExample() {
+    @Test fun registryAgreementRejectsMisalignedValidityWindowExample() {
         // Reviewer's exact counter-example: eninSeconds=300, registry half-open seconds window
         // [3001, 3300). 3001 / 300 == 10 (floor division), which is what let the old
         // implementation wrongly accept an envelope valid from ENIN 10 -- but ENIN 10 covers
@@ -157,30 +154,20 @@ class BarnardB005EnvelopeV2Test {
             misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
             validFromUnixSeconds = 3001, validUntilUnixSeconds = 3300,
         )
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(registryDefinition)).receiverState, "misaligned window must not agree")
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, registryDefinition), "misaligned window must not agree")
 
         // Aligned: registry [3000, 3300) exactly matches the ENIN [10, 11) half-open range -- accepted.
         val aligned = BarnardEventDefinitionV1(
             misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
             validFromUnixSeconds = 3000, validUntilUnixSeconds = 3300,
         )
-        assertEquals(BarnardB005ReceiverState.REGISTRY_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(aligned)).receiverState, "aligned window must agree")
+        assertEquals(BarnardRegistryAgreement.Agrees, BarnardB005EnvelopeV2.registryAgreement(misaligned, aligned), "aligned window must agree")
 
         // Off-by-one ENIN at both ends of the aligned registry window must still be rejected.
         val startOffByOne = aligned.copy(validFromUnixSeconds = 2700)
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(startOffByOne)).receiverState, "start off-by-one must not agree")
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, startOffByOne), "start off-by-one must not agree")
         val endOffByOne = aligned.copy(validUntilUnixSeconds = 3600)
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(endOffByOne)).receiverState, "end off-by-one must not agree")
-    }
-
-    @Test fun registryAuthenticatedDefinitionRejectsEmptyOrShortEvidence() {
-        val definition = BarnardEventDefinitionV1(ByteArray(32), ByteArray(32), 0, ByteArray(8), 0, 300)
-        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, -1, ByteArray(32), ByteArray(32)), "negative pinned block number")
-        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(0), ByteArray(32)), "empty pinned block hash")
-        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(31), ByteArray(32)), "short pinned block hash")
-        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(32), ByteArray(0)), "empty anchor proof")
-        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(32), ByteArray(31)), "short anchor proof")
-        assertNotNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(32), ByteArray(32)), "well-formed evidence must be accepted")
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, endOffByOne), "end off-by-one must not agree")
     }
 
     @Test fun verifiedEnvelopeHasNoPublicConstructorOrCopy() {
@@ -211,7 +198,7 @@ class BarnardB005EnvelopeV2Test {
     /**
      * Builds a structurally-valid `RADIO_SELF_VERIFIED` envelope with a caller-chosen
      * `eninSeconds`/window, using an `AlwaysAcceptingRecoverer` to stand in for real ECDSA math
-     * (same technique as [buildSyntheticContainer] below), so `confirmAgainstRegistry`'s window
+     * (same technique as [buildSyntheticContainer] below), so `registryAgreement`'s window
      * logic can be exercised against known, exact ENIN values. Requires `validThroughEnin >
      * validFromEnin`: a verified envelope's `expires` field must satisfy `validFromEnin <=
      * currentEnin < expires <= validThroughEnin`, which is unsatisfiable when the two are equal.
@@ -249,6 +236,85 @@ class BarnardB005EnvelopeV2Test {
     private class AlwaysAcceptingRecoverer(private val key: ByteArray) : BarnardB005PublicKeyRecovering {
         override fun recover(recoveryId: Int, r: ByteArray, s: ByteArray, digest: ByteArray) = key
         override fun isValidCompressedKey(key: ByteArray) = true
+    }
+
+    // --- Delegation certificate ENIN upper bound (parallax parity: 2^53-1, not 2^53) ---
+
+    private fun cborUintMajor(major: Int, value: Long): ByteArray {
+        val v = value.toULong()
+        return when {
+            v < 24UL -> byteArrayOf(((major shl 5) or v.toInt()).toByte())
+            v < 256UL -> byteArrayOf(((major shl 5) or 24).toByte(), v.toByte())
+            v < 65_536UL -> byteArrayOf(((major shl 5) or 25).toByte(), (v shr 8).toByte(), v.toByte())
+            v < 4_294_967_296UL -> byteArrayOf(((major shl 5) or 26).toByte()) + ByteArray(4) { (v shr (8 * (3 - it))).toByte() }
+            else -> byteArrayOf(((major shl 5) or 27).toByte()) + ByteArray(8) { (v shr (8 * (7 - it))).toByte() }
+        }
+    }
+    private fun cborUint(value: Long) = cborUintMajor(0, value)
+    private fun cborBytesField(b: ByteArray) = cborUintMajor(2, b.size.toLong()) + b
+    private fun cborTextField(s: String): ByteArray { val b = s.encodeToByteArray(); return cborUintMajor(3, b.size.toLong()) + b }
+    private fun cborNegative47() = byteArrayOf(0x38, 46) // major 1, ai=24, value 46 -> -(46+1) = -47
+
+    /**
+     * Hand-encodes a delegation certificate with a caller-chosen `eninEnd`, using an
+     * [AlwaysAcceptingRecoverer] for both the cert's COSE signature and the envelope signature so
+     * the boundary on `eninEnd` (parallax parity: at most `2^53-1`) can be exercised without real
+     * ECDSA math. `kid` is computed the same way production code derives it so the single
+     * authority key is found as the unique candidate signer; `eventId` is the real
+     * `computeEventId` output for the envelope's own registrar/anchor/nonce/key-set, so the
+     * cert's own `eventId` tie-in check passes independent of the field under test.
+     */
+    private fun buildCertContainer(eninEnd: Long): ByteArray {
+        val authorityKey = ByteArray(33) { 1 }
+        val delegateKey = authorityKey
+        val registrar = ByteArray(20) { 4 }
+        val anchor = ByteArray(20) { 5 }
+        val nonce = ByteArray(32) { 6 }
+        val ksDigest = BarnardB005EnvelopeV2.keySetDigest(listOf(authorityKey)) ?: error("keySetDigest failed")
+        val eventId = BarnardB005EnvelopeV2.computeEventId(registrar, anchor, nonce, ksDigest) ?: error("computeEventId failed")
+        val kid = MessageDigest.getInstance("SHA-256").digest("levarac:cose-kid:v1 ".encodeToByteArray() + authorityKey).copyOf(8)
+
+        val protectedHeader = byteArrayOf(0xa3.toByte()) + byteArrayOf(0x01) + cborNegative47() +
+            byteArrayOf(0x03) + cborTextField("application/vnd.levarac.delegation-cert+cbor") +
+            byteArrayOf(0x04) + cborBytesField(kid)
+        val payload = byteArrayOf(0xa6.toByte()) +
+            byteArrayOf(0x01) + cborUint(1) +
+            byteArrayOf(0x02) + cborBytesField(eventId) +
+            byteArrayOf(0x03) + cborBytesField(delegateKey) +
+            byteArrayOf(0x04) + cborUint(1) +
+            byteArrayOf(0x05) + cborUint(1000) +
+            byteArrayOf(0x06) + cborUint(eninEnd)
+        // r=1, s=1: isLowSInRange rejects an all-zero r/s regardless of the injected recoverer.
+        val certSignature = ByteArray(31) + byteArrayOf(1) + ByteArray(31) + byteArrayOf(1)
+        val cert = byteArrayOf(0xd2.toByte()) + byteArrayOf(0x84.toByte()) +
+            cborBytesField(protectedHeader) + byteArrayOf(0xa0.toByte()) +
+            cborBytesField(payload) + cborBytesField(certSignature)
+        check(cert.size <= 255) { "synthetic cert too large: ${cert.size}" }
+
+        var envelope = byteArrayOf(1) + registrar + anchor + nonce + byteArrayOf(1)
+        envelope += authorityKey
+        envelope += byteArrayOf(1) // joinMode = gated
+        envelope += byteArrayOf(0x01, 0x2c) // eninSeconds = 300
+        envelope += byteArrayOf(0x00, 0x5b.toByte(), 0x8d.toByte(), 0x7b.toByte()) // validFrom = 5_999_995
+        envelope += byteArrayOf(0x00, 0x5b.toByte(), 0x8d.toByte(), 0x85.toByte()) // validThrough = 6_000_005
+        envelope += byteArrayOf(0x00, 0x5b.toByte(), 0x8d.toByte(), 0x81.toByte()) // relayExpiresAtEnin = 6_000_001 (lifetime 6 <= 12)
+        envelope += byteArrayOf(2) // fixed marker byte
+        envelope += ByteArray(8) // eventCodeHash (unchecked under gated mode)
+        envelope += byteArrayOf(1) // nameLength
+        envelope += "X".encodeToByteArray()
+        envelope += byteArrayOf(cert.size.toByte())
+        envelope += cert
+        envelope += ByteArray(31) + byteArrayOf(1) + ByteArray(31) + byteArrayOf(1) + byteArrayOf(0) // envelope signature r=1, s=1, v=0
+        return BarnardB005EnvelopeV2.encodeContainer(0, envelope) ?: error("container build failed")
+    }
+
+    @Test fun delegationCertEninEndAcceptsMaxAndRejectsOneAboveMax() {
+        // Parallax's verifier allows at most 2^53-1; both must match exactly.
+        val recoverer = AlwaysAcceptingRecoverer(ByteArray(33) { 1 })
+        val atMax = buildCertContainer(9_007_199_254_740_991L)
+        assertNotNull(BarnardB005EnvelopeV2.verify(atMax, 6_000_000, recoverer), "2^53-1 must be accepted")
+        val overMax = buildCertContainer(9_007_199_254_740_992L)
+        assertNull(BarnardB005EnvelopeV2.verify(overMax, 6_000_000, recoverer), "2^53 must be rejected")
     }
 
     // Builds a structurally-valid authority-direct-mode container with `keyCount` synthetic

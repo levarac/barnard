@@ -120,16 +120,9 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     }
   }
 
-  // MARK: - Registry-tier confirmation (P1: cannot be forged from a bare bool)
+  // MARK: - Registry agreement (pure comparison; this SDK never assigns REGISTRY_VERIFIED)
 
-  private func authenticate(_ definition: BarnardEventDefinitionV1) -> BarnardRegistryAuthenticatedDefinition {
-    guard let authenticated = BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition: definition, pinnedBlockNumber: 1, pinnedBlockHash: [UInt8](repeating: 1, count: 32), anchorProof: [UInt8](repeating: 2, count: 32)) else {
-      fatalError("expected fromRegistryRead to accept well-formed evidence")
-    }
-    return authenticated
-  }
-
-  func testConfirmAgainstRegistryRequiresFullAgreement() throws {
+  func testRegistryAgreementRequiresFullAgreement() throws {
     let v = try load()
     let container = hex(v["v1_container"]!)
     guard let verified = BarnardB005EnvelopeV2.verify(container: container, currentEnin: 6_000_000, nameValidator: nameValidator) else {
@@ -137,28 +130,25 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     }
     XCTAssertEqual(verified.receiverState, .RADIO_SELF_VERIFIED)
     // The exact half-open ENIN window is [validFromEnin, validThroughEnin) (validThroughEnin is
-    // already the exclusive end -- see confirmAgainstRegistry's doc comment); an aligned
-    // registry seconds window is exactly that range times eninSeconds.
+    // already the exclusive end -- see registryAgreement's doc comment); an aligned registry
+    // seconds window is exactly that range times eninSeconds.
     func agreeing() -> BarnardEventDefinitionV1 {
       BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))
     }
-    // Positive: an actually-agreeing definition raises the tier.
-    let confirmed = BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: authenticate(agreeing()))
-    XCTAssertEqual(confirmed.receiverState, .REGISTRY_VERIFIED)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(verified, definition: agreeing()), .agrees)
 
-    // Negative: each single-field disagreement must hold the tier at RADIO_SELF_VERIFIED, never REGISTRY_VERIFIED.
     var wrongEventId = agreeing().eventId; wrongEventId[0] ^= 1
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: authenticate(BarnardEventDefinitionV1(eventId: wrongEventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds)))).receiverState, .RADIO_SELF_VERIFIED)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(verified, definition: BarnardEventDefinitionV1(eventId: wrongEventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))), .mismatched(mismatchedFields: [.EVENT_ID]), "eventId mismatch")
 
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: authenticate(BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode == 0 ? 1 : 0, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds)))).receiverState, .RADIO_SELF_VERIFIED, "joinMode mismatch")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(verified, definition: BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode == 0 ? 1 : 0, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))), .mismatched(mismatchedFields: [.JOIN_MODE]), "joinMode mismatch")
 
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: authenticate(BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds)))).receiverState, .RADIO_SELF_VERIFIED, "window mismatch")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(verified, definition: BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "window mismatch")
 
     var wrongKeySetDigest = verified.keySetDigest; wrongKeySetDigest[0] ^= 1
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: authenticate(BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: wrongKeySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds)))).receiverState, .RADIO_SELF_VERIFIED, "signer-authority (keySetDigest) mismatch")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(verified, definition: BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: wrongKeySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))), .mismatched(mismatchedFields: [.KEY_SET_DIGEST]), "signer-authority (keySetDigest) mismatch")
   }
 
-  func testConfirmAgainstRegistryRejectsMisalignedValidityWindowExample() throws {
+  func testRegistryAgreementRejectsMisalignedValidityWindowExample() throws {
     // Reviewer's exact counter-example: eninSeconds=300, registry half-open seconds window
     // [3001, 3300). 3001 / 300 == 10 (floor division), which is what let the old implementation
     // wrongly accept an envelope valid from ENIN 10 -- but ENIN 10 covers seconds [3000, 3300),
@@ -169,33 +159,23 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     // express is two ENINs wide: validFromEnin=10, validThroughEnin=11, i.e. [10, 12).)
     let misaligned = synthesizeWindow(eninSeconds: 300, validFromEnin: 10, validThroughEnin: 11)
     let registryDefinition = BarnardEventDefinitionV1(eventId: misaligned.eventId, keySetDigest: misaligned.keySetDigest, joinMode: misaligned.joinMode, eventCodeHash: misaligned.eventCodeHash, validFromUnixSeconds: 3001, validUntilUnixSeconds: 3300)
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, against: authenticate(registryDefinition)).receiverState, .RADIO_SELF_VERIFIED, "misaligned window must not agree")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: registryDefinition), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "misaligned window must not agree")
 
     // Aligned: registry [3000, 3300) exactly matches the ENIN [10, 11) half-open range -- accepted.
     let aligned = BarnardEventDefinitionV1(eventId: misaligned.eventId, keySetDigest: misaligned.keySetDigest, joinMode: misaligned.joinMode, eventCodeHash: misaligned.eventCodeHash, validFromUnixSeconds: 3000, validUntilUnixSeconds: 3300)
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, against: authenticate(aligned)).receiverState, .REGISTRY_VERIFIED, "aligned window must agree")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: aligned), .agrees, "aligned window must agree")
 
     // Off-by-one ENIN at both ends of the aligned registry window must still be rejected.
     let startOffByOne = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: 2700, validUntilUnixSeconds: aligned.validUntilUnixSeconds)
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, against: authenticate(startOffByOne)).receiverState, .RADIO_SELF_VERIFIED, "start off-by-one must not agree")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: startOffByOne), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "start off-by-one must not agree")
     let endOffByOne = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: aligned.validFromUnixSeconds, validUntilUnixSeconds: 3600)
-    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, against: authenticate(endOffByOne)).receiverState, .RADIO_SELF_VERIFIED, "end off-by-one must not agree")
-  }
-
-  func testRegistryAuthenticatedDefinitionRejectsEmptyOrShortEvidence() throws {
-    let definition = BarnardEventDefinitionV1(eventId: [UInt8](repeating: 0, count: 32), keySetDigest: [UInt8](repeating: 0, count: 32), joinMode: 0, eventCodeHash: [UInt8](repeating: 0, count: 8), validFromUnixSeconds: 0, validUntilUnixSeconds: 300)
-    XCTAssertNil(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition: definition, pinnedBlockNumber: -1, pinnedBlockHash: [UInt8](repeating: 0, count: 32), anchorProof: [UInt8](repeating: 0, count: 32)), "negative pinned block number")
-    XCTAssertNil(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition: definition, pinnedBlockNumber: 1, pinnedBlockHash: [], anchorProof: [UInt8](repeating: 0, count: 32)), "empty pinned block hash")
-    XCTAssertNil(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition: definition, pinnedBlockNumber: 1, pinnedBlockHash: [UInt8](repeating: 0, count: 31), anchorProof: [UInt8](repeating: 0, count: 32)), "short pinned block hash")
-    XCTAssertNil(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition: definition, pinnedBlockNumber: 1, pinnedBlockHash: [UInt8](repeating: 0, count: 32), anchorProof: []), "empty anchor proof")
-    XCTAssertNil(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition: definition, pinnedBlockNumber: 1, pinnedBlockHash: [UInt8](repeating: 0, count: 32), anchorProof: [UInt8](repeating: 0, count: 31)), "short anchor proof")
-    XCTAssertNotNil(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition: definition, pinnedBlockNumber: 1, pinnedBlockHash: [UInt8](repeating: 0, count: 32), anchorProof: [UInt8](repeating: 0, count: 32)), "well-formed evidence must be accepted")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: endOffByOne), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "end off-by-one must not agree")
   }
 
   /// Builds a structurally-valid `RADIO_SELF_VERIFIED` envelope with a caller-chosen
   /// `eninSeconds`/window, using an `AlwaysAcceptingRecoverer` to stand in for real ECDSA math
-  /// (same technique as `buildSyntheticContainer` below), so `confirmAgainstRegistry`'s window
-  /// logic can be exercised against known, exact ENIN values. Requires `validThroughEnin >
+  /// (same technique as `buildSyntheticContainer` below), so `registryAgreement`'s window logic
+  /// can be exercised against known, exact ENIN values. Requires `validThroughEnin >
   /// validFromEnin`: a verified envelope's `expires` field must satisfy `validFromEnin <=
   /// currentEnin < expires <= validThroughEnin`, which is unsatisfiable when the two are equal.
   private func synthesizeWindow(eninSeconds: UInt16, validFromEnin: Int64, validThroughEnin: Int64) -> BarnardB005VerifiedEnvelope {
@@ -306,6 +286,84 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     envelope.replaceSubrange((sigStart + 32)..<certEnd, with: highS)
     let container = BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 1, signedEnvelope: envelope)!
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 6_000_000, nameValidator: nameValidator, recoverer: AlwaysAcceptingRecoverer(key: [UInt8](repeating: 7, count: 33))))
+  }
+
+  // MARK: - Delegation certificate ENIN upper bound (parallax parity: 2^53-1, not 2^53)
+
+  private func cborUintMajor(_ major: UInt8, _ value: Int64) -> [UInt8] {
+    let v = UInt64(value)
+    switch v {
+    case ..<24: return [(major << 5) | UInt8(v)]
+    case ..<256: return [(major << 5) | 24, UInt8(v)]
+    case ..<65_536: return [(major << 5) | 25, UInt8(v >> 8), UInt8(v & 0xff)]
+    case ..<4_294_967_296: return [(major << 5) | 26] + (0..<4).map { UInt8((v >> (8 * (3 - $0))) & 0xff) }
+    default: return [(major << 5) | 27] + (0..<8).map { UInt8((v >> (8 * (7 - $0))) & 0xff) }
+    }
+  }
+  private func cborUint(_ value: Int64) -> [UInt8] { cborUintMajor(0, value) }
+  private func cborBytesField(_ b: [UInt8]) -> [UInt8] { cborUintMajor(2, Int64(b.count)) + b }
+  private func cborTextField(_ s: String) -> [UInt8] { let b = Array(s.utf8); return cborUintMajor(3, Int64(b.count)) + b }
+  private func cborNegative47() -> [UInt8] { [0x38, 46] } // major 1, ai=24, value 46 -> -(46+1) = -47
+
+  /// Hand-encodes a delegation certificate with a caller-chosen `eninEnd`, using an
+  /// `AlwaysAcceptingRecoverer` for both the cert's COSE signature and the envelope signature so
+  /// the boundary on `eninEnd` (parallax parity: at most `2^53-1`) can be exercised without real
+  /// ECDSA math. `kid` is computed the same way production code derives it so the single
+  /// authority key is found as the unique candidate signer; `eventId` is the real
+  /// `computeEventId` output for the envelope's own registrar/anchor/nonce/key-set, so the cert's
+  /// own `eventId` tie-in check passes independent of the field under test.
+  private func buildCertContainer(eninEnd: Int64) -> [UInt8] {
+    // Same key for both roles: the fixed AlwaysAcceptingRecoverer must satisfy the cert's own
+    // COSE signature check (against the candidate authority key) and the envelope signature
+    // check (against the cert's delegateKey) with one fixed return value.
+    let authorityKey = [UInt8](repeating: 1, count: 33)
+    let delegateKey = authorityKey
+    let registrar = [UInt8](repeating: 4, count: 20)
+    let anchor = [UInt8](repeating: 5, count: 20)
+    let nonce = [UInt8](repeating: 6, count: 32)
+    let ksDigest = BarnardB005EnvelopeV2.keySetDigest([authorityKey])!
+    let eventId = BarnardB005EnvelopeV2.computeEventId(registrar: registrar, anchorOperator: anchor, nonce: nonce, keySetDigest: ksDigest)!
+    let kid = Array(BarnardCoreCrypto.sha256(Array("levarac:cose-kid:v1\0".utf8) + authorityKey).prefix(8))
+
+    let protectedHeader = [0xa3] + [0x01] + cborNegative47()
+      + [0x03] + cborTextField("application/vnd.levarac.delegation-cert+cbor")
+      + [0x04] + cborBytesField(kid)
+    let payload = [0xa6]
+      + [0x01] + cborUint(1)
+      + [0x02] + cborBytesField(eventId)
+      + [0x03] + cborBytesField(delegateKey)
+      + [0x04] + cborUint(1)
+      + [0x05] + cborUint(1000)
+      + [0x06] + cborUint(eninEnd)
+    // r=1, s=1: isLowSInRange rejects an all-zero r/s regardless of the injected recoverer.
+    let certSignature = [UInt8](repeating: 0, count: 31) + [1] + [UInt8](repeating: 0, count: 31) + [1]
+    let cert = [0xd2, 0x84] + cborBytesField(protectedHeader) + [0xa0] + cborBytesField(payload) + cborBytesField(certSignature)
+    precondition(cert.count <= 255, "synthetic cert too large: \(cert.count)")
+
+    var envelope: [UInt8] = [1] + registrar + anchor + nonce + [1]
+    envelope += authorityKey
+    envelope += [1] // joinMode = gated
+    envelope += [0x01, 0x2c] // eninSeconds = 300
+    envelope += [0x00, 0x5b, 0x8d, 0x7b] // validFrom = 5_999_995
+    envelope += [0x00, 0x5b, 0x8d, 0x85] // validThrough = 6_000_005
+    envelope += [0x00, 0x5b, 0x8d, 0x81] // relayExpiresAtEnin = 6_000_001 (lifetime 6 <= 12)
+    envelope += [2] // fixed marker byte
+    envelope += [UInt8](repeating: 0, count: 8) // eventCodeHash (unchecked under gated mode)
+    envelope += [1] // nameLength
+    envelope += Array("X".utf8)
+    envelope += [UInt8(cert.count)]
+    envelope += cert
+    envelope += [UInt8](repeating: 0, count: 31) + [1] + [UInt8](repeating: 0, count: 31) + [1] + [0] // envelope signature r=1, s=1, v=0
+    return BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 0, signedEnvelope: envelope)!
+  }
+
+  func testDelegationCertEninEndAcceptsMaxAndRejectsOneAboveMax() throws {
+    // Parallax's verifier allows at most 2^53-1; both must match exactly.
+    let recoverer = AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))
+    let atMax = buildCertContainer(eninEnd: 9_007_199_254_740_991)
+    XCTAssertNotNil(BarnardB005EnvelopeV2.verify(container: atMax, currentEnin: 6_000_000, nameValidator: nameValidator, recoverer: recoverer), "2^53-1 must be accepted")
+    let overMax = buildCertContainer(eninEnd: 9_007_199_254_740_992)
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overMax, currentEnin: 6_000_000, nameValidator: nameValidator, recoverer: recoverer), "2^53 must be rejected")
   }
 
   // MARK: - CBOR builder overflow (P2)

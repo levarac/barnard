@@ -34,10 +34,11 @@ public struct BarnardB005NativeRecoverer: BarnardB005PublicKeyRecovering {
 
 /// A plain struct with an `internal` initializer -- not `public` -- so a consumer outside this
 /// module cannot construct one (in particular, cannot fabricate `receiverState =
-/// .REGISTRY_VERIFIED` directly). The only ways to obtain one are
-/// `BarnardB005EnvelopeV2.verify` (always `.RADIO_SELF_VERIFIED`) and
-/// `BarnardB005EnvelopeV2.confirmAgainstRegistry` (re-tiers an existing one). Both live in this
-/// same module, so both can call the `internal` initializer.
+/// .REGISTRY_VERIFIED` directly). The only way to obtain one is `BarnardB005EnvelopeV2.verify`,
+/// which always produces `.UNVERIFIED` or `.RADIO_SELF_VERIFIED`. This SDK never assigns
+/// `.REGISTRY_VERIFIED`: doing so is the responsibility of the component that performed the
+/// authenticated registry read (the host app), per spec 122's receiver policy; tracked as
+/// beid#367 / dispatch#11 (P4).
 public struct BarnardB005VerifiedEnvelope {
   public let receiverState: BarnardB005ReceiverState
   public let relayHopCount: UInt8
@@ -51,6 +52,9 @@ public struct BarnardB005VerifiedEnvelope {
   public let eninSeconds: UInt16
   public let signedEnvelope: [UInt8]
 
+  /// This SDK never assigns `.REGISTRY_VERIFIED`: doing so is the responsibility of the
+  /// component that performed the authenticated registry read (the host app), per spec 122's
+  /// receiver policy; tracked as beid#367 / dispatch#11 (P4).
   internal init(receiverState: BarnardB005ReceiverState, relayHopCount: UInt8, eventId: [UInt8], keySetDigest: [UInt8], joinMode: UInt8, eventCodeHash: [UInt8], eventDisplayName: String, validFromEnin: Int64, validThroughEnin: Int64, eninSeconds: UInt16, signedEnvelope: [UInt8]) {
     self.receiverState = receiverState
     self.relayHopCount = relayHopCount
@@ -65,9 +69,6 @@ public struct BarnardB005VerifiedEnvelope {
     self.signedEnvelope = signedEnvelope
   }
 
-  fileprivate func withState(_ state: BarnardB005ReceiverState) -> BarnardB005VerifiedEnvelope {
-    BarnardB005VerifiedEnvelope(receiverState: state, relayHopCount: relayHopCount, eventId: eventId, keySetDigest: keySetDigest, joinMode: joinMode, eventCodeHash: eventCodeHash, eventDisplayName: eventDisplayName, validFromEnin: validFromEnin, validThroughEnin: validThroughEnin, eninSeconds: eninSeconds, signedEnvelope: signedEnvelope)
-  }
 }
 
 /// The subset of parallax's anchored `EventDefinitionV1` (protocol/spec/v0.1/event-definition.md)
@@ -92,42 +93,21 @@ public struct BarnardEventDefinitionV1 {
   }
 }
 
-/// Wraps a `BarnardEventDefinitionV1` together with the evidence a host must have obtained from
-/// its own registry read (spec 122 receiver policy, step 3): the pinned block the definition was
-/// read at, and the registry's own proof/receipt bytes for that read. `confirmAgainstRegistry`
-/// accepts ONLY this wrapper, never a bare `BarnardEventDefinitionV1` -- a definition built from
-/// a radio result (which has a public initializer, since it is also the on-the-wire shape) cannot
-/// be substituted for an actual registry read.
-///
-/// This SDK cannot verify `pinnedBlockHash` or `anchorProof` against the chain itself; that
-/// verification (confirming the block is the one actually pinned, and the proof/receipt is
-/// genuine for that block) is the host's responsibility, tracked in beid#367. `fromRegistryRead`
-/// validates only their shape (non-empty, minimum plausible length for a hash/receipt) -- it is
-/// not a cryptographic check.
-public struct BarnardRegistryAuthenticatedDefinition {
-  public let definition: BarnardEventDefinitionV1
-  public let pinnedBlockNumber: Int64
-  public let pinnedBlockHash: [UInt8]
-  public let anchorProof: [UInt8]
+/// A single field on which `registryAgreement` can find a mismatch between an envelope and a
+/// registered `EventDefinitionV1`.
+public enum BarnardRegistryMismatchField: Equatable {
+  case EVENT_ID, EVENT_CODE_HASH, KEY_SET_DIGEST, JOIN_MODE, VALIDITY_WINDOW
+}
 
-  private static let minPinnedBlockHashBytes = 32
-  private static let minAnchorProofBytes = 32
-
-  private init(definition: BarnardEventDefinitionV1, pinnedBlockNumber: Int64, pinnedBlockHash: [UInt8], anchorProof: [UInt8]) {
-    self.definition = definition
-    self.pinnedBlockNumber = pinnedBlockNumber
-    self.pinnedBlockHash = pinnedBlockHash
-    self.anchorProof = anchorProof
-  }
-
-  /// - Parameters:
-  ///   - pinnedBlockNumber: the block number the host read `definition` at.
-  ///   - pinnedBlockHash: the hash of that block, as read by the host (opaque, shape-checked only).
-  ///   - anchorProof: the registry's own proof/receipt bytes for that read (opaque, shape-checked only).
-  public static func fromRegistryRead(definition: BarnardEventDefinitionV1, pinnedBlockNumber: Int64, pinnedBlockHash: [UInt8], anchorProof: [UInt8]) -> BarnardRegistryAuthenticatedDefinition? {
-    guard pinnedBlockNumber >= 0, pinnedBlockHash.count >= minPinnedBlockHashBytes, anchorProof.count >= minAnchorProofBytes else { return nil }
-    return BarnardRegistryAuthenticatedDefinition(definition: definition, pinnedBlockNumber: pinnedBlockNumber, pinnedBlockHash: pinnedBlockHash, anchorProof: anchorProof)
-  }
+/// The result of comparing a `.RADIO_SELF_VERIFIED` envelope against a registered
+/// `EventDefinitionV1`: either the two agree, or `mismatchedFields` names every field that
+/// disagreed. Either way this is a pure comparison -- it never changes the envelope's
+/// `BarnardB005ReceiverState`. Assigning `.REGISTRY_VERIFIED` is the responsibility of the
+/// component that performed the authenticated registry read (the host app), per spec 122's
+/// receiver policy; tracked as beid#367 / dispatch#11 (P4).
+public enum BarnardRegistryAgreement: Equatable {
+  case agrees
+  case mismatched(mismatchedFields: Set<BarnardRegistryMismatchField>)
 }
 
 public enum BarnardB005EnvelopeV2 {
@@ -228,12 +208,12 @@ public enum BarnardB005EnvelopeV2 {
     return BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: container[1], eventId: eventId, keySetDigest: ksDigest, joinMode: joinMode, eventCodeHash: codeHash, eventDisplayName: name, validFromEnin: validFrom, validThroughEnin: validThrough, eninSeconds: eninSeconds, signedEnvelope: envelope)
   }
 
-  /// Confirms a `RADIO_SELF_VERIFIED` envelope against the authenticated, pinned-block
+  /// Pure comparison of a `.RADIO_SELF_VERIFIED` envelope against a registered
   /// `EventDefinitionV1` for this `eventId` (spec 122 receiver policy, step 8; spec 134 step 4 as
-  /// amended by errata #173, which drops the unsatisfiable display-name agreement). This is the
-  /// only path to `REGISTRY_VERIFIED`: `authenticated` can only have been produced by
-  /// `BarnardRegistryAuthenticatedDefinition.fromRegistryRead`, never fabricated from a bare
-  /// `EventDefinitionV1` built from radio data.
+  /// amended by errata #173, which drops the unsatisfiable display-name agreement). This never
+  /// changes the envelope's `receiverState` -- assigning `.REGISTRY_VERIFIED` is the
+  /// responsibility of the component that performed the authenticated registry read (the host
+  /// app), per spec 122's receiver policy; tracked as beid#367 / dispatch#11 (P4).
   ///
   /// Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment. Per
   /// spec 122's byte layout table (`validFromEnin` at A+3, `validThroughEnin` at A+7) and its
@@ -246,21 +226,19 @@ public enum BarnardB005EnvelopeV2 {
   /// (start rounded up, end rounded down) before the two windows are compared for exact equality.
   /// A registry window that does not fall on ENIN boundaries converts to an empty range and can
   /// never agree with anything.
-  public static func confirmAgainstRegistry(_ verified: BarnardB005VerifiedEnvelope, against authenticated: BarnardRegistryAuthenticatedDefinition) -> BarnardB005VerifiedEnvelope {
-    guard verified.eninSeconds > 0 else { return verified.withState(.RADIO_SELF_VERIFIED) }
-    let definition = authenticated.definition
+  public static func registryAgreement(_ verified: BarnardB005VerifiedEnvelope, definition: BarnardEventDefinitionV1) -> BarnardRegistryAgreement {
     let eninPerSecond = Int64(verified.eninSeconds)
     // Conservative half-open ENIN window: start rounded up so it never precedes the real
     // registry start, end (exclusive) rounded down so it never extends past the real registry end.
-    let registryStartEnin = -floorDiv(-definition.validFromUnixSeconds, eninPerSecond)
-    let registryEndEninExclusive = floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
-    let agrees = verified.eventId == definition.eventId
-      && verified.keySetDigest == definition.keySetDigest
-      && verified.joinMode == definition.joinMode
-      && verified.eventCodeHash == definition.eventCodeHash
-      && registryStartEnin == verified.validFromEnin
-      && registryEndEninExclusive == verified.validThroughEnin
-    return verified.withState(agrees ? .REGISTRY_VERIFIED : .RADIO_SELF_VERIFIED)
+    let registryStartEnin: Int64? = verified.eninSeconds > 0 ? -floorDiv(-definition.validFromUnixSeconds, eninPerSecond) : nil
+    let registryEndEninExclusive: Int64? = verified.eninSeconds > 0 ? floorDiv(definition.validUntilUnixSeconds, eninPerSecond) : nil
+    var mismatches: Set<BarnardRegistryMismatchField> = []
+    if verified.eventId != definition.eventId { mismatches.insert(.EVENT_ID) }
+    if verified.eventCodeHash != definition.eventCodeHash { mismatches.insert(.EVENT_CODE_HASH) }
+    if verified.keySetDigest != definition.keySetDigest { mismatches.insert(.KEY_SET_DIGEST) }
+    if verified.joinMode != definition.joinMode { mismatches.insert(.JOIN_MODE) }
+    if registryStartEnin != verified.validFromEnin || registryEndEninExclusive != verified.validThroughEnin { mismatches.insert(.VALIDITY_WINDOW) }
+    return mismatches.isEmpty ? .agrees : .mismatched(mismatchedFields: mismatches)
   }
 
   /// Floor division for `Int64`, matching Kotlin's `Math.floorDiv`: rounds toward negative
@@ -287,8 +265,8 @@ public enum BarnardB005EnvelopeV2 {
       p.uint() == 2, let eventId = p.bytes(), eventId.count == 32,
       p.uint() == 3, let delegate = p.bytes(), delegate.count == 33,
       p.uint() == 4, let roles = p.uint(),
-      p.uint() == 5, let start = p.uint(), start <= 9_007_199_254_740_992,
-      p.uint() == 6, let end = p.uint(), end <= 9_007_199_254_740_992, start <= end, p.finished else { return nil }
+      p.uint() == 5, let start = p.uint(), start <= 9_007_199_254_740_991,
+      p.uint() == 6, let end = p.uint(), end <= 9_007_199_254_740_991, start <= end, p.finished else { return nil }
     return Cert(protected: protected, payload: payload, signature: signature, kid: kid, eventId: eventId, delegateKey: delegate, roles: roles, eninStart: start, eninEnd: end)
   }
 
