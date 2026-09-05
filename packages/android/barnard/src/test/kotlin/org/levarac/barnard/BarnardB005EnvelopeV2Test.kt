@@ -80,6 +80,36 @@ class BarnardB005EnvelopeV2Test {
         }
     }
 
+    @Test fun certContentTypeRejectsInvalidUtf8WithoutThrowing() {
+        // Regression for the CborReader.text() call parsing the delegation cert's COSE
+        // content-type header: an invalid UTF-8 lead byte there must fail closed (verify()
+        // returns null), not escape as an unguarded CharacterCodingException.
+        val envelopeHex = v("v2_envelope")
+        val oldCert = v("v2_delegation_cert")
+        val contentTypeHex = "6170706c69636174696f6e2f766e642e6c6576617261632e64656c65676174696f6e2d636572742b63626f72"
+        val idxInCert = oldCert.indexOf(contentTypeHex)
+        check(idxInCert >= 0)
+        val corruptedCert = oldCert.substring(0, idxInCert) + "ff" + oldCert.substring(idxInCert + 2, oldCert.length)
+        val idx = envelopeHex.indexOf(oldCert)
+        val replacedHex = envelopeHex.substring(0, idx) + corruptedCert + envelopeHex.substring(idx + oldCert.length)
+        val envelope = hex(replacedHex)
+        val container = BarnardB005EnvelopeV2.encodeContainer(1, envelope) ?: error("could not build container")
+        assertNull(BarnardB005EnvelopeV2.verify(container, 6_000_000))
+    }
+
+    @Test fun parallaxSubstitutedKeySetIsRejected() {
+        // Spec 122's parallax negative list also names "substituted key set": swap the single
+        // authority key embedded in vector 2's own envelope for Parallax's substitutedEventKeySetHex
+        // key (same 33-byte compressed layout, same cert kept verbatim) so the cert's own eventId
+        // no longer matches the eventId recomputed from the (now different) embedded key set.
+        val originalKeyHex = v("authority_public_key")
+        val substitutedKeyHex = parallaxNegVectors["neg_substituted_event_key"] ?: error("missing neg_substituted_event_key")
+        val container = v("v2_container")
+        assertEquals(1, container.split(originalKeyHex).size - 1, "expected exactly one occurrence of the authority key")
+        val mutated = hex(container.replace(originalKeyHex, substitutedKeyHex))
+        assertNull(BarnardB005EnvelopeV2.verify(mutated, 6_000_000))
+    }
+
     private fun hex(s: String) = ByteArray(s.length / 2) { s.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
     private fun findRepoRoot(): File { var f = File(System.getProperty("user.dir")); repeat(20) { if (File(f, "test-vectors/b005-envelope-v2.txt").isFile) return f; f = f.parentFile }; error("repo root") }
     private fun parseVectors(file: File) = file.readLines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.associate { val i = it.indexOf('='); it.substring(0, i) to it.substring(i + 1) }

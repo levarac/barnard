@@ -174,7 +174,13 @@ private class CborReader(private val input: ByteArray) {
     fun uint() = head(0)
     fun negative(): Long? { val v = head(1) ?: return null; if (v > Long.MAX_VALUE.toULong()) return null; return -1L - v.toLong() }
     fun bytes(): ByteArray? = take(head(2))
-    fun text(): String? = take(head(3))?.decodeToString(throwOnInvalidSequence = true)
+    fun text(): String? = take(head(3))?.let {
+        try {
+            it.decodeToString(throwOnInvalidSequence = true)
+        } catch (e: CharacterCodingException) {
+            null
+        }
+    }
     private fun take(size: ULong?): ByteArray? { size ?: return null; if (size > (input.size - offset).toULong()) return null; val end = offset + size.toInt(); return input.copyOfRange(offset, end).also { offset = end } }
     fun array() = head(4); fun map() = head(5); fun tag() = head(6)
 }
