@@ -32,6 +32,12 @@ public struct BarnardB005NativeRecoverer: BarnardB005PublicKeyRecovering {
   }
 }
 
+/// A plain struct with an `internal` initializer -- not `public` -- so a consumer outside this
+/// module cannot construct one (in particular, cannot fabricate `receiverState =
+/// .REGISTRY_VERIFIED` directly). The only ways to obtain one are
+/// `BarnardB005EnvelopeV2.verify` (always `.RADIO_SELF_VERIFIED`) and
+/// `BarnardB005EnvelopeV2.confirmAgainstRegistry` (re-tiers an existing one). Both live in this
+/// same module, so both can call the `internal` initializer.
 public struct BarnardB005VerifiedEnvelope {
   public let receiverState: BarnardB005ReceiverState
   public let relayHopCount: UInt8
@@ -44,6 +50,20 @@ public struct BarnardB005VerifiedEnvelope {
   public let validThroughEnin: Int64
   public let eninSeconds: UInt16
   public let signedEnvelope: [UInt8]
+
+  internal init(receiverState: BarnardB005ReceiverState, relayHopCount: UInt8, eventId: [UInt8], keySetDigest: [UInt8], joinMode: UInt8, eventCodeHash: [UInt8], eventDisplayName: String, validFromEnin: Int64, validThroughEnin: Int64, eninSeconds: UInt16, signedEnvelope: [UInt8]) {
+    self.receiverState = receiverState
+    self.relayHopCount = relayHopCount
+    self.eventId = eventId
+    self.keySetDigest = keySetDigest
+    self.joinMode = joinMode
+    self.eventCodeHash = eventCodeHash
+    self.eventDisplayName = eventDisplayName
+    self.validFromEnin = validFromEnin
+    self.validThroughEnin = validThroughEnin
+    self.eninSeconds = eninSeconds
+    self.signedEnvelope = signedEnvelope
+  }
 
   fileprivate func withState(_ state: BarnardB005ReceiverState) -> BarnardB005VerifiedEnvelope {
     BarnardB005VerifiedEnvelope(receiverState: state, relayHopCount: relayHopCount, eventId: eventId, keySetDigest: keySetDigest, joinMode: joinMode, eventCodeHash: eventCodeHash, eventDisplayName: eventDisplayName, validFromEnin: validFromEnin, validThroughEnin: validThroughEnin, eninSeconds: eninSeconds, signedEnvelope: signedEnvelope)
@@ -69,6 +89,44 @@ public struct BarnardEventDefinitionV1 {
     self.eventCodeHash = eventCodeHash
     self.validFromUnixSeconds = validFromUnixSeconds
     self.validUntilUnixSeconds = validUntilUnixSeconds
+  }
+}
+
+/// Wraps a `BarnardEventDefinitionV1` together with the evidence a host must have obtained from
+/// its own registry read (spec 122 receiver policy, step 3): the pinned block the definition was
+/// read at, and the registry's own proof/receipt bytes for that read. `confirmAgainstRegistry`
+/// accepts ONLY this wrapper, never a bare `BarnardEventDefinitionV1` -- a definition built from
+/// a radio result (which has a public initializer, since it is also the on-the-wire shape) cannot
+/// be substituted for an actual registry read.
+///
+/// This SDK cannot verify `pinnedBlockHash` or `anchorProof` against the chain itself; that
+/// verification (confirming the block is the one actually pinned, and the proof/receipt is
+/// genuine for that block) is the host's responsibility, tracked in beid#367. `fromRegistryRead`
+/// validates only their shape (non-empty, minimum plausible length for a hash/receipt) -- it is
+/// not a cryptographic check.
+public struct BarnardRegistryAuthenticatedDefinition {
+  public let definition: BarnardEventDefinitionV1
+  public let pinnedBlockNumber: Int64
+  public let pinnedBlockHash: [UInt8]
+  public let anchorProof: [UInt8]
+
+  private static let minPinnedBlockHashBytes = 32
+  private static let minAnchorProofBytes = 32
+
+  private init(definition: BarnardEventDefinitionV1, pinnedBlockNumber: Int64, pinnedBlockHash: [UInt8], anchorProof: [UInt8]) {
+    self.definition = definition
+    self.pinnedBlockNumber = pinnedBlockNumber
+    self.pinnedBlockHash = pinnedBlockHash
+    self.anchorProof = anchorProof
+  }
+
+  /// - Parameters:
+  ///   - pinnedBlockNumber: the block number the host read `definition` at.
+  ///   - pinnedBlockHash: the hash of that block, as read by the host (opaque, shape-checked only).
+  ///   - anchorProof: the registry's own proof/receipt bytes for that read (opaque, shape-checked only).
+  public static func fromRegistryRead(definition: BarnardEventDefinitionV1, pinnedBlockNumber: Int64, pinnedBlockHash: [UInt8], anchorProof: [UInt8]) -> BarnardRegistryAuthenticatedDefinition? {
+    guard pinnedBlockNumber >= 0, pinnedBlockHash.count >= minPinnedBlockHashBytes, anchorProof.count >= minAnchorProofBytes else { return nil }
+    return BarnardRegistryAuthenticatedDefinition(definition: definition, pinnedBlockNumber: pinnedBlockNumber, pinnedBlockHash: pinnedBlockHash, anchorProof: anchorProof)
   }
 }
 
@@ -173,18 +231,43 @@ public enum BarnardB005EnvelopeV2 {
   /// Confirms a `RADIO_SELF_VERIFIED` envelope against the authenticated, pinned-block
   /// `EventDefinitionV1` for this `eventId` (spec 122 receiver policy, step 8; spec 134 step 4 as
   /// amended by errata #173, which drops the unsatisfiable display-name agreement). This is the
-  /// only path to `REGISTRY_VERIFIED`: it is not derivable from a caller-supplied boolean, only
-  /// from checking every field of an actual definition the caller obtained on-chain.
-  public static func confirmAgainstRegistry(_ verified: BarnardB005VerifiedEnvelope, against definition: BarnardEventDefinitionV1) -> BarnardB005VerifiedEnvelope {
+  /// only path to `REGISTRY_VERIFIED`: `authenticated` can only have been produced by
+  /// `BarnardRegistryAuthenticatedDefinition.fromRegistryRead`, never fabricated from a bare
+  /// `EventDefinitionV1` built from radio data.
+  ///
+  /// Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment. Per
+  /// spec 122's byte layout table (`validFromEnin` at A+3, `validThroughEnin` at A+7) and its
+  /// receiver-policy inequality `validFromEnin <= currentEnin < relayExpiresAtEnin <=
+  /// validThroughEnin`, `currentEnin` can never reach `validThroughEnin` itself, so
+  /// `validThroughEnin` is already the exclusive end of the envelope's ENIN window: the window is
+  /// the half-open range `[validFromEnin, validThroughEnin)`. `eninSeconds`-denominated ENINs
+  /// cover the half-open second range `[enin * eninSeconds, (enin + 1) * eninSeconds)`, so the
+  /// registry's Unix-second window is converted to that same half-open ENIN shape conservatively
+  /// (start rounded up, end rounded down) before the two windows are compared for exact equality.
+  /// A registry window that does not fall on ENIN boundaries converts to an empty range and can
+  /// never agree with anything.
+  public static func confirmAgainstRegistry(_ verified: BarnardB005VerifiedEnvelope, against authenticated: BarnardRegistryAuthenticatedDefinition) -> BarnardB005VerifiedEnvelope {
     guard verified.eninSeconds > 0 else { return verified.withState(.RADIO_SELF_VERIFIED) }
+    let definition = authenticated.definition
     let eninPerSecond = Int64(verified.eninSeconds)
+    // Conservative half-open ENIN window: start rounded up so it never precedes the real
+    // registry start, end (exclusive) rounded down so it never extends past the real registry end.
+    let registryStartEnin = -floorDiv(-definition.validFromUnixSeconds, eninPerSecond)
+    let registryEndEninExclusive = floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
     let agrees = verified.eventId == definition.eventId
       && verified.keySetDigest == definition.keySetDigest
       && verified.joinMode == definition.joinMode
       && verified.eventCodeHash == definition.eventCodeHash
-      && definition.validFromUnixSeconds / eninPerSecond <= verified.validFromEnin
-      && verified.validThroughEnin <= definition.validUntilUnixSeconds / eninPerSecond
+      && registryStartEnin == verified.validFromEnin
+      && registryEndEninExclusive == verified.validThroughEnin
     return verified.withState(agrees ? .REGISTRY_VERIFIED : .RADIO_SELF_VERIFIED)
+  }
+
+  /// Floor division for `Int64`, matching Kotlin's `Math.floorDiv`: rounds toward negative
+  /// infinity rather than toward zero (Swift's `/` truncates toward zero).
+  private static func floorDiv(_ a: Int64, _ b: Int64) -> Int64 {
+    let q = a / b, r = a % b
+    return (r != 0 && (r < 0) != (b < 0)) ? q - 1 : q
   }
 
   public static func buildSigStructure(protected: [UInt8], payload: [UInt8]) -> [UInt8]? {

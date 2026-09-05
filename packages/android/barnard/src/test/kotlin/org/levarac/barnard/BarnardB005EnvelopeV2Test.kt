@@ -6,6 +6,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class BarnardB005EnvelopeV2Test {
     private val vectors by lazy { parseVectors(File(findRepoRoot(), "test-vectors/b005-envelope-v2.txt")) }
@@ -112,25 +113,126 @@ class BarnardB005EnvelopeV2Test {
 
     // --- Registry-tier confirmation (P1: cannot be forged from a bare bool) ---
 
+    private fun authenticate(definition: BarnardEventDefinitionV1) =
+        BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1L, ByteArray(32) { 1 }, ByteArray(32) { 2 })
+            ?: error("expected fromRegistryRead to accept well-formed evidence")
+
     @Test fun confirmAgainstRegistryRequiresFullAgreement() {
         val container = hex(v("v1_container"))
         val verified = BarnardB005EnvelopeV2.verify(container, 6_000_000) ?: error("expected RADIO_SELF_VERIFIED baseline")
         assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, verified.receiverState)
+        // The exact half-open ENIN window is [validFromEnin, validThroughEnin) (validThroughEnin
+        // is already the exclusive end -- see confirmAgainstRegistry's doc comment); an aligned
+        // registry seconds window is exactly that range times eninSeconds.
         fun agreeing() = BarnardEventDefinitionV1(
             verified.eventId, verified.keySetDigest, verified.joinMode, verified.eventCodeHash,
             verified.validFromEnin * verified.eninSeconds, verified.validThroughEnin * verified.eninSeconds,
         )
-        assertEquals(BarnardB005ReceiverState.REGISTRY_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing()).receiverState)
+        assertEquals(BarnardB005ReceiverState.REGISTRY_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing())).receiverState)
 
         val wrongEventId = agreeing().eventId.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(eventId = wrongEventId)).receiverState, "eventId mismatch")
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(eventId = wrongEventId))).receiverState, "eventId mismatch")
 
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(joinMode = if (verified.joinMode == 0) 1 else 0)).receiverState, "joinMode mismatch")
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(joinMode = if (verified.joinMode == 0) 1 else 0))).receiverState, "joinMode mismatch")
 
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(validFromUnixSeconds = (verified.validThroughEnin + 1) * verified.eninSeconds)).receiverState, "window mismatch")
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(validFromUnixSeconds = verified.validThroughEnin * verified.eninSeconds))).receiverState, "window mismatch")
 
         val wrongKeySetDigest = verified.keySetDigest.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
-        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(keySetDigest = wrongKeySetDigest)).receiverState, "signer-authority (keySetDigest) mismatch")
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, authenticate(agreeing().copy(keySetDigest = wrongKeySetDigest))).receiverState, "signer-authority (keySetDigest) mismatch")
+    }
+
+    @Test fun confirmAgainstRegistryRejectsMisalignedValidityWindowExample() {
+        // Reviewer's exact counter-example: eninSeconds=300, registry half-open seconds window
+        // [3001, 3300). 3001 / 300 == 10 (floor division), which is what let the old
+        // implementation wrongly accept an envelope valid from ENIN 10 -- but ENIN 10 covers
+        // seconds [3000, 3300), which starts one second BEFORE the registry's real start of 3001.
+        // Conservative conversion (ceil the start, floor the end) yields registryStart=11,
+        // registryEnd=11, mismatching the envelope's declared validFromEnin=10 -- rejected.
+        // (Per spec 122's receiver-policy inequality `validFromEnin <= currentEnin <
+        // relayExpiresAtEnin <= validThroughEnin`, validThroughEnin is already the exclusive end
+        // of the ENIN window, so a one-ENIN-wide envelope validFromEnin=10, validThroughEnin=11
+        // -- i.e. the half-open range [10, 11) -- is a normal, minimal window.)
+        val misaligned = synthesizeWindow(eninSeconds = 300, validFromEnin = 10, validThroughEnin = 11)
+        val registryDefinition = BarnardEventDefinitionV1(
+            misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
+            validFromUnixSeconds = 3001, validUntilUnixSeconds = 3300,
+        )
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(registryDefinition)).receiverState, "misaligned window must not agree")
+
+        // Aligned: registry [3000, 3300) exactly matches the ENIN [10, 11) half-open range -- accepted.
+        val aligned = BarnardEventDefinitionV1(
+            misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
+            validFromUnixSeconds = 3000, validUntilUnixSeconds = 3300,
+        )
+        assertEquals(BarnardB005ReceiverState.REGISTRY_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(aligned)).receiverState, "aligned window must agree")
+
+        // Off-by-one ENIN at both ends of the aligned registry window must still be rejected.
+        val startOffByOne = aligned.copy(validFromUnixSeconds = 2700)
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(startOffByOne)).receiverState, "start off-by-one must not agree")
+        val endOffByOne = aligned.copy(validUntilUnixSeconds = 3600)
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(misaligned, authenticate(endOffByOne)).receiverState, "end off-by-one must not agree")
+    }
+
+    @Test fun registryAuthenticatedDefinitionRejectsEmptyOrShortEvidence() {
+        val definition = BarnardEventDefinitionV1(ByteArray(32), ByteArray(32), 0, ByteArray(8), 0, 300)
+        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, -1, ByteArray(32), ByteArray(32)), "negative pinned block number")
+        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(0), ByteArray(32)), "empty pinned block hash")
+        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(31), ByteArray(32)), "short pinned block hash")
+        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(32), ByteArray(0)), "empty anchor proof")
+        assertNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(32), ByteArray(31)), "short anchor proof")
+        assertNotNull(BarnardRegistryAuthenticatedDefinition.fromRegistryRead(definition, 1, ByteArray(32), ByteArray(32)), "well-formed evidence must be accepted")
+    }
+
+    @Test fun verifiedEnvelopeHasNoPublicConstructorOrCopy() {
+        // P1: a `data class` would generate a public `copy()` (and, from Java, a directly
+        // callable constructor) letting a caller fabricate `receiverState = REGISTRY_VERIFIED`.
+        // Assert via reflection that neither escape hatch exists on the compiled class.
+        //
+        // Kotlin's codegen for "private constructor + companion factory" unconditionally emits a
+        // second, JVM-`public` constructor overload carrying a trailing
+        // `kotlin.jvm.internal.DefaultConstructorMarker` parameter (a synthetic bridge letting the
+        // companion, a distinct JVM class, reach the private constructor -- confirmed empirically
+        // via javap; no combination of Kotlin visibility keywords avoids it once a companion
+        // touches the private constructor). That bridge is `ACC_SYNTHETIC`: real (non-synthetic)
+        // constructors must all be private.
+        val constructors = BarnardB005VerifiedEnvelope::class.java.declaredConstructors
+        val realConstructors = constructors.filter { !it.isSynthetic }
+        assertEquals(1, realConstructors.size, "expected exactly one non-synthetic constructor")
+        assertTrue(!java.lang.reflect.Modifier.isPublic(realConstructors[0].modifiers), "the real constructor must not be public")
+        for (ctor in constructors) {
+            if (java.lang.reflect.Modifier.isPublic(ctor.modifiers)) {
+                assertTrue(ctor.isSynthetic, "a public constructor must be the synthetic companion-access bridge, not a real one")
+            }
+        }
+        val hasCopy = BarnardB005VerifiedEnvelope::class.java.methods.any { it.name == "copy" }
+        assertTrue(!hasCopy, "must not expose a public copy() method")
+    }
+
+    /**
+     * Builds a structurally-valid `RADIO_SELF_VERIFIED` envelope with a caller-chosen
+     * `eninSeconds`/window, using an `AlwaysAcceptingRecoverer` to stand in for real ECDSA math
+     * (same technique as [buildSyntheticContainer] below), so `confirmAgainstRegistry`'s window
+     * logic can be exercised against known, exact ENIN values. Requires `validThroughEnin >
+     * validFromEnin`: a verified envelope's `expires` field must satisfy `validFromEnin <=
+     * currentEnin < expires <= validThroughEnin`, which is unsatisfiable when the two are equal.
+     */
+    private fun synthesizeWindow(eninSeconds: Int, validFromEnin: Int, validThroughEnin: Int): BarnardB005VerifiedEnvelope {
+        var envelope = byteArrayOf(1) + ByteArray(20) + ByteArray(20) + ByteArray(32) + byteArrayOf(1)
+        envelope += ByteArray(33) { 1 }
+        envelope += byteArrayOf(1) // joinMode = gated
+        envelope += byteArrayOf((eninSeconds shr 8).toByte(), eninSeconds.toByte())
+        envelope += byteArrayOf((validFromEnin shr 24).toByte(), (validFromEnin shr 16).toByte(), (validFromEnin shr 8).toByte(), validFromEnin.toByte())
+        envelope += byteArrayOf((validThroughEnin shr 24).toByte(), (validThroughEnin shr 16).toByte(), (validThroughEnin shr 8).toByte(), validThroughEnin.toByte())
+        envelope += byteArrayOf((validThroughEnin shr 24).toByte(), (validThroughEnin shr 16).toByte(), (validThroughEnin shr 8).toByte(), validThroughEnin.toByte()) // expires = validThroughEnin
+        envelope += byteArrayOf(2) // fixed marker byte
+        envelope += ByteArray(8) // eventCodeHash (unchecked under gated mode)
+        envelope += byteArrayOf(1) // nameLength
+        envelope += "X".encodeToByteArray()
+        envelope += byteArrayOf(0) // certLength = 0
+        envelope += ByteArray(31) + byteArrayOf(1) + ByteArray(31) + byteArrayOf(1) + byteArrayOf(0) // r=1, s=1, v=0
+        val container = BarnardB005EnvelopeV2.encodeContainer(0, envelope) ?: error("container build failed")
+        val recoverer = AlwaysAcceptingRecoverer(ByteArray(33) { 1 })
+        return BarnardB005EnvelopeV2.verify(container, validFromEnin.toLong(), recoverer) ?: error("expected synthetic window container to verify")
     }
 
     // --- Recover-once and low-S (P1) ---
