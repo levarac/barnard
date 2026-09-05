@@ -182,7 +182,7 @@ class BarnardB005EnvelopeV2Test {
             validFromUnixSeconds = validFrom, validUntilUnixSeconds = validUntil,
         )
 
-        // A negative validFromUnixSeconds must not agree, even with an envelope claiming [0, 1)
+        // A negative validFromUnixSeconds must not agree, even with an envelope claiming ENIN [0, 1] inclusive
         // as unix seconds would suggest.
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(envelope, definition(validFrom = -1, validUntil = 299)), "negative validFromUnixSeconds must not agree")
 
