@@ -110,6 +110,133 @@ class BarnardB005EnvelopeV2Test {
         assertNull(BarnardB005EnvelopeV2.verify(mutated, 6_000_000))
     }
 
+    // --- Registry-tier confirmation (P1: cannot be forged from a bare bool) ---
+
+    @Test fun confirmAgainstRegistryRequiresFullAgreement() {
+        val container = hex(v("v1_container"))
+        val verified = BarnardB005EnvelopeV2.verify(container, 6_000_000) ?: error("expected RADIO_SELF_VERIFIED baseline")
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, verified.receiverState)
+        fun agreeing() = BarnardEventDefinitionV1(
+            verified.eventId, verified.keySetDigest, verified.joinMode, verified.eventCodeHash,
+            verified.validFromEnin * verified.eninSeconds, verified.validThroughEnin * verified.eninSeconds,
+        )
+        assertEquals(BarnardB005ReceiverState.REGISTRY_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing()).receiverState)
+
+        val wrongEventId = agreeing().eventId.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(eventId = wrongEventId)).receiverState, "eventId mismatch")
+
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(joinMode = if (verified.joinMode == 0) 1 else 0)).receiverState, "joinMode mismatch")
+
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(validFromUnixSeconds = (verified.validThroughEnin + 1) * verified.eninSeconds)).receiverState, "window mismatch")
+
+        val wrongKeySetDigest = verified.keySetDigest.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+        assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, agreeing().copy(keySetDigest = wrongKeySetDigest)).receiverState, "signer-authority (keySetDigest) mismatch")
+    }
+
+    // --- Recover-once and low-S (P1) ---
+
+    private class CountingNonMemberRecoverer : BarnardB005PublicKeyRecovering {
+        var count = 0
+        override fun recover(recoveryId: Int, r: ByteArray, s: ByteArray, digest: ByteArray): ByteArray? {
+            count++
+            return ByteArray(33) { 0xff.toByte() } // never a member of the synthetic key set below.
+        }
+        override fun isValidCompressedKey(key: ByteArray) = true
+    }
+
+    private class AlwaysAcceptingRecoverer(private val key: ByteArray) : BarnardB005PublicKeyRecovering {
+        override fun recover(recoveryId: Int, r: ByteArray, s: ByteArray, digest: ByteArray) = key
+        override fun isValidCompressedKey(key: ByteArray) = true
+    }
+
+    // Builds a structurally-valid authority-direct-mode container with `keyCount` synthetic
+    // authority keys, no delegation certificate, and a caller-supplied raw signature, so tests
+    // can drive signatureMatches/recoverMember with arbitrary r/s/v without real ECDSA math.
+    private fun buildSyntheticContainer(keyCount: Int, signature: ByteArray): ByteArray {
+        var envelope = byteArrayOf(1) + ByteArray(20) + ByteArray(20) + ByteArray(32) + byteArrayOf(keyCount.toByte())
+        for (i in 0 until keyCount) envelope += ByteArray(33) { (i + 1).toByte() }
+        envelope += byteArrayOf(1) // joinMode = gated
+        envelope += byteArrayOf(0x01, 0x2c) // eninSeconds = 300
+        envelope += byteArrayOf(0, 0, 0x03, 0xe8.toByte()) // validFrom = 1000
+        envelope += byteArrayOf(0, 0, 0x03, 0xe9.toByte()) // validThrough = 1001
+        envelope += byteArrayOf(0, 0, 0x03, 0xe9.toByte()) // relayExpiresAtEnin = 1001
+        envelope += byteArrayOf(2) // fixed marker byte
+        envelope += ByteArray(8) // eventCodeHash (unchecked under gated mode)
+        envelope += byteArrayOf(1) // nameLength
+        envelope += "X".encodeToByteArray()
+        envelope += byteArrayOf(0) // certLength = 0
+        envelope += signature
+        return BarnardB005EnvelopeV2.encodeContainer(0, envelope) ?: error("container build failed")
+    }
+
+    @Test fun authorityDirectVerificationRecoversExactlyOnce() {
+        val recoverer = CountingNonMemberRecoverer()
+        val signature = ByteArray(31) + byteArrayOf(1) + ByteArray(31) + byteArrayOf(1) + byteArrayOf(0) // r=1, s=1, v=0
+        val container = buildSyntheticContainer(8, signature)
+        assertNull(BarnardB005EnvelopeV2.verify(container, 1000, recoverer), "recovered key is never a set member")
+        assertEquals(1, recoverer.count, "authority-direct mode must recover exactly once regardless of key-set size")
+    }
+
+    @Test fun highSSignatureRejectedEvenWithAnAcceptingRecoverer() {
+        // s = N - 1 (maximal, definitely > N/2): a fake recoverer that never checks S itself
+        // would happily "match" this, so the rejection MUST come from signatureMatches's own
+        // low-S gate.
+        val highS = byteArrayOf(
+            0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+            0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xfe.toByte(),
+            0xba.toByte(), 0xae.toByte(), 0xdc.toByte(), 0xe6.toByte(), 0xaf.toByte(), 0x48, 0xa0.toByte(), 0x3b,
+            0xbf.toByte(), 0xd2.toByte(), 0x5e, 0x8c.toByte(), 0xd0.toByte(), 0x36, 0x41, 0x40,
+        )
+        val r = ByteArray(31) + byteArrayOf(1)
+        val acceptingKey = ByteArray(33) { 7 }
+        val signature = r + highS + byteArrayOf(0)
+        val container = buildSyntheticContainer(1, signature)
+        assertNull(BarnardB005EnvelopeV2.verify(container, 1000, AlwaysAcceptingRecoverer(acceptingKey)))
+    }
+
+    @Test fun highSCertificateSignatureRejectedEvenWithAnAcceptingRecoverer() {
+        // Same claim as above but for the certificate's own COSE signature path
+        // (recoveryByte = false, the two-attempt branch), a separate code path from the
+        // envelope signature.
+        val envelopeHex = v("v2_envelope")
+        val oldCert = v("v2_delegation_cert")
+        val idx = envelopeHex.indexOf(oldCert)
+        check(idx >= 0)
+        val envelope = hex(envelopeHex)
+        val certByteOffset = idx / 2
+        val certEnd = certByteOffset + oldCert.length / 2
+        val highS = byteArrayOf(
+            0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+            0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xfe.toByte(),
+            0xba.toByte(), 0xae.toByte(), 0xdc.toByte(), 0xe6.toByte(), 0xaf.toByte(), 0x48, 0xa0.toByte(), 0x3b,
+            0xbf.toByte(), 0xd2.toByte(), 0x5e, 0x8c.toByte(), 0xd0.toByte(), 0x36, 0x41, 0x40,
+        )
+        // Certificate signature is the last 64 bytes of the cert byte range (COSE_Sign1 bstr .size 64).
+        val sigStart = certEnd - 64
+        val r = ByteArray(31) + byteArrayOf(1)
+        r.copyInto(envelope, sigStart)
+        highS.copyInto(envelope, sigStart + 32)
+        val container = BarnardB005EnvelopeV2.encodeContainer(1, envelope) ?: error("container build failed")
+        assertNull(BarnardB005EnvelopeV2.verify(container, 6_000_000, AlwaysAcceptingRecoverer(ByteArray(33) { 7 })))
+    }
+
+    // --- CBOR builder overflow (P2) ---
+
+    @Test fun buildSigStructureHandlesFieldsAtAndBeyond256Bytes() {
+        val protected300 = ByteArray(300) { 0x11 }
+        val payload10 = ByteArray(10) { 0x22 }
+        val structure = BarnardB005EnvelopeV2.buildSigStructure(protected300, payload10) ?: error("300-byte field must not truncate or fail")
+        val headerEnd = 2 + 10
+        assertContentEquals(byteArrayOf(0x59, 0x01, 0x2c), structure.copyOfRange(headerEnd, headerEnd + 3), "canonical 2-byte length for 300")
+        assertEquals(2 + 10 + 3 + 300 + 1 + 1 + 10, structure.size)
+        assertContentEquals(protected300, structure.copyOfRange(headerEnd + 3, headerEnd + 3 + 300))
+    }
+
+    @Test fun buildSigStructureRejectsOversizedField() {
+        val tooLarge = ByteArray(65536)
+        assertNull(BarnardB005EnvelopeV2.buildSigStructure(tooLarge, ByteArray(0)))
+    }
+
     private fun hex(s: String) = ByteArray(s.length / 2) { s.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
     private fun findRepoRoot(): File { var f = File(System.getProperty("user.dir")); repeat(20) { if (File(f, "test-vectors/b005-envelope-v2.txt").isFile) return f; f = f.parentFile }; error("repo root") }
     private fun parseVectors(file: File) = file.readLines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.associate { val i = it.indexOf('='); it.substring(0, i) to it.substring(i + 1) }

@@ -120,6 +120,143 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     }
   }
 
+  // MARK: - Registry-tier confirmation (P1: cannot be forged from a bare bool)
+
+  func testConfirmAgainstRegistryRequiresFullAgreement() throws {
+    let v = try load()
+    let container = hex(v["v1_container"]!)
+    guard let verified = BarnardB005EnvelopeV2.verify(container: container, currentEnin: 6_000_000, nameValidator: nameValidator) else {
+      return XCTFail("expected RADIO_SELF_VERIFIED baseline")
+    }
+    XCTAssertEqual(verified.receiverState, .RADIO_SELF_VERIFIED)
+    func agreeing() -> BarnardEventDefinitionV1 {
+      BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))
+    }
+    // Positive: an actually-agreeing definition raises the tier.
+    let confirmed = BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: agreeing())
+    XCTAssertEqual(confirmed.receiverState, .REGISTRY_VERIFIED)
+
+    // Negative: each single-field disagreement must hold the tier at RADIO_SELF_VERIFIED, never REGISTRY_VERIFIED.
+    var wrongEventId = agreeing().eventId; wrongEventId[0] ^= 1
+    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: BarnardEventDefinitionV1(eventId: wrongEventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))).receiverState, .RADIO_SELF_VERIFIED)
+
+    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode == 0 ? 1 : 0, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))).receiverState, .RADIO_SELF_VERIFIED, "joinMode mismatch")
+
+    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: verified.keySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: (verified.validThroughEnin + 1) * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))).receiverState, .RADIO_SELF_VERIFIED, "window mismatch")
+
+    var wrongKeySetDigest = verified.keySetDigest; wrongKeySetDigest[0] ^= 1
+    XCTAssertEqual(BarnardB005EnvelopeV2.confirmAgainstRegistry(verified, against: BarnardEventDefinitionV1(eventId: verified.eventId, keySetDigest: wrongKeySetDigest, joinMode: verified.joinMode, eventCodeHash: verified.eventCodeHash, validFromUnixSeconds: verified.validFromEnin * Int64(verified.eninSeconds), validUntilUnixSeconds: verified.validThroughEnin * Int64(verified.eninSeconds))).receiverState, .RADIO_SELF_VERIFIED, "signer-authority (keySetDigest) mismatch")
+  }
+
+  // MARK: - Recover-once and low-S (P1)
+
+  private struct CountingNonMemberRecoverer: BarnardB005PublicKeyRecovering {
+    let counter: Counter
+    func recover(recoveryId: Int, r: [UInt8], s: [UInt8], digest: [UInt8]) -> [UInt8]? {
+      counter.count += 1
+      return [UInt8](repeating: 0xff, count: 33) // never a member of the synthetic key set below.
+    }
+    func isValidCompressedKey(_ key: [UInt8]) -> Bool { true }
+  }
+  private final class Counter { var count = 0 }
+
+  private struct AlwaysAcceptingRecoverer: BarnardB005PublicKeyRecovering {
+    let key: [UInt8]
+    func recover(recoveryId: Int, r: [UInt8], s: [UInt8], digest: [UInt8]) -> [UInt8]? { key }
+    func isValidCompressedKey(_ key: [UInt8]) -> Bool { true }
+  }
+
+  /// Builds a structurally-valid authority-direct-mode container with `n` synthetic authority
+  /// keys, no delegation certificate, and a caller-supplied raw signature so tests can drive
+  /// `signatureMatches`/`recoverMember` with arbitrary r/s/v without real ECDSA math -- the
+  /// injected fake recoverer stands in for signature validity.
+  private func buildSyntheticContainer(keyCount: Int, signature: [UInt8]) -> [UInt8] {
+    let keys = (0..<keyCount).map { [UInt8](repeating: UInt8($0 + 1), count: 33) }
+    var envelope: [UInt8] = [1] + [UInt8](repeating: 0, count: 20) + [UInt8](repeating: 0, count: 20) + [UInt8](repeating: 0, count: 32)
+    envelope += [UInt8(keyCount)]
+    for key in keys { envelope += key }
+    envelope += [1] // joinMode = gated (skip open-code binding)
+    envelope += [0x01, 0x2c] // eninSeconds = 300
+    envelope += [0, 0, 0x03, 0xe8] // validFrom = 1000
+    envelope += [0, 0, 0x03, 0xe9] // validThrough = 1001
+    envelope += [0, 0, 0x03, 0xe9] // relayExpiresAtEnin = 1001
+    envelope += [2] // fixed marker byte
+    envelope += [UInt8](repeating: 0, count: 8) // eventCodeHash (unchecked under gated mode)
+    envelope += [1] // nameLength
+    envelope += Array("X".utf8)
+    envelope += [0] // certLength = 0
+    envelope += signature
+    return BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 0, signedEnvelope: envelope)!
+  }
+
+  func testAuthorityDirectVerificationRecoversExactlyOnce() throws {
+    let counter = Counter()
+    let signature = [UInt8](repeating: 0, count: 31) + [1] + [UInt8](repeating: 0, count: 31) + [1] + [0] // r=1, s=1, v=0
+    let container = buildSyntheticContainer(keyCount: 8, signature: signature)
+    let result = BarnardB005EnvelopeV2.verify(container: container, currentEnin: 1000, nameValidator: nameValidator, recoverer: CountingNonMemberRecoverer(counter: counter))
+    XCTAssertNil(result, "recovered key is never a set member")
+    XCTAssertEqual(counter.count, 1, "authority-direct mode must recover exactly once regardless of key-set size")
+  }
+
+  func testHighSSignatureRejectedEvenWithAnAcceptingRecoverer() throws {
+    // s = N - 1 (maximal, definitely > N/2): a fake recoverer that never checks S itself would
+    // happily "match" this, so the rejection MUST come from signatureMatches's own low-S gate.
+    let highS: [UInt8] = [
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+      0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x40,
+    ]
+    let r = [UInt8](repeating: 0, count: 31) + [1]
+    let acceptingKey = [UInt8](repeating: 7, count: 33)
+    let signature = r + highS + [0]
+    let container = buildSyntheticContainer(keyCount: 1, signature: signature)
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 1000, nameValidator: nameValidator, recoverer: AlwaysAcceptingRecoverer(key: acceptingKey)))
+  }
+
+  func testHighSCertificateSignatureRejectedEvenWithAnAcceptingRecoverer() throws {
+    // Same claim as above but for the certificate's own COSE signature path (hasRecoveryByte:
+    // false, the two-attempt branch), which is a separate code path from the envelope signature.
+    let v = try load()
+    let envelopeHex = v["v2_envelope"]!
+    let oldCert = v["v2_delegation_cert"]!
+    guard let range = envelopeHex.range(of: oldCert) else { return XCTFail("cert not found") }
+    // We only need the certificate's shape (its 64-byte inner COSE signature) with a high-S
+    // value substituted in, and an AlwaysAcceptingRecoverer standing in for a permissive backend.
+    var envelope = hex(envelopeHex)
+    let certByteOffset = envelopeHex.distance(from: envelopeHex.startIndex, to: range.lowerBound) / 2
+    let certEnd = certByteOffset + oldCert.count / 2
+    let highS: [UInt8] = [
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+      0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x40,
+    ]
+    // Certificate signature is the last 64 bytes of the cert byte range (COSE_Sign1 bstr .size 64).
+    let sigStart = certEnd - 64
+    let r = [UInt8](repeating: 0, count: 31) + [1]
+    envelope.replaceSubrange(sigStart..<(sigStart + 32), with: r)
+    envelope.replaceSubrange((sigStart + 32)..<certEnd, with: highS)
+    let container = BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 1, signedEnvelope: envelope)!
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 6_000_000, nameValidator: nameValidator, recoverer: AlwaysAcceptingRecoverer(key: [UInt8](repeating: 7, count: 33))))
+  }
+
+  // MARK: - CBOR builder overflow (P2)
+
+  func testBuildSigStructureHandlesFieldsAtAndBeyond256Bytes() throws {
+    let protected300 = [UInt8](repeating: 0x11, count: 300)
+    let payload10 = [UInt8](repeating: 0x22, count: 10)
+    guard let structure = BarnardB005EnvelopeV2.buildSigStructure(protected: protected300, payload: payload10) else {
+      return XCTFail("300-byte field must not trap or fail")
+    }
+    // Sig_structure header (2) + "Signature1" (10) + protected field: 0x59 hi lo + 300 bytes.
+    let headerEnd = 2 + 10
+    XCTAssertEqual(Array(structure[headerEnd..<(headerEnd + 3)]), [0x59, 0x01, 0x2c], "canonical 2-byte length for 300")
+    XCTAssertEqual(structure.count, 2 + 10 + 3 + 300 + 1 + 1 + 10)
+    XCTAssertEqual(Array(structure[(headerEnd + 3)..<(headerEnd + 3 + 300)]), protected300)
+  }
+
+  func testBuildSigStructureRejectsOversizedField() throws {
+    let tooLarge = [UInt8](repeating: 0, count: 65536)
+    XCTAssertNil(BarnardB005EnvelopeV2.buildSigStructure(protected: tooLarge, payload: []))
+  }
+
   private func loadFile(_ relativePath: String) throws -> [String: String] {
     var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     for _ in 0..<20 {

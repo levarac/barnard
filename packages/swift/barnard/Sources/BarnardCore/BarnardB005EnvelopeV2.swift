@@ -37,12 +37,38 @@ public struct BarnardB005VerifiedEnvelope {
   public let relayHopCount: UInt8
   public let eventId: [UInt8]
   public let keySetDigest: [UInt8]
+  public let joinMode: UInt8
   public let eventCodeHash: [UInt8]
   public let eventDisplayName: String
+  public let validFromEnin: Int64
+  public let validThroughEnin: Int64
+  public let eninSeconds: UInt16
   public let signedEnvelope: [UInt8]
 
-  public func confirmingRegistry(_ agrees: Bool) -> BarnardB005ReceiverState {
-    agrees ? .REGISTRY_VERIFIED : .RADIO_SELF_VERIFIED
+  fileprivate func withState(_ state: BarnardB005ReceiverState) -> BarnardB005VerifiedEnvelope {
+    BarnardB005VerifiedEnvelope(receiverState: state, relayHopCount: relayHopCount, eventId: eventId, keySetDigest: keySetDigest, joinMode: joinMode, eventCodeHash: eventCodeHash, eventDisplayName: eventDisplayName, validFromEnin: validFromEnin, validThroughEnin: validThroughEnin, eninSeconds: eninSeconds, signedEnvelope: signedEnvelope)
+  }
+}
+
+/// The subset of parallax's anchored `EventDefinitionV1` (protocol/spec/v0.1/event-definition.md)
+/// that spec 134 step 4 requires a receiver to agree against: `eventId`, the authority key-set
+/// digest (signer-authority agreement), `joinMode`, `eventCodeHash`, and the registered Unix-time
+/// validity window.
+public struct BarnardEventDefinitionV1 {
+  public let eventId: [UInt8]
+  public let keySetDigest: [UInt8]
+  public let joinMode: UInt8
+  public let eventCodeHash: [UInt8]
+  public let validFromUnixSeconds: Int64
+  public let validUntilUnixSeconds: Int64
+
+  public init(eventId: [UInt8], keySetDigest: [UInt8], joinMode: UInt8, eventCodeHash: [UInt8], validFromUnixSeconds: Int64, validUntilUnixSeconds: Int64) {
+    self.eventId = eventId
+    self.keySetDigest = keySetDigest
+    self.joinMode = joinMode
+    self.eventCodeHash = eventCodeHash
+    self.validFromUnixSeconds = validFromUnixSeconds
+    self.validUntilUnixSeconds = validUntilUnixSeconds
   }
 }
 
@@ -80,7 +106,7 @@ public enum BarnardB005EnvelopeV2 {
     return [3, relayHopCount, UInt8(signedEnvelope.count >> 8), UInt8(signedEnvelope.count & 255)] + signedEnvelope
   }
 
-  public static func verify(container: [UInt8], currentEnin: Int64?, nameValidator: any BarnardB005DisplayNameNormalizing, registryConfirmed: Bool = false, recoverer: any BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer()) -> BarnardB005VerifiedEnvelope? {
+  public static func verify(container: [UInt8], currentEnin: Int64?, nameValidator: any BarnardB005DisplayNameNormalizing, recoverer: any BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer()) -> BarnardB005VerifiedEnvelope? {
     guard container.count <= 512, container.count >= 4, container[0] == 3, container[1] <= 2 else { return nil }
     let envelopeLength = Int(container[2]) << 8 | Int(container[3])
     guard envelopeLength <= 508, envelopeLength == container.count - 4, let now = currentEnin, now >= 0 else { return nil }
@@ -124,7 +150,8 @@ public enum BarnardB005EnvelopeV2 {
         Array(BarnardCoreCrypto.sha256(Array("levarac:cose-kid:v1\0".utf8) + key).prefix(8)) == parsed.kid
       }
       guard candidates.count == 1 else { return nil }
-      let certDigest = BarnardCoreCrypto.sha256(buildSigStructure(protected: parsed.protected, payload: parsed.payload))
+      guard let sigStructure = buildSigStructure(protected: parsed.protected, payload: parsed.payload) else { return nil }
+      let certDigest = BarnardCoreCrypto.sha256(sigStructure)
       guard signatureMatches(parsed.signature, digest: certDigest, key: candidates[0], recoverer: recoverer, hasRecoveryByte: false) else { return nil }
       expectedSigner = parsed.delegateKey
     }
@@ -134,14 +161,35 @@ public enum BarnardB005EnvelopeV2 {
     if let expectedSigner {
       signatureKey = signatureMatches(signature, digest: digest, key: expectedSigner, recoverer: recoverer, hasRecoveryByte: true) ? expectedSigner : nil
     } else {
-      signatureKey = keys.first { signatureMatches(signature, digest: digest, key: $0, recoverer: recoverer, hasRecoveryByte: true) }
+      // Recover once: the recovered pubkey depends only on (r, s, v, digest), not on which
+      // authority key it is compared against, so recovering per candidate key would recover the
+      // identical point up to n times. Recover once and test set membership on the result.
+      signatureKey = recoverMember(signature, digest: digest, keys: keys, recoverer: recoverer)
     }
     guard signatureKey != nil else { return nil }
-    return BarnardB005VerifiedEnvelope(receiverState: registryConfirmed ? .REGISTRY_VERIFIED : .RADIO_SELF_VERIFIED, relayHopCount: container[1], eventId: eventId, keySetDigest: ksDigest, eventCodeHash: codeHash, eventDisplayName: name, signedEnvelope: envelope)
+    return BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: container[1], eventId: eventId, keySetDigest: ksDigest, joinMode: joinMode, eventCodeHash: codeHash, eventDisplayName: name, validFromEnin: validFrom, validThroughEnin: validThrough, eninSeconds: eninSeconds, signedEnvelope: envelope)
   }
 
-  public static func buildSigStructure(protected: [UInt8], payload: [UInt8]) -> [UInt8] {
-    [0x84, 0x6a] + Array("Signature1".utf8) + cborBytes(protected) + [0x40] + cborBytes(payload)
+  /// Confirms a `RADIO_SELF_VERIFIED` envelope against the authenticated, pinned-block
+  /// `EventDefinitionV1` for this `eventId` (spec 122 receiver policy, step 8; spec 134 step 4 as
+  /// amended by errata #173, which drops the unsatisfiable display-name agreement). This is the
+  /// only path to `REGISTRY_VERIFIED`: it is not derivable from a caller-supplied boolean, only
+  /// from checking every field of an actual definition the caller obtained on-chain.
+  public static func confirmAgainstRegistry(_ verified: BarnardB005VerifiedEnvelope, against definition: BarnardEventDefinitionV1) -> BarnardB005VerifiedEnvelope {
+    guard verified.eninSeconds > 0 else { return verified.withState(.RADIO_SELF_VERIFIED) }
+    let eninPerSecond = Int64(verified.eninSeconds)
+    let agrees = verified.eventId == definition.eventId
+      && verified.keySetDigest == definition.keySetDigest
+      && verified.joinMode == definition.joinMode
+      && verified.eventCodeHash == definition.eventCodeHash
+      && definition.validFromUnixSeconds / eninPerSecond <= verified.validFromEnin
+      && verified.validThroughEnin <= definition.validUntilUnixSeconds / eninPerSecond
+    return verified.withState(agrees ? .REGISTRY_VERIFIED : .RADIO_SELF_VERIFIED)
+  }
+
+  public static func buildSigStructure(protected: [UInt8], payload: [UInt8]) -> [UInt8]? {
+    guard let p = cborBytes(protected), let pl = cborBytes(payload) else { return nil }
+    return [0x84, 0x6a] + Array("Signature1".utf8) + p + [0x40] + pl
   }
 
   private struct Cert { let protected: [UInt8]; let payload: [UInt8]; let signature: [UInt8]; let kid: [UInt8]; let eventId: [UInt8]; let delegateKey: [UInt8]; let roles: UInt64; let eninStart: UInt64; let eninEnd: UInt64 }
@@ -161,14 +209,46 @@ public enum BarnardB005EnvelopeV2 {
     return Cert(protected: protected, payload: payload, signature: signature, kid: kid, eventId: eventId, delegateKey: delegate, roles: roles, eninStart: start, eninEnd: end)
   }
 
+  // secp256k1 group order n, and n/2 (BIP-62/146 low-S bound), both big-endian.
+  private static let curveOrder: [UInt8] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+    0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+  ]
+  private static let curveOrderHalf: [UInt8] = [
+    0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
+  ]
+
+  private static func isZero(_ b: [UInt8]) -> Bool { b.allSatisfy { $0 == 0 } }
+
+  /// Enforces `0 < r < N` and `0 < s <= N/2` independent of the injected recoverer: the public
+  /// `BarnardB005PublicKeyRecovering` protocol carries no contract that a conforming backend
+  /// rejects a high-S or out-of-range signature on its own, so this MUST be checked here.
+  private static func isLowSInRange(r: [UInt8], s: [UInt8]) -> Bool {
+    !isZero(r) && lexicographicallyLess(r, curveOrder)
+      && !isZero(s) && !lexicographicallyLess(curveOrderHalf, s)
+  }
+
   private static func signatureMatches(_ signature: [UInt8], digest: [UInt8], key: [UInt8], recoverer: any BarnardB005PublicKeyRecovering, hasRecoveryByte: Bool) -> Bool {
     guard signature.count == (hasRecoveryByte ? 65 : 64) else { return false }
     let r = Array(signature[0..<32]), s = Array(signature[32..<64])
+    guard isLowSInRange(r: r, s: s) else { return false }
     if hasRecoveryByte {
       let v = Int(signature[64]); guard v <= 1 else { return false }
       return recoverer.recover(recoveryId: v, r: r, s: s, digest: digest) == key
     }
     return (0...1).contains { recoverer.recover(recoveryId: $0, r: r, s: s, digest: digest) == key }
+  }
+
+  /// Recovers the signer exactly once (the recovery id is carried in the signature, so there is
+  /// no ambiguity to resolve by trying candidates), then tests set membership on the result.
+  private static func recoverMember(_ signature: [UInt8], digest: [UInt8], keys: [[UInt8]], recoverer: any BarnardB005PublicKeyRecovering) -> [UInt8]? {
+    guard signature.count == 65 else { return nil }
+    let r = Array(signature[0..<32]), s = Array(signature[32..<64])
+    guard isLowSInRange(r: r, s: s) else { return nil }
+    let v = Int(signature[64]); guard v <= 1 else { return nil }
+    guard let recovered = recoverer.recover(recoveryId: v, r: r, s: s, digest: digest) else { return nil }
+    return keys.contains(recovered) ? recovered : nil
   }
 
   private static func strictDisplayName(_ bytes: [UInt8], nameValidator: any BarnardB005DisplayNameNormalizing) -> String? {
@@ -184,7 +264,14 @@ public enum BarnardB005EnvelopeV2 {
   private static func lexicographicallyLess(_ a: [UInt8], _ b: [UInt8]) -> Bool { for i in a.indices { if a[i] != b[i] { return a[i] < b[i] } }; return false }
   private static func read16(_ b: [UInt8], _ i: Int) -> UInt16 { UInt16(b[i]) << 8 | UInt16(b[i + 1]) }
   private static func read32(_ b: [UInt8], _ i: Int) -> UInt32 { UInt32(b[i]) << 24 | UInt32(b[i + 1]) << 16 | UInt32(b[i + 2]) << 8 | UInt32(b[i + 3]) }
-  private static func cborBytes(_ b: [UInt8]) -> [UInt8] { b.count < 24 ? [0x40 | UInt8(b.count)] + b : [0x58, UInt8(b.count)] + b }
+  private static func cborBytes(_ b: [UInt8]) -> [UInt8]? {
+    switch b.count {
+    case 0..<24: return [0x40 | UInt8(b.count)] + b
+    case 24..<256: return [0x58, UInt8(b.count)] + b
+    case 256..<65536: return [0x59, UInt8(b.count >> 8), UInt8(b.count & 0xff)] + b
+    default: return nil
+    }
+  }
 }
 
 private struct CborReader {

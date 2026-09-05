@@ -19,17 +19,34 @@ object BarnardB005NativeRecoverer : BarnardB005PublicKeyRecovering {
     override fun isValidCompressedKey(key: ByteArray) = BouncyCastleSecp256k1Backend.isValidCompressedPublicKey(key)
 }
 
-data class BarnardB005VerifiedEnvelope(
+data class BarnardB005VerifiedEnvelope internal constructor(
     val receiverState: BarnardB005ReceiverState,
     val relayHopCount: Int,
     val eventId: ByteArray,
     val keySetDigest: ByteArray,
+    val joinMode: Int,
     val eventCodeHash: ByteArray,
     val eventDisplayName: String,
+    val validFromEnin: Long,
+    val validThroughEnin: Long,
+    val eninSeconds: Int,
     val signedEnvelope: ByteArray,
-) {
-    fun confirmingRegistry(agrees: Boolean) = if (agrees) BarnardB005ReceiverState.REGISTRY_VERIFIED else BarnardB005ReceiverState.RADIO_SELF_VERIFIED
-}
+)
+
+/**
+ * The subset of parallax's anchored `EventDefinitionV1` (protocol/spec/v0.1/event-definition.md)
+ * that spec 134 step 4 requires a receiver to agree against: `eventId`, the authority key-set
+ * digest (signer-authority agreement), `joinMode`, `eventCodeHash`, and the registered Unix-time
+ * validity window.
+ */
+data class BarnardEventDefinitionV1(
+    val eventId: ByteArray,
+    val keySetDigest: ByteArray,
+    val joinMode: Int,
+    val eventCodeHash: ByteArray,
+    val validFromUnixSeconds: Long,
+    val validUntilUnixSeconds: Long,
+)
 
 object BarnardB005EnvelopeV2 {
     const val FORMAT_VERSION = 3
@@ -64,7 +81,7 @@ object BarnardB005EnvelopeV2 {
         return byteArrayOf(3, relayHopCount.toByte(), (signedEnvelope.size shr 8).toByte(), signedEnvelope.size.toByte()) + signedEnvelope
     }
 
-    fun verify(container: ByteArray, currentEnin: Long?, registryConfirmed: Boolean = false, recoverer: BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer): BarnardB005VerifiedEnvelope? {
+    fun verify(container: ByteArray, currentEnin: Long?, recoverer: BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer): BarnardB005VerifiedEnvelope? {
         if (container.size !in 4..512 || container[0].u != 3 || container[1].u > 2 || currentEnin == null || currentEnin < 0) return null
         val length = container[2].u shl 8 or container[3].u
         if (length > 508 || length != container.size - 4) return null
@@ -99,19 +116,48 @@ object BarnardB005EnvelopeV2 {
             if (!c.eventId.contentEquals(eventId) || c.roles != 1UL || currentEnin.toULong() !in c.eninStart..c.eninEnd || !recoverer.isValidCompressedKey(c.delegateKey)) return null
             val candidates = keys.filter { sha256("levarac:cose-kid:v1\u0000".encodeToByteArray() + it).copyOf(8).contentEquals(c.kid) }
             if (candidates.size != 1) return null
-            if (!signatureMatches(c.signature, sha256(buildSigStructure(c.protectedBytes, c.payload)), candidates[0], recoverer, false)) return null
+            val sigStructure = buildSigStructure(c.protectedBytes, c.payload) ?: return null
+            if (!signatureMatches(c.signature, sha256(sigStructure), candidates[0], recoverer, false)) return null
             c.delegateKey
         }
         val signature = e.copyOfRange(signatureStart, e.size)
         val digest = sha256(signatureDomain + e.copyOfRange(0, signatureStart))
+        // Recover once: the recovered pubkey depends only on (r, s, v, digest), not on which
+        // authority key it is compared against, so recovering per candidate key would recover the
+        // identical point up to n times. Recover once and test set membership on the result.
         val accepted = if (signer != null) signatureMatches(signature, digest, signer, recoverer, true)
-            else keys.any { signatureMatches(signature, digest, it, recoverer, true) }
+            else recoverMember(signature, digest, keys, recoverer) != null
         if (!accepted) return null
-        return BarnardB005VerifiedEnvelope(if (registryConfirmed) BarnardB005ReceiverState.REGISTRY_VERIFIED else BarnardB005ReceiverState.RADIO_SELF_VERIFIED, container[1].u, eventId, ks, codeHash, name, e)
+        return BarnardB005VerifiedEnvelope(
+            BarnardB005ReceiverState.RADIO_SELF_VERIFIED, container[1].u, eventId, ks, joinMode, codeHash, name,
+            validFrom, validThrough, read16(e, a + 1), e,
+        )
     }
 
-    fun buildSigStructure(protectedBytes: ByteArray, payload: ByteArray): ByteArray =
-        byteArrayOf(0x84.toByte(), 0x6a) + "Signature1".encodeToByteArray() + cborBytes(protectedBytes) + byteArrayOf(0x40) + cborBytes(payload)
+    /**
+     * Confirms a `RADIO_SELF_VERIFIED` envelope against the authenticated, pinned-block
+     * `EventDefinitionV1` for this `eventId` (spec 122 receiver policy, step 8; spec 134 step 4 as
+     * amended by errata #173, which drops the unsatisfiable display-name agreement). This is the
+     * only path to `REGISTRY_VERIFIED`: it is not derivable from a caller-supplied boolean, only
+     * from checking every field of an actual definition the caller obtained on-chain.
+     */
+    fun confirmAgainstRegistry(verified: BarnardB005VerifiedEnvelope, definition: BarnardEventDefinitionV1): BarnardB005VerifiedEnvelope {
+        if (verified.eninSeconds <= 0) return verified.copy(receiverState = BarnardB005ReceiverState.RADIO_SELF_VERIFIED)
+        val eninPerSecond = verified.eninSeconds.toLong()
+        val agrees = verified.eventId.contentEquals(definition.eventId) &&
+            verified.keySetDigest.contentEquals(definition.keySetDigest) &&
+            verified.joinMode == definition.joinMode &&
+            verified.eventCodeHash.contentEquals(definition.eventCodeHash) &&
+            definition.validFromUnixSeconds / eninPerSecond <= verified.validFromEnin &&
+            verified.validThroughEnin <= definition.validUntilUnixSeconds / eninPerSecond
+        return verified.copy(receiverState = if (agrees) BarnardB005ReceiverState.REGISTRY_VERIFIED else BarnardB005ReceiverState.RADIO_SELF_VERIFIED)
+    }
+
+    fun buildSigStructure(protectedBytes: ByteArray, payload: ByteArray): ByteArray? {
+        val p = cborBytes(protectedBytes) ?: return null
+        val pl = cborBytes(payload) ?: return null
+        return byteArrayOf(0x84.toByte(), 0x6a) + "Signature1".encodeToByteArray() + p + byteArrayOf(0x40) + pl
+    }
 
     private data class Cert(val protectedBytes: ByteArray, val payload: ByteArray, val signature: ByteArray, val kid: ByteArray, val eventId: ByteArray, val delegateKey: ByteArray, val roles: ULong, val eninStart: ULong, val eninEnd: ULong)
     private fun parseCertificate(bytes: ByteArray): Cert? {
@@ -135,11 +181,50 @@ object BarnardB005EnvelopeV2 {
         if (start > end || end > 9_007_199_254_740_992UL || !p.finished) return null
         return Cert(protected, payload, signature, kid, eventId, delegate, roles, start, end)
     }
+    // secp256k1 group order n, and n/2 (BIP-62/146 low-S bound), both big-endian.
+    private val curveOrder = byteArrayOf(
+        0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+        0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xfe.toByte(),
+        0xba.toByte(), 0xae.toByte(), 0xdc.toByte(), 0xe6.toByte(), 0xaf.toByte(), 0x48, 0xa0.toByte(), 0x3b,
+        0xbf.toByte(), 0xd2.toByte(), 0x5e, 0x8c.toByte(), 0xd0.toByte(), 0x36, 0x41, 0x41,
+    )
+    private val curveOrderHalf = byteArrayOf(
+        0x7f, 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+        0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+        0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4.toByte(), 0x50, 0x1d,
+        0xdf.toByte(), 0xe9.toByte(), 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0.toByte(),
+    )
+    private fun isZero(b: ByteArray) = b.all { it == 0.toByte() }
+    // Big-endian comparison for equal-length byte arrays: negative if a < b, 0 if equal, positive if a > b.
+    private fun compareUnsigned(a: ByteArray, b: ByteArray): Int { for (i in a.indices) { val d = a[i].u - b[i].u; if (d != 0) return d }; return 0 }
+
+    /**
+     * Enforces `0 < r < N` and `0 < s <= N/2` independent of the injected recoverer: the
+     * [BarnardB005PublicKeyRecovering] interface carries no contract that a conforming backend
+     * rejects a high-S or out-of-range signature on its own, so this MUST be checked here.
+     */
+    private fun isLowSInRange(r: ByteArray, s: ByteArray) =
+        !isZero(r) && compareUnsigned(r, curveOrder) < 0 && !isZero(s) && compareUnsigned(s, curveOrderHalf) <= 0
+
     private fun signatureMatches(signature: ByteArray, digest: ByteArray, key: ByteArray, recoverer: BarnardB005PublicKeyRecovering, recoveryByte: Boolean): Boolean {
         if (signature.size != if (recoveryByte) 65 else 64) return false
         val r = signature.copyOfRange(0, 32); val s = signature.copyOfRange(32, 64)
+        if (!isLowSInRange(r, s)) return false
         if (recoveryByte) { val v = signature[64].u; return v <= 1 && recoverer.recover(v, r, s, digest)?.contentEquals(key) == true }
         return (0..1).any { recoverer.recover(it, r, s, digest)?.contentEquals(key) == true }
+    }
+
+    /**
+     * Recovers the signer exactly once (the recovery id is carried in the signature, so there is
+     * no ambiguity to resolve by trying candidates), then tests set membership on the result.
+     */
+    private fun recoverMember(signature: ByteArray, digest: ByteArray, keys: List<ByteArray>, recoverer: BarnardB005PublicKeyRecovering): ByteArray? {
+        if (signature.size != 65) return null
+        val r = signature.copyOfRange(0, 32); val s = signature.copyOfRange(32, 64)
+        if (!isLowSInRange(r, s)) return null
+        val v = signature[64].u; if (v > 1) return null
+        val recovered = recoverer.recover(v, r, s, digest) ?: return null
+        return keys.firstOrNull { it.contentEquals(recovered) }
     }
     private fun strictDisplayName(bytes: ByteArray): String? {
         val value = try {
@@ -151,7 +236,12 @@ object BarnardB005EnvelopeV2 {
         if (java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFC) != value) return null
         return value
     }
-    private fun cborBytes(bytes: ByteArray) = if (bytes.size < 24) byteArrayOf((0x40 or bytes.size).toByte()) + bytes else byteArrayOf(0x58, bytes.size.toByte()) + bytes
+    private fun cborBytes(bytes: ByteArray): ByteArray? = when {
+        bytes.size < 24 -> byteArrayOf((0x40 or bytes.size).toByte()) + bytes
+        bytes.size < 256 -> byteArrayOf(0x58, bytes.size.toByte()) + bytes
+        bytes.size < 65536 -> byteArrayOf(0x59, (bytes.size shr 8).toByte(), bytes.size.toByte()) + bytes
+        else -> null
+    }
     private fun read16(b: ByteArray, i: Int) = b[i].u shl 8 or b[i + 1].u
     private fun read32(b: ByteArray, i: Int): Long = (b[i].u.toLong() shl 24) or (b[i + 1].u.toLong() shl 16) or (b[i + 2].u.toLong() shl 8) or b[i + 3].u.toLong()
     private fun compare(a: ByteArray, b: ByteArray): Int { for (i in a.indices) if (a[i] != b[i]) return a[i].u - b[i].u; return 0 }
