@@ -28,7 +28,7 @@ public class BarnardParticipantRelay(
     private val electionKey = randomnessSeedMaterial.copyOf()
     private val candidates = linkedMapOf<String, Candidate>()
     private var selected: String? = null; private var pinUntil = 0L
-    private val handles = linkedMapOf<String, Long>(); private var saturated = false; private var saturatedAt: Long? = null
+    private val handles = linkedMapOf<String, Long>()
     private var activeUntil: Long? = null; private var contentionUntil: Long? = null; private var lastDecisionEpoch: Long? = null; private var stopped = false
 
     private fun withinRelayWindow(c: Candidate, current: Long): Boolean = current in c.validFrom until c.expires
@@ -54,7 +54,7 @@ public class BarnardParticipantRelay(
         val verified = verifier.verify(envelope.copyOf(), current) as? BarnardRelayVerification.RegistryVerified ?: return BarnardRelayObservationResult.REJECTED
         if (verified.validFromEnin !in ENIN_RANGE || verified.validThroughEnin !in ENIN_RANGE || verified.relayExpiresAtEnin !in ENIN_RANGE) return BarnardRelayObservationResult.REJECTED
         if (current < verified.validFromEnin || current >= verified.relayExpiresAtEnin || verified.relayExpiresAtEnin > verified.validThroughEnin || verified.relayExpiresAtEnin - verified.validFromEnin !in 0..12) return BarnardRelayObservationResult.REJECTED
-        candidates[key] = Candidate(digest, envelope, container[1].toInt() and 255, verified.eventId, clock.nowMilliseconds(), verified.validFromEnin, verified.validThroughEnin, verified.relayExpiresAtEnin)
+        candidates[key] = Candidate(digest, envelope, container[1].toInt() and 255, verified.eventId.copyOf(), clock.nowMilliseconds(), verified.validFromEnin, verified.validThroughEnin, verified.relayExpiresAtEnin)
         selectIfNeeded(selected == null); if (selected == key && (container[1].toInt() and 255) > 0) retain(peerHandle, clock.nowMilliseconds())
         return BarnardRelayObservationResult.ACCEPTED
     }
@@ -62,10 +62,10 @@ public class BarnardParticipantRelay(
         if (stopped) return; val now = clock.nowMilliseconds(); val current = eninSource.currentEnin() ?: run { teardown(); return }
         candidates.entries.removeIf { !withinRelayWindow(it.value, current) }; if (selected != null && !candidates.containsKey(selected)) deselect(); selectIfNeeded(selected == null || now >= pinUntil)
         handles.entries.removeIf { now - it.value >= 30_000 }
-        saturatedAt?.let { if (now - it >= 30_000) { saturated = false; saturatedAt = null } }
         var wasActive = false; activeUntil?.let { if (now >= it) { wasActive = true; stopLease() } }
         contentionUntil?.let { if (now >= it) { contentionUntil = null; if (relayCount(now) < 3) startLease(now) } }
         if (contentionUntil != null || activeUntil != null) return; val candidate = selected?.let { candidates[it] } ?: return; if (candidate.hop >= 2) return
+        // Spec: decision runs once per 30s wall-clock epoch, not re-evaluated every time r changes within it.
         val epoch = now / 30_000; if (lastDecisionEpoch == epoch) return; lastDecisionEpoch = epoch; val r = relayCount(now); val threshold = if (wasActive) minOf(1.0, 3.0 / (r + 1)) else ((3 - r).toDouble() / 3.0).coerceIn(0.0, 1.0)
         if (randomUnit(candidate.digest, epoch, 0) < threshold) contentionUntil = now + (randomUnit(candidate.digest, epoch, 1) * 15_001.0).toLong()
     }
@@ -82,13 +82,21 @@ public class BarnardParticipantRelay(
             ),
         ).firstOrNull()?.key
         pinUntil = clock.nowMilliseconds() + 300_000
-        if (old != selected) { stopLease(); handles.clear(); saturated = false; saturatedAt = null; lastDecisionEpoch = null }
+        if (old != selected) { stopLease(); handles.clear(); lastDecisionEpoch = null }
     }
-    private fun retain(handle: ByteArray, now: Long) { val key = handle.hex(); if (key in handles) handles[key] = now else if (handles.size == 32) { saturated = true; saturatedAt = now } else handles[key] = now }
-    private fun relayCount(now: Long): Int = if (saturated) 3 else handles.values.count { now - it < 30_000 }
+    private fun retain(handle: ByteArray, now: Long) {
+        // Prune before checking the 32-handle cap so a handle observed T ago no longer holds a slot;
+        // when still full, evict the oldest live handle (ring semantics) instead of a sticky saturated flag.
+        handles.entries.removeIf { now - it.value >= 30_000 }
+        val key = handle.hex()
+        if (key in handles) { handles[key] = now; return }
+        if (handles.size >= 32) { handles.minByOrNull { it.value }?.let { handles.remove(it.key) } }
+        handles[key] = now
+    }
+    private fun relayCount(now: Long): Int = handles.values.count { now - it < 30_000 }
     private fun startLease(now: Long) { val c = selected?.let { candidates[it] } ?: return; if (c.hop >= 2) return; val n = c.envelope.size; sink.start(byteArrayOf(3, (c.hop + 1).toByte(), (n shr 8).toByte(), n.toByte()) + c.envelope); activeUntil = now + 30_000 }
     private fun stopLease() { if (activeUntil != null) sink.stop(); activeUntil = null; contentionUntil = null }
-    private fun deselect() { stopLease(); selected = null; handles.clear(); saturated = false; saturatedAt = null; lastDecisionEpoch = null }
+    private fun deselect() { stopLease(); selected = null; handles.clear(); lastDecisionEpoch = null }
     private fun teardown() { deselect(); candidates.clear() }
     private fun randomUnit(digest: ByteArray, epoch: Long, purpose: Int): Double { val bytes = electionKey + digest + ByteArray(8) { (epoch ushr (56 - it * 8)).toByte() } + purpose.toByte(); val hash = MessageDigest.getInstance("SHA-256").digest(bytes); var value = 0L; repeat(8) { value = (value shl 8) or (hash[it].toLong() and 255) }; return (value ushr 11).toDouble() / 9_007_199_254_740_992.0 }
     private fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }

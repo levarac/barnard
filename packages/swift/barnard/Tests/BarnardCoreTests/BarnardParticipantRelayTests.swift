@@ -79,6 +79,24 @@ final class BarnardParticipantRelayTests: XCTestCase {
     finishContention(relay, clock)
     XCTAssertFalse(sink.served.isEmpty)
   }
+  /// P1: r must track the exact set of handles seen within the trailing
+  /// T=30s window, not a sticky "ever saturated" flag. 32 handles observed
+  /// at t=0 followed by a 33rd at t=29s must yield r=1 (not 3) at t=30s,
+  /// because the original 32 have aged out of the window by then.
+  func testSaturatedHandlesExpireIndividuallyNotAsAStickyFlag() {
+    let (relay, clock, _, _, sink, _) = fixture(); let bytes = container(1, [9])
+    XCTAssertEqual(relay.observe(container: bytes, peerHandle: [0]), .accepted)
+    for i in 1...32 { XCTAssertEqual(relay.observe(container: bytes, peerHandle: [UInt8(i)]), .duplicate) }
+    clock.now = 29_000
+    XCTAssertEqual(relay.observe(container: bytes, peerHandle: [33]), .duplicate)
+    // At t=30s the 32 handles seen at t=0 are exactly at the 30s boundary
+    // (age == window, not < window) and must no longer count; only the
+    // handle refreshed at t=29s (age=1s) is still live, so r=1 (or lower,
+    // once further aged) must let relay start instead of staying suppressed at r=3.
+    clock.now = 30_000
+    finishContention(relay, clock)
+    XCTAssertFalse(sink.served.isEmpty)
+  }
   /// P1: selection rule 1 — the joined event's verified envelope wins over a
   /// lower-hop, earlier-verified competitor once a reselection actually runs
   /// (the five-minute pin holds the original choice until then, per spec).
@@ -194,13 +212,35 @@ final class BarnardParticipantRelayTests: XCTestCase {
       let entered = relay.isServing
       let expectEnter = enterNumerator > 0
       XCTAssertEqual(entered, expectEnter, "r=\(r) enter decision mismatch")
-      if entered {
-        clock.now += window
-        relay.advance()
-        clock.now += contentionMax + 1
-        relay.advance()
-        XCTAssertEqual(relay.isServing, keepNumerator > 0, "r=\(r) keep decision mismatch")
-      }
+    }
+
+    // Keep-phase: entry only ever happens at r < k (see the enter-phase loop
+    // above), so r=3,4 can never be reached by driving entry with a live r.
+    // Instead force a guaranteed entry at r=0 (r0_enter_numerator makes
+    // pEnter=1) and then, independently, populate r handles just before the
+    // lease boundary so they are still inside the 30s window at the exact
+    // instant the keep decision runs -- this is what lets r=3,4 actually
+    // reach the keep formula instead of being pruned to r=0 by a full-window
+    // advance before the check (round-2 P2).
+    for r in 0...(k + 1) {
+      let (relay, clock, _, _, _, _) = fixture()
+      XCTAssertEqual(relay.observe(container: container(0, [UInt8(210 + r)]), peerHandle: [1]), .accepted)
+      relay.advance()
+      clock.now += contentionMax + 1
+      relay.advance()
+      XCTAssertTrue(relay.isServing, "keep-phase entry at r=0 must be guaranteed")
+      clock.now += window - 1
+      for i in 0..<r { XCTAssertEqual(relay.observe(container: container(1, [UInt8(210 + r)]), peerHandle: [UInt8(150 + i)]), .duplicate) }
+      clock.now += 1 // now == activeUntil: triggers the keep decision at this exact r
+      relay.advance()
+      clock.now += contentionMax + 1
+      relay.advance()
+      // pKeep = min(1, k/(r+1)) picks a keep candidate whenever r*_keep_numerator > 0,
+      // but Advertise only actually restarts if r < k at the end of the contention
+      // delay (advance()'s shared `relayCount(now) < 3` gate) -- both must hold.
+      let keepNumerator = Int(density["r\(r)_keep_numerator"] ?? "\(k)") ?? k
+      let expectKeep = keepNumerator > 0 && r < k
+      XCTAssertEqual(relay.isServing, expectKeep, "r=\(r) keep decision mismatch")
     }
   }
 }
