@@ -226,18 +226,27 @@ public enum BarnardB005EnvelopeV2 {
   /// conservatively (start rounded up, end rounded down) before the two windows are compared for
   /// exact equality. A registry window that does not fall on ENIN boundaries converts to an empty
   /// range and can never agree with anything.
+  ///
+  /// The conversion is `expectedFrom = ceilDiv(validFromUnixSeconds, eninSeconds)` and
+  /// `expectedThrough = floorDiv(validUntilUnixSeconds + 1, eninSeconds) - 1` (spec 122 erratum for
+  /// the issuer-side derivation; see barnard#180). `expectedThrough` is computed without ever
+  /// forming `validUntilUnixSeconds + 1`, so it stays overflow-safe for an adversarial registry
+  /// read. A registry definition with `validFromUnixSeconds < 0`, `validUntilUnixSeconds < 0`,
+  /// `validFromUnixSeconds > validUntilUnixSeconds`, or `eninSeconds <= 0` is rejected as a
+  /// `.VALIDITY_WINDOW` mismatch before any of this arithmetic runs, so every input to it stays
+  /// non-negative and the conversion never negates `Int64.min` (which traps in Swift).
   public static func registryAgreement(_ verified: BarnardB005VerifiedEnvelope, definition: BarnardEventDefinitionV1) -> BarnardRegistryAgreement {
     let eninPerSecond = Int64(verified.eninSeconds)
-    // Conservative inclusive ENIN window: start rounded up so it never precedes the real registry
-    // start, end rounded down so it never extends past the real registry's inclusive last second.
-    // The end conversion is floorDiv(validUntilUnixSeconds + 1, eninPerSecond), computed via the
-    // floorMod identity below rather than literally adding 1, since validUntilUnixSeconds may be
-    // Int64.max for an adversarial registry read.
-    let registryStartEnin: Int64? = verified.eninSeconds > 0 ? -floorDiv(-definition.validFromUnixSeconds, eninPerSecond) : nil
-    let registryEndEnin: Int64? = verified.eninSeconds > 0 ? {
-      let q = floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
-      let r = floorMod(definition.validUntilUnixSeconds, eninPerSecond)
-      return (r == eninPerSecond - 1 && q != Int64.max) ? q + 1 : q
+    let validFrom = definition.validFromUnixSeconds
+    let validUntil = definition.validUntilUnixSeconds
+    let windowIsWellFormed = eninPerSecond > 0 && validFrom >= 0 && validUntil >= 0 && validFrom <= validUntil
+    let registryStartEnin: Int64? = windowIsWellFormed ? -floorDiv(-validFrom, eninPerSecond) : nil
+    let registryEndEnin: Int64? = windowIsWellFormed ? {
+      // expectedThrough = floorDiv(validUntil + 1, eninPerSecond) - 1, via the floorMod identity
+      // (see the Kotlin counterpart's comment) so validUntil + 1 is never actually formed.
+      let q = floorDiv(validUntil, eninPerSecond)
+      let r = floorMod(validUntil, eninPerSecond)
+      return r == eninPerSecond - 1 ? q : q - 1
     }() : nil
     var mismatches: Set<BarnardRegistryMismatchField> = []
     if verified.eventId != definition.eventId { mismatches.insert(.EVENT_ID) }

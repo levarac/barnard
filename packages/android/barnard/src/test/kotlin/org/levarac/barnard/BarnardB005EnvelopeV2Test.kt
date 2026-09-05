@@ -118,12 +118,13 @@ class BarnardB005EnvelopeV2Test {
         val container = hex(v("v1_container"))
         val verified = BarnardB005EnvelopeV2.verify(container, 6_000_000) ?: error("expected RADIO_SELF_VERIFIED baseline")
         assertEquals(BarnardB005ReceiverState.RADIO_SELF_VERIFIED, verified.receiverState)
-        // The exact half-open ENIN window is [validFromEnin, validThroughEnin) (validThroughEnin
-        // is already the exclusive end -- see registryAgreement's doc comment); an aligned
-        // registry seconds window is exactly that range times eninSeconds.
+        // The exact ENIN window is the INCLUSIVE [validFromEnin, validThroughEnin] (see
+        // registryAgreement's doc comment); an aligned registry seconds window covers exactly
+        // that ENIN range, i.e. seconds [validFromEnin * eninSeconds, (validThroughEnin + 1) *
+        // eninSeconds - 1].
         fun agreeing() = BarnardEventDefinitionV1(
             verified.eventId, verified.keySetDigest, verified.joinMode, verified.eventCodeHash,
-            verified.validFromEnin * verified.eninSeconds, verified.validThroughEnin * verified.eninSeconds,
+            verified.validFromEnin * verified.eninSeconds, (verified.validThroughEnin + 1) * verified.eninSeconds - 1,
         )
         assertEquals(BarnardRegistryAgreement.Agrees, BarnardB005EnvelopeV2.registryAgreement(verified, agreeing()))
 
@@ -141,8 +142,8 @@ class BarnardB005EnvelopeV2Test {
     @Test fun registryAgreementRejectsMisalignedValidityWindowExample() {
         // eninSeconds=300, envelope declares the inclusive ENIN window [10, 11] (validFromEnin=10,
         // validThroughEnin=11 -- see registryAgreement's doc comment on the inclusive convention).
-        // Registry inclusive-seconds window [3001, 3299]: ceil(3001/300)=11 for the start, mismatching
-        // the envelope's declared validFromEnin=10 -- rejected.
+        // synthesizeWindow requires validThroughEnin > validFromEnin (see its doc comment), so this
+        // is the narrowest window it can build; a single-ENIN example is covered separately below.
         val misaligned = synthesizeWindow(eninSeconds = 300, validFromEnin = 10, validThroughEnin = 11)
         val registryDefinition = BarnardEventDefinitionV1(
             misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
@@ -150,18 +151,55 @@ class BarnardB005EnvelopeV2Test {
         )
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, registryDefinition), "misaligned window must not agree")
 
-        // Aligned: registry inclusive [3000, 3299] exactly matches the inclusive ENIN [10, 11] range -- accepted.
+        // Aligned: registry inclusive seconds [3000, 3599] covers exactly ENIN 10 ([3000, 3299])
+        // and ENIN 11 ([3300, 3599]), i.e. the inclusive ENIN range [10, 11] -- accepted.
+        // expectedFrom = ceilDiv(3000, 300) = 10. expectedThrough = floorDiv(3599 + 1, 300) - 1 =
+        // floorDiv(3600, 300) - 1 = 12 - 1 = 11.
         val aligned = BarnardEventDefinitionV1(
             misaligned.eventId, misaligned.keySetDigest, misaligned.joinMode, misaligned.eventCodeHash,
-            validFromUnixSeconds = 3000, validUntilUnixSeconds = 3299,
+            validFromUnixSeconds = 3000, validUntilUnixSeconds = 3599,
         )
         assertEquals(BarnardRegistryAgreement.Agrees, BarnardB005EnvelopeV2.registryAgreement(misaligned, aligned), "aligned window must agree")
+
+        // Reviewer's exact single-ENIN counter-example: registry inclusive seconds [3000, 3299] is
+        // exactly ENIN 10 alone, so expectedThrough = floorDiv(3299 + 1, 300) - 1 = 11 - 1 = 10, not
+        // 11. An envelope declaring validThroughEnin=11 (this same `misaligned` envelope) must be
+        // rejected against it.
+        val singleEnin = aligned.copy(validUntilUnixSeconds = 3299)
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, singleEnin), "validThroughEnin=11 must not agree with [3000, 3299]")
 
         // Off-by-one ENIN at both ends of the aligned registry window must still be rejected.
         val startOffByOne = aligned.copy(validFromUnixSeconds = 2700)
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, startOffByOne), "start off-by-one must not agree")
-        val endOffByOne = aligned.copy(validUntilUnixSeconds = 3599)
+        val endOffByOne = aligned.copy(validUntilUnixSeconds = 3299)
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(misaligned, endOffByOne), "end off-by-one must not agree")
+    }
+
+    @Test fun registryAgreementFailsClosedOnInvalidRegistryWindow() {
+        val envelope = synthesizeWindow(eninSeconds = 300, validFromEnin = 0, validThroughEnin = 1)
+        fun definition(validFrom: Long, validUntil: Long) = BarnardEventDefinitionV1(
+            envelope.eventId, envelope.keySetDigest, envelope.joinMode, envelope.eventCodeHash,
+            validFromUnixSeconds = validFrom, validUntilUnixSeconds = validUntil,
+        )
+
+        // A negative validFromUnixSeconds must not agree, even with an envelope claiming [0, 1)
+        // as unix seconds would suggest.
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(envelope, definition(validFrom = -1, validUntil = 299)), "negative validFromUnixSeconds must not agree")
+
+        // Long.MIN_VALUE must not crash the negation in the ceil-division of the start bound.
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(envelope, definition(validFrom = Long.MIN_VALUE, validUntil = 299)), "Long.MIN_VALUE validFrom must not crash and must not agree")
+
+        // validFrom > validUntil is an invalid definition.
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(envelope, definition(validFrom = 300, validUntil = 0)), "validFrom > validUntil must not agree")
+
+        // eninSeconds=0 is an invalid definition (division by zero). verify() itself already
+        // rejects a wire envelope with eninSeconds=0, so build the verified envelope directly via
+        // the internal factory to exercise registryAgreement's own defense in depth.
+        val zeroEninEnvelope = BarnardB005VerifiedEnvelope.radioSelfVerified(
+            0, envelope.eventId, envelope.keySetDigest, envelope.joinMode, envelope.eventCodeHash,
+            envelope.eventDisplayName, 0L, 0L, 0, envelope.signedEnvelope,
+        )
+        assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(zeroEninEnvelope, definition(validFrom = 0, validUntil = 299)), "eninSeconds=0 must not agree")
     }
 
     @Test fun registryAgreementEndConversionIsOverflowSafeAtLongMaxValue() {

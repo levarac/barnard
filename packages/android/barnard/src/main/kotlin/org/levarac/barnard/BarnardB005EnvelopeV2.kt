@@ -213,19 +213,32 @@ object BarnardB005EnvelopeV2 {
      * ENIN shape conservatively (start rounded up, end rounded down) before the two windows are
      * compared for exact equality. A registry window that does not fall on ENIN boundaries
      * converts to an empty range and can never agree with anything.
+     *
+     * The conversion is `expectedFrom = ceilDiv(validFromUnixSeconds, eninSeconds)` and
+     * `expectedThrough = floorDiv(validUntilUnixSeconds + 1, eninSeconds) - 1` (spec 122 erratum
+     * for the issuer-side derivation; see barnard#180). `expectedThrough` is computed without ever
+     * forming `validUntilUnixSeconds + 1`, so it stays overflow-safe for an adversarial registry
+     * read. A registry definition with `validFromUnixSeconds < 0`, `validUntilUnixSeconds < 0`,
+     * `validFromUnixSeconds > validUntilUnixSeconds`, or `eninSeconds <= 0` is rejected as a
+     * `VALIDITY_WINDOW` mismatch before any of this arithmetic runs, so every input to it stays
+     * non-negative and the conversion never negates `Long.MIN_VALUE`.
      */
     fun registryAgreement(verified: BarnardB005VerifiedEnvelope, definition: BarnardEventDefinitionV1): BarnardRegistryAgreement {
         val eninPerSecond = verified.eninSeconds.toLong()
-        // Conservative inclusive ENIN window: start rounded up so it never precedes the real
-        // registry start, end rounded down so it never extends past the real registry's inclusive
-        // last second. The end conversion is floorDiv(validUntilUnixSeconds + 1, eninPerSecond),
-        // computed via the floorMod identity below rather than literally adding 1, since
-        // validUntilUnixSeconds may be Long.MAX_VALUE for an adversarial registry read.
-        val registryStartEnin = if (verified.eninSeconds <= 0) null else -Math.floorDiv(-definition.validFromUnixSeconds, eninPerSecond)
-        val registryEndEnin = if (verified.eninSeconds <= 0) null else {
-            val q = Math.floorDiv(definition.validUntilUnixSeconds, eninPerSecond)
-            val r = Math.floorMod(definition.validUntilUnixSeconds, eninPerSecond)
-            if (r == eninPerSecond - 1 && q != Long.MAX_VALUE) q + 1 else q
+        val validFrom = definition.validFromUnixSeconds
+        val validUntil = definition.validUntilUnixSeconds
+        val windowIsWellFormed = eninPerSecond > 0 && validFrom >= 0 && validUntil >= 0 && validFrom <= validUntil
+        val registryStartEnin = if (!windowIsWellFormed) null else -Math.floorDiv(-validFrom, eninPerSecond)
+        val registryEndEnin = if (!windowIsWellFormed) null else {
+            // expectedThrough = floorDiv(validUntil + 1, eninPerSecond) - 1. Rather than forming
+            // validUntil + 1 (which would overflow when validUntil == Long.MAX_VALUE), use the
+            // floorMod identity: floorDiv(validUntil + 1, m) is floorDiv(validUntil, m) + 1 when
+            // validUntil sits on the last second of its ENIN (floorMod(validUntil, m) == m - 1),
+            // and floorDiv(validUntil, m) otherwise. Subtracting the trailing "- 1" immediately
+            // collapses both branches to q or q - 1, so "+ 1" is never actually computed.
+            val q = Math.floorDiv(validUntil, eninPerSecond)
+            val r = Math.floorMod(validUntil, eninPerSecond)
+            if (r == eninPerSecond - 1L) q else q - 1
         }
         val mismatches = buildSet {
             if (!verified.eventId.contentEquals(definition.eventId)) add(BarnardRegistryMismatchField.EVENT_ID)
