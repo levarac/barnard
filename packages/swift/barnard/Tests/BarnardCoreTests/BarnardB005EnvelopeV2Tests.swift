@@ -338,8 +338,14 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     case ..<24: return [(major << 5) | UInt8(v)]
     case ..<256: return [(major << 5) | 24, UInt8(v)]
     case ..<65_536: return [(major << 5) | 25, UInt8(v >> 8), UInt8(v & 0xff)]
-    case ..<4_294_967_296: return [(major << 5) | 26] + (0..<4).map { UInt8((v >> (8 * (3 - $0))) & 0xff) }
-    default: return [(major << 5) | 27] + (0..<8).map { UInt8((v >> (8 * (7 - $0))) & 0xff) }
+    case ..<4_294_967_296:
+      var out: [UInt8] = [(major << 5) | 26]
+      for i in 0..<4 { out.append(UInt8((v >> UInt64(8 * (3 - i))) & 0xff)) }
+      return out
+    default:
+      var out: [UInt8] = [(major << 5) | 27]
+      for i in 0..<8 { out.append(UInt8((v >> UInt64(8 * (7 - i))) & 0xff)) }
+      return out
     }
   }
   private func cborUint(_ value: Int64) -> [UInt8] { cborUintMajor(0, value) }
@@ -367,19 +373,31 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     let eventId = BarnardB005EnvelopeV2.computeEventId(registrar: registrar, anchorOperator: anchor, nonce: nonce, keySetDigest: ksDigest)!
     let kid = Array(BarnardCoreCrypto.sha256(Array("levarac:cose-kid:v1\0".utf8) + authorityKey).prefix(8))
 
-    let protectedHeader = [0xa3] + [0x01] + cborNegative47()
-      + [0x03] + cborTextField("application/vnd.levarac.delegation-cert+cbor")
-      + [0x04] + cborBytesField(kid)
-    let payload = [0xa6]
-      + [0x01] + cborUint(1)
-      + [0x02] + cborBytesField(eventId)
-      + [0x03] + cborBytesField(delegateKey)
-      + [0x04] + cborUint(1)
-      + [0x05] + cborUint(1000)
-      + [0x06] + cborUint(eninEnd)
+    var protectedHeader: [UInt8] = [0xa3, 0x01]
+    protectedHeader += cborNegative47()
+    protectedHeader.append(0x03)
+    protectedHeader += cborTextField("application/vnd.levarac.delegation-cert+cbor")
+    protectedHeader.append(0x04)
+    protectedHeader += cborBytesField(kid)
+    var payload: [UInt8] = [0xa6, 0x01]
+    payload += cborUint(1)
+    payload.append(0x02)
+    payload += cborBytesField(eventId)
+    payload.append(0x03)
+    payload += cborBytesField(delegateKey)
+    payload.append(0x04)
+    payload += cborUint(1)
+    payload.append(0x05)
+    payload += cborUint(1000)
+    payload.append(0x06)
+    payload += cborUint(eninEnd)
     // r=1, s=1: isLowSInRange rejects an all-zero r/s regardless of the injected recoverer.
     let certSignature = [UInt8](repeating: 0, count: 31) + [1] + [UInt8](repeating: 0, count: 31) + [1]
-    let cert = [0xd2, 0x84] + cborBytesField(protectedHeader) + [0xa0] + cborBytesField(payload) + cborBytesField(certSignature)
+    var cert: [UInt8] = [0xd2, 0x84]
+    cert += cborBytesField(protectedHeader)
+    cert.append(0xa0)
+    cert += cborBytesField(payload)
+    cert += cborBytesField(certSignature)
     precondition(cert.count <= 255, "synthetic cert too large: \(cert.count)")
 
     var envelope: [UInt8] = [1] + registrar + anchor + nonce + [1]
