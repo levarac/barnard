@@ -4,7 +4,10 @@ import XCTest
 
 private struct TestNameValidator: BarnardB005DisplayNameNormalizing {
   func isNormalizedNFC(_ value: String) -> Bool {
-    value.precomposedStringWithCanonicalMapping == value
+    // Mirrors the production `BarnardB005NativeDisplayNameNormalizer`: Swift's `String.==`
+    // compares Unicode canonical equivalence, so it never rejects decomposed input. Compare
+    // UTF-8 bytes instead to actually detect a non-NFC form.
+    Array(value.precomposedStringWithCanonicalMapping.utf8) == Array(value.utf8)
   }
 }
 
@@ -64,7 +67,25 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     var name = decomposedJamo
     name += [UInt8](repeating: UInt8(ascii: "x"), count: nameLength - decomposedJamo.count)
     container.replaceSubrange(nameStart..<(nameStart + nameLength), with: name)
+    // Discriminating: `verify` calls `strictDisplayName` (which consults `nameValidator`)
+    // before it ever computes the signature digest, so this rejection can only come from the
+    // name check, never from a signature mismatch caused by the mutated name bytes.
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 6_000_000, nameValidator: nameValidator))
+  }
+
+  func testParallaxSubstitutedKeySetIsRejected() throws {
+    let v = try load()
+    // Spec 122's parallax negative list also names "substituted key set": swap the single
+    // authority key embedded in vector 2's own envelope for Parallax's substitutedEventKeySetHex
+    // key (same 33-byte compressed layout, same cert kept verbatim) so the cert's own eventId
+    // no longer matches the eventId recomputed from the (now different) embedded key set.
+    let neg = try loadFile("test-vectors/parallax-delegation-cert-v1.txt")
+    let originalKeyHex = v["authority_public_key"]!
+    let substitutedKeyHex = neg["neg_substituted_event_key"]!
+    let container = v["v2_container"]!
+    XCTAssertEqual(container.components(separatedBy: originalKeyHex).count - 1, 1, "expected exactly one occurrence of the authority key")
+    let mutated = hex(container.replacingOccurrences(of: originalKeyHex, with: substitutedKeyHex))
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: mutated, currentEnin: 6_000_000, nameValidator: nameValidator))
   }
 
   func testParallaxDelegationCertPositiveAndNegativeVectors() throws {
