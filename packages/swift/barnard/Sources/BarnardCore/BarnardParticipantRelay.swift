@@ -9,11 +9,12 @@ public protocol BarnardRelayOutputSink {
   func startServingRelayContainer(_ bytes: [UInt8])
   func stopServingRelayContainer()
 }
+public protocol BarnardRelayJoinedEventProvider { func relayJoinedEventId() -> [UInt8]? }
 
 public enum BarnardRelayVerification: Equatable {
   case rejected
   case radioSelfVerified
-  case registryVerified(validFromEnin: UInt32, validThroughEnin: UInt32, relayExpiresAtEnin: UInt32)
+  case registryVerified(eventId: [UInt8], validFromEnin: UInt32, validThroughEnin: UInt32, relayExpiresAtEnin: UInt32)
 }
 
 public enum BarnardRelayObservationResult: Equatable {
@@ -27,6 +28,7 @@ public final class BarnardParticipantRelay {
     let digest: [UInt8]
     let envelope: [UInt8]
     var hop: UInt8
+    let eventId: [UInt8]
     let verifiedAt: Int64
     let validFrom: UInt32
     let validThrough: UInt32
@@ -36,12 +38,14 @@ public final class BarnardParticipantRelay {
   private let enin: any BarnardRelayEninSource
   private let verifier: any BarnardRelayVerifier
   private let sink: any BarnardRelayOutputSink
+  private let joinedEventProvider: any BarnardRelayJoinedEventProvider
   private let electionKey: [UInt8]
   private var candidates: [[UInt8]: Candidate] = [:]
   private var selected: [UInt8]?
   private var pinUntil: Int64 = 0
   private var handles: [[UInt8]: Int64] = [:]
   private var handlesSaturated = false
+  private var saturatedAt: Int64?
   private var activeUntil: Int64?
   private var contentionUntil: Int64?
   private var lastDecisionEpoch: Int64?
@@ -49,9 +53,10 @@ public final class BarnardParticipantRelay {
 
   public init(clock: any BarnardRelayMonotonicClock, eninSource: any BarnardRelayEninSource,
               verifier: any BarnardRelayVerifier, outputSink: any BarnardRelayOutputSink,
+              joinedEventProvider: any BarnardRelayJoinedEventProvider,
               randomnessSeedMaterial: [UInt8]) {
     self.clock = clock; self.enin = eninSource; self.verifier = verifier
-    self.sink = outputSink; self.electionKey = randomnessSeedMaterial
+    self.sink = outputSink; self.joinedEventProvider = joinedEventProvider; self.electionKey = randomnessSeedMaterial
   }
 
   @discardableResult public func observe(container: [UInt8], peerHandle: [UInt8]) -> BarnardRelayObservationResult {
@@ -63,19 +68,27 @@ public final class BarnardParticipantRelay {
     let envelope = Array(container[4...])
     let digest = BarnardCorePrimitives.sha256(envelope)
     if var old = candidates[digest] {
+      guard isWithinRelayWindow(old, current: nowEnin) else {
+        candidates.removeValue(forKey: digest)
+        if selected == digest { deselect() }
+        return .rejected
+      }
       old.hop = min(old.hop, container[1]); candidates[digest] = old
       if selected == digest, container[1] > 0 { retain(handle: peerHandle, now: clock.relayNowMilliseconds()) }
       return .duplicate
     }
     guard candidates.count < 32 else { return .saturated }
-    guard case let .registryVerified(validFrom, validThrough, expires) = verifier.verifyRelayEnvelope(envelope, currentEnin: nowEnin),
+    guard case let .registryVerified(eventId, validFrom, validThrough, expires) = verifier.verifyRelayEnvelope(envelope, currentEnin: nowEnin),
       validFrom <= nowEnin, nowEnin < expires, expires <= validThrough,
       UInt64(expires) - UInt64(validFrom) <= 12 else { return .rejected }
-    candidates[digest] = Candidate(digest: digest, envelope: envelope, hop: container[1],
+    candidates[digest] = Candidate(digest: digest, envelope: envelope, hop: container[1], eventId: eventId,
       verifiedAt: clock.relayNowMilliseconds(), validFrom: validFrom, validThrough: validThrough, expires: expires)
     selectIfNeeded(force: selected == nil)
     if selected == digest, container[1] > 0 { retain(handle: peerHandle, now: clock.relayNowMilliseconds()) }
     return .accepted
+  }
+  private func isWithinRelayWindow(_ candidate: Candidate, current: UInt32) -> Bool {
+    candidate.validFrom <= current && current < candidate.expires
   }
 
   /// Runs expiry, selection, contention, and lease decisions. Hosts call this
@@ -84,11 +97,12 @@ public final class BarnardParticipantRelay {
     guard !stopped else { return }
     let now = clock.relayNowMilliseconds()
     guard let current = enin.relayCurrentEnin() else { teardownAll(); return }
-    let invalid = candidates.filter { current >= $0.value.expires }.map(\.key)
+    let invalid = candidates.filter { !isWithinRelayWindow($0.value, current: current) }.map(\.key)
     for key in invalid { candidates.removeValue(forKey: key) }
     if let choice = selected, candidates[choice] == nil { deselect() }
     selectIfNeeded(force: selected == nil || now >= pinUntil)
     handles = handles.filter { now - $0.value < 30_000 }
+    if let at = saturatedAt, now - at >= 30_000 { handlesSaturated = false; saturatedAt = nil }
     var wasActive = false
     if let end = activeUntil, now >= end { wasActive = true; stopLease() }
     if let end = contentionUntil, now >= end {
@@ -115,17 +129,21 @@ public final class BarnardParticipantRelay {
   private func selectIfNeeded(force: Bool) {
     guard force else { return }
     let old = selected
+    let joined = joinedEventProvider.relayJoinedEventId()
     selected = candidates.values.sorted {
+      let lhsJoined = joined != nil && $0.eventId == joined!
+      let rhsJoined = joined != nil && $1.eventId == joined!
+      if lhsJoined != rhsJoined { return lhsJoined }
       if $0.hop != $1.hop { return $0.hop < $1.hop }
       if $0.verifiedAt != $1.verifiedAt { return $0.verifiedAt < $1.verifiedAt }
       return $0.digest.lexicographicallyPrecedes($1.digest)
     }.first?.digest
     pinUntil = clock.relayNowMilliseconds() + 300_000
-    if old != selected { stopLease(); handles.removeAll(); handlesSaturated = false }
+    if old != selected { stopLease(); handles.removeAll(); handlesSaturated = false; saturatedAt = nil; lastDecisionEpoch = nil }
   }
   private func retain(handle: [UInt8], now: Int64) {
     if handles[handle] != nil { handles[handle] = now; return }
-    if handles.count == 32 { handlesSaturated = true; return }
+    if handles.count == 32 { handlesSaturated = true; saturatedAt = now; return }
     handles[handle] = now
   }
   private func relayCount(now: Int64) -> Int { handlesSaturated ? 3 : handles.values.filter { now - $0 < 30_000 }.count }
@@ -136,7 +154,7 @@ public final class BarnardParticipantRelay {
     activeUntil = now + 30_000
   }
   private func stopLease() { if activeUntil != nil { sink.stopServingRelayContainer() }; activeUntil = nil; contentionUntil = nil }
-  private func deselect() { stopLease(); selected = nil; handles.removeAll(); handlesSaturated = false }
+  private func deselect() { stopLease(); selected = nil; handles.removeAll(); handlesSaturated = false; saturatedAt = nil; lastDecisionEpoch = nil }
   private func teardownAll() { deselect(); candidates.removeAll() }
   private func randomUnit(digest: [UInt8], epoch: Int64, purpose: UInt8) -> Double {
     var bytes = electionKey + digest
