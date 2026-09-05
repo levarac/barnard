@@ -31,23 +31,48 @@ class BarnardParticipantRelayTest {
         assertFalse(f.sink.served.isEmpty())
     }
 
-    // P1: r must track the exact set of handles seen within the trailing T=30s
-    // window, not a sticky "ever saturated" flag. 32 handles observed at t=0
-    // followed by a 33rd at t=29s must yield r=1 (not 3) at t=30s, because the
-    // original 32 have aged out of the window by then.
-    @Test fun saturatedHandlesExpireIndividuallyNotAsAStickyFlag() {
+    // P1 (round 3): spec line 231 -- "further handles saturate r >= k without
+    // being retained." Retain must never evict a live retained handle at the
+    // 32 cap: 32 honest handles at t=0, then 100 Sybil handles at t=1, must
+    // leave the original 32 as the retained set (still saturating r >= k at
+    // t=2), and only once every retained handle AND the overflow marker have
+    // aged out of the T=30s window does r fall to 0.
+    @Test fun sybilFloodDoesNotEvictRetainedHandles() {
+        val f = fixture(); val c = container(1, 4)
+        assertEquals(BarnardRelayObservationResult.ACCEPTED, f.relay.observe(c, byteArrayOf(0)))
+        for (i in 1..32) assertEquals(BarnardRelayObservationResult.DUPLICATE, f.relay.observe(c, byteArrayOf(i.toByte())))
+        f.clock.now = 1
+        for (i in 100 until 200) assertEquals(BarnardRelayObservationResult.DUPLICATE, f.relay.observe(c, byteArrayOf(i.toByte())))
+        f.clock.now = 2
+        f.relay.advance() // epoch 0 decision: the 32 honest handles are still retained -> r >= k, stays silent
+        assertFalse(f.relay.isServing)
+        f.clock.now = 31_000
+        f.relay.advance() // epoch 1: honest handles (aged at t=0) and the overflow marker (aged at t=1) both expired -> r=0
+        f.clock.now += 15_001
+        f.relay.advance()
+        assertTrue(f.relay.isServing)
+    }
+
+    // P1 (round 3): saturation expires T after the last non-retained
+    // observation, not stickily. 32 handles at t=0, a 33rd (overflow, not
+    // retained per spec line 231) at t=29s: at t=30s still saturated (the
+    // overflow marker is within T of t=30), but once both the original 32
+    // (aged out at t=30) and the overflow marker (aged out at t=59) have
+    // expired, r=0 and relay must enter.
+    @Test fun saturationWindowTracksOverflowNotStickyFlag() {
         val f = fixture(); val c = container(1, 9)
         assertEquals(BarnardRelayObservationResult.ACCEPTED, f.relay.observe(c, byteArrayOf(0)))
         for (i in 1..32) assertEquals(BarnardRelayObservationResult.DUPLICATE, f.relay.observe(c, byteArrayOf(i.toByte())))
         f.clock.now = 29_000
         assertEquals(BarnardRelayObservationResult.DUPLICATE, f.relay.observe(c, byteArrayOf(33)))
-        // At t=30s the 32 handles seen at t=0 are exactly at the 30s boundary
-        // (age == window, not < window) and must no longer count; only the
-        // handle refreshed at t=29s (age=1s) is still live, so r=1 lets a
-        // fresh candidate enter contention instead of staying suppressed at r=3.
         f.clock.now = 30_000
-        finish(f)
-        assertFalse(f.sink.served.isEmpty(), "r=1 (or lower, once further aged) after the saturation window must allow relay to start")
+        f.relay.advance() // decision epoch 1: overflow (t=29s) is still within T of t=30s -> stays silent
+        assertFalse(f.relay.isServing)
+        f.clock.now = 60_000
+        f.relay.advance() // decision epoch 2 (past t=59s): both the 32 handles and the overflow marker have expired -> r=0
+        f.clock.now += 15_001
+        f.relay.advance()
+        assertTrue(f.relay.isServing)
     }
 
     // P1: selection rule 1 -- the joined event's verified envelope wins over a

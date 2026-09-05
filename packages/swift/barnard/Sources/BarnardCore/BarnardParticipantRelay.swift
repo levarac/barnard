@@ -44,6 +44,7 @@ public final class BarnardParticipantRelay {
   private var selected: [UInt8]?
   private var pinUntil: Int64 = 0
   private var handles: [[UInt8]: Int64] = [:]
+  private var overflowSeenAt: Int64?
   private var activeUntil: Int64?
   private var contentionUntil: Int64?
   private var lastDecisionEpoch: Int64?
@@ -139,21 +140,25 @@ public final class BarnardParticipantRelay {
       return $0.digest.lexicographicallyPrecedes($1.digest)
     }.first?.digest
     pinUntil = clock.relayNowMilliseconds() + 300_000
-    if old != selected { stopLease(); handles.removeAll(); lastDecisionEpoch = nil }
+    if old != selected { stopLease(); handles.removeAll(); overflowSeenAt = nil; lastDecisionEpoch = nil }
   }
   private func retain(handle: [UInt8], now: Int64) {
     // Prune before checking the 32-handle cap so a handle observed T ago no
-    // longer holds a slot; when still full, evict the oldest live handle
-    // (ring semantics) rather than sticking a saturated flag that outlives
-    // the window it was meant to describe.
+    // longer holds a slot. Spec line 231: "further handles saturate r >= k
+    // without being retained" -- a new handle arriving while 32 are already
+    // retained is neither retained nor allowed to evict an existing one; it
+    // only marks overflowSeenAt so r reads as saturated until that overflow
+    // itself ages out of the window.
     handles = handles.filter { now - $0.value < 30_000 }
     if handles[handle] != nil { handles[handle] = now; return }
-    if handles.count >= 32, let oldest = handles.min(by: { $0.value < $1.value })?.key {
-      handles.removeValue(forKey: oldest)
-    }
+    if handles.count >= 32 { overflowSeenAt = now; return }
     handles[handle] = now
   }
-  private func relayCount(now: Int64) -> Int { handles.values.filter { now - $0 < 30_000 }.count }
+  private func relayCount(now: Int64) -> Int {
+    let live = handles.values.filter { now - $0 < 30_000 }.count
+    if let overflow = overflowSeenAt, now - overflow < 30_000 { return max(live, 3) }
+    return live
+  }
   private func startLease(now: Int64) {
     guard let key = selected, let c = candidates[key], c.hop < 2 else { return }
     let n = c.envelope.count
@@ -161,7 +166,7 @@ public final class BarnardParticipantRelay {
     activeUntil = now + 30_000
   }
   private func stopLease() { if activeUntil != nil { sink.stopServingRelayContainer() }; activeUntil = nil; contentionUntil = nil }
-  private func deselect() { stopLease(); selected = nil; handles.removeAll(); lastDecisionEpoch = nil }
+  private func deselect() { stopLease(); selected = nil; handles.removeAll(); overflowSeenAt = nil; lastDecisionEpoch = nil }
   private func teardownAll() { deselect(); candidates.removeAll() }
   private func randomUnit(digest: [UInt8], epoch: Int64, purpose: UInt8) -> Double {
     var bytes = electionKey + digest

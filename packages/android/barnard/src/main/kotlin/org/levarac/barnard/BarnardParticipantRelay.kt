@@ -29,6 +29,7 @@ public class BarnardParticipantRelay(
     private val candidates = linkedMapOf<String, Candidate>()
     private var selected: String? = null; private var pinUntil = 0L
     private val handles = linkedMapOf<String, Long>()
+    private var overflowSeenAt: Long? = null
     private var activeUntil: Long? = null; private var contentionUntil: Long? = null; private var lastDecisionEpoch: Long? = null; private var stopped = false
 
     private fun withinRelayWindow(c: Candidate, current: Long): Boolean = current in c.validFrom until c.expires
@@ -82,21 +83,28 @@ public class BarnardParticipantRelay(
             ),
         ).firstOrNull()?.key
         pinUntil = clock.nowMilliseconds() + 300_000
-        if (old != selected) { stopLease(); handles.clear(); lastDecisionEpoch = null }
+        if (old != selected) { stopLease(); handles.clear(); overflowSeenAt = null; lastDecisionEpoch = null }
     }
     private fun retain(handle: ByteArray, now: Long) {
-        // Prune before checking the 32-handle cap so a handle observed T ago no longer holds a slot;
-        // when still full, evict the oldest live handle (ring semantics) instead of a sticky saturated flag.
+        // Prune before checking the 32-handle cap so a handle observed T ago no longer holds a slot.
+        // Spec line 231: "further handles saturate r >= k without being retained" -- a new handle
+        // arriving while 32 are already retained is neither retained nor allowed to evict an
+        // existing one; it only marks overflowSeenAt so r reads as saturated until that overflow
+        // itself ages out of the window.
         handles.entries.removeIf { now - it.value >= 30_000 }
         val key = handle.hex()
         if (key in handles) { handles[key] = now; return }
-        if (handles.size >= 32) { handles.minByOrNull { it.value }?.let { handles.remove(it.key) } }
+        if (handles.size >= 32) { overflowSeenAt = now; return }
         handles[key] = now
     }
-    private fun relayCount(now: Long): Int = handles.values.count { now - it < 30_000 }
+    private fun relayCount(now: Long): Int {
+        val live = handles.values.count { now - it < 30_000 }
+        val overflow = overflowSeenAt
+        return if (overflow != null && now - overflow < 30_000) maxOf(live, 3) else live
+    }
     private fun startLease(now: Long) { val c = selected?.let { candidates[it] } ?: return; if (c.hop >= 2) return; val n = c.envelope.size; sink.start(byteArrayOf(3, (c.hop + 1).toByte(), (n shr 8).toByte(), n.toByte()) + c.envelope); activeUntil = now + 30_000 }
     private fun stopLease() { if (activeUntil != null) sink.stop(); activeUntil = null; contentionUntil = null }
-    private fun deselect() { stopLease(); selected = null; handles.clear(); lastDecisionEpoch = null }
+    private fun deselect() { stopLease(); selected = null; handles.clear(); overflowSeenAt = null; lastDecisionEpoch = null }
     private fun teardown() { deselect(); candidates.clear() }
     private fun randomUnit(digest: ByteArray, epoch: Long, purpose: Int): Double { val bytes = electionKey + digest + ByteArray(8) { (epoch ushr (56 - it * 8)).toByte() } + purpose.toByte(); val hash = MessageDigest.getInstance("SHA-256").digest(bytes); var value = 0L; repeat(8) { value = (value shl 8) or (hash[it].toLong() and 255) }; return (value ushr 11).toDouble() / 9_007_199_254_740_992.0 }
     private fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }
