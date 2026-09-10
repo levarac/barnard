@@ -145,12 +145,33 @@ sealed class BarnardRegistryAgreement {
 enum class BarnardB005EncodeError {
     REGISTRAR_LENGTH, ANCHOR_OPERATOR_LENGTH, NONCE_LENGTH,
     KEY_COUNT, KEY_LENGTH, KEY_ORDER,
+
+    /**
+     * An authority key is not a valid compressed secp256k1 point. [BarnardB005EnvelopeV2.verify]
+     * checks every key with `isValidCompressedKey`, so this closes the same gap on the producing
+     * side.
+     */
+    KEY_NOT_ON_CURVE,
     JOIN_MODE, ENIN_SECONDS,
     EVENT_CODE_HASH_LENGTH,
 
     /** `joinMode == open` requires `eventCodeHash == SHA256(UTF8(lowercaseHex(eventId)))[0:8]`. */
     OPEN_EVENT_CODE_HASH_MISMATCH,
     DISPLAY_NAME_LENGTH, DISPLAY_NAME_CHARACTERS,
+
+    /**
+     * The display name is not NFC. `verify` enforces this, so an encoder that could not check it
+     * was able to emit a name the verifier rejects.
+     */
+    DISPLAY_NAME_NOT_NORMALIZED,
+
+    /**
+     * A field is outside the range its wire encoding can represent, so serialising it would
+     * silently truncate: `eninSeconds` is two bytes and the three ENIN fields are four each.
+     * Swift cannot reach this case — its fields are typed `UInt16` and `UInt32` — which is why it
+     * exists only here.
+     */
+    FIELD_WIRE_RANGE,
     CERT_LENGTH,
 
     /**
@@ -192,11 +213,20 @@ class BarnardB005EnvelopeFields(
 
 /** What an issuer signs, and what it signs it over. */
 class BarnardB005UnsignedEnvelope internal constructor(
+    private val toBeSignedBacking: ByteArray,
+    private val signatureDigestBacking: ByteArray,
+) {
+    // Defensive copies, as BarnardB005VerifiedEnvelope already does in this file. Returning the
+    // backing arrays would let a caller mutate `toBeSigned` after encoding while `signatureDigest`
+    // kept its computed value -- and then sign a digest that no longer represents the bytes.
+    // Swift needs no equivalent: its arrays are value types.
+
     /** The envelope from offset 0 up to but excluding the 65-byte signature — spec 122's `tbs`. */
-    val toBeSigned: ByteArray,
+    val toBeSigned: ByteArray get() = toBeSignedBacking.copyOf()
+
     /** `SHA256("barnard-b005-event-info:v1" || tbs)`, the value an issuer signs (spec 122). */
-    val signatureDigest: ByteArray,
-)
+    val signatureDigest: ByteArray get() = signatureDigestBacking.copyOf()
+}
 
 /** The outcome of an encode attempt: the bytes, or the rule that refused them. */
 sealed class BarnardB005EncodeResult {
@@ -382,18 +412,25 @@ object BarnardB005EnvelopeV2 {
      * whatever the decoder assumes, which a round-trip test cannot detect because both sides share
      * the assumption. Byte-reproduction against the committed vectors is the check that can fail.
      */
-    fun encodeUnsignedEnvelope(fields: BarnardB005EnvelopeFields): BarnardB005EncodeResult {
+    fun encodeUnsignedEnvelope(fields: BarnardB005EnvelopeFields, recoverer: BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer): BarnardB005EncodeResult {
         fun refuse(e: BarnardB005EncodeError) = BarnardB005EncodeResult.Refused(e)
         if (fields.registrar.size != 20) return refuse(BarnardB005EncodeError.REGISTRAR_LENGTH)
         if (fields.anchorOperator.size != 20) return refuse(BarnardB005EncodeError.ANCHOR_OPERATOR_LENGTH)
         if (fields.nonce.size != 32) return refuse(BarnardB005EncodeError.NONCE_LENGTH)
         if (fields.authorityKeys.size !in 1..8) return refuse(BarnardB005EncodeError.KEY_COUNT)
         if (fields.authorityKeys.any { it.size != 33 }) return refuse(BarnardB005EncodeError.KEY_LENGTH)
+        if (fields.authorityKeys.any { !recoverer.isValidCompressedKey(it) }) return refuse(BarnardB005EncodeError.KEY_NOT_ON_CURVE)
         for (i in 1 until fields.authorityKeys.size) {
             if (compare(fields.authorityKeys[i - 1], fields.authorityKeys[i]) >= 0) return refuse(BarnardB005EncodeError.KEY_ORDER)
         }
         if (fields.joinMode !in 0..1) return refuse(BarnardB005EncodeError.JOIN_MODE)
         if (fields.eninSeconds == 0) return refuse(BarnardB005EncodeError.ENIN_SECONDS)
+        // Checked BEFORE the window arithmetic below, so a value that cannot be represented can
+        // never reach a subtraction or be truncated by be32.
+        if (fields.eninSeconds !in 1..0xffff) return refuse(BarnardB005EncodeError.FIELD_WIRE_RANGE)
+        if (listOf(fields.validFromEnin, fields.validThroughEnin, fields.relayExpiresAtEnin).any { it !in 0..0xffff_ffffL }) {
+            return refuse(BarnardB005EncodeError.FIELD_WIRE_RANGE)
+        }
         if (fields.eventCodeHash.size != 8) return refuse(BarnardB005EncodeError.EVENT_CODE_HASH_LENGTH)
 
         // verify requires validFromEnin <= currentEnin < relayExpiresAtEnin <= validThroughEnin, so
@@ -407,6 +444,9 @@ object BarnardB005EnvelopeV2 {
         val nameBytes = fields.eventDisplayName.encodeToByteArray()
         if (nameBytes.size !in 1..64) return refuse(BarnardB005EncodeError.DISPLAY_NAME_LENGTH)
         if (fields.eventDisplayName.any { it.code <= 0x1f || it.code == 0x7f }) return refuse(BarnardB005EncodeError.DISPLAY_NAME_CHARACTERS)
+        // Round-trips the encoded bytes through the same check verify applies, rather than
+        // reimplementing it: whatever verify would refuse to decode, this refuses to encode.
+        if (strictDisplayName(nameBytes) != fields.eventDisplayName) return refuse(BarnardB005EncodeError.DISPLAY_NAME_NOT_NORMALIZED)
         if (fields.delegationCert.size > 255) return refuse(BarnardB005EncodeError.CERT_LENGTH)
 
         val ks = keySetDigest(fields.authorityKeys) ?: return refuse(BarnardB005EncodeError.KEY_LENGTH)

@@ -277,6 +277,85 @@ class BarnardB005EnvelopeV2Test {
     }
 
     /**
+     * The encoder must refuse an authority key that is not a valid compressed point, because
+     * `verify` checks every key with `isValidCompressedKey` and would reject the envelope.
+     *
+     * Found by review: the encoder validated key *length* and *ordering* but never curve
+     * membership, so "refuses anything verify would reject" was false for keys.
+     */
+    @Test fun encoderRefusesAuthorityKeysThatAreNotValidPoints() {
+        val good = vectorOneFields()
+        // 33 bytes, right shape, not on the curve. A length-and-ordering check accepts it.
+        val notOnCurve = byteArrayOf(0x02) + ByteArray(32) { 0xff.toByte() }
+        fun fields(keys: List<ByteArray>) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, keys, 1, good.eninSeconds,
+            good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            good.eventCodeHash, good.eventDisplayName)
+        assertEquals(BarnardB005EncodeError.KEY_NOT_ON_CURVE, refusal(fields(listOf(notOnCurve))), "a 33-byte non-point must be refused")
+        assertNull(refusal(fields(good.authorityKeys)), "the vector's real authority key must still be accepted")
+    }
+
+    /**
+     * The encoder must refuse a display name that is not NFC, because `verify` normalises and
+     * would reject it. Same shape as the key check: a check `verify` performs that the encoder
+     * did not.
+     */
+    @Test fun encoderRefusesADisplayNameThatIsNotNormalized() {
+        val good = vectorOneFields()
+        fun refuseName(name: String) = refusal(BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, good.joinMode,
+            good.eninSeconds, good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            good.eventCodeHash, name))
+        // "e" + COMBINING ACUTE is NFD; its NFC form is the single scalar U+00E9.
+        assertEquals(BarnardB005EncodeError.DISPLAY_NAME_NOT_NORMALIZED, refuseName("Caf\u0065\u0301"), "an NFD name must be refused")
+        assertNull(refuseName("Caf\u00e9"), "the NFC form of the same name must be accepted")
+    }
+
+    /**
+     * Fields outside their wire ranges must be refused rather than silently truncated.
+     *
+     * **This case cannot arise in Swift**, whose fields are typed `UInt16` and `UInt32`; Kotlin's
+     * `Int` and `Long` can hold values the wire cannot, and `eninSeconds = 65536` serialised to
+     * the two bytes `00 00` — an envelope claiming `eninSeconds` zero, which `verify` rejects.
+     * Found by review. The guard runs BEFORE the window arithmetic so an unrepresentable value
+     * can never reach a subtraction either.
+     */
+    @Test fun encoderRefusesFieldsOutsideTheirWireRanges() {
+        val good = vectorOneFields()
+        fun withEnin(seconds: Int) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, good.joinMode,
+            seconds, good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            good.eventCodeHash, good.eventDisplayName)
+        fun withWindow(from: Long, through: Long, expires: Long) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, good.joinMode,
+            good.eninSeconds, from, through, expires, good.eventCodeHash, good.eventDisplayName)
+
+        assertEquals(BarnardB005EncodeError.FIELD_WIRE_RANGE, refusal(withEnin(65_536)), "eninSeconds above 0xffff would serialise as zero")
+        assertNull(refusal(withEnin(0xffff)), "the largest representable eninSeconds must be accepted")
+        assertEquals(BarnardB005EncodeError.FIELD_WIRE_RANGE, refusal(withWindow(0x1_0000_0000L, 0x1_0000_000cL, 0x1_0000_000cL)), "an ENIN above 0xffffffff would truncate")
+        assertEquals(BarnardB005EncodeError.FIELD_WIRE_RANGE, refusal(withWindow(-1L, 10L, 10L)), "a negative ENIN has no wire representation")
+        assertNull(refusal(withWindow(0xffff_fff0L, 0xffff_fffcL, 0xffff_fffcL)), "the top of the representable range must be accepted")
+    }
+
+    /**
+     * [BarnardB005UnsignedEnvelope] must hand out copies, not its own arrays.
+     *
+     * Found by review. Mutating `toBeSigned` after encoding while `signatureDigest` kept its
+     * computed value would let a caller sign a digest that no longer represents the bytes.
+     * [BarnardB005VerifiedEnvelope] in the same file already defends this way; the new type did
+     * not. **Swift needs no equivalent — its arrays are value types.**
+     */
+    @Test fun unsignedEnvelopeHandsOutCopiesRatherThanItsOwnArrays() {
+        val unsigned = assertNotNull(encoded(vectorOneFields()))
+        val firstTbs = unsigned.toBeSigned
+        val firstDigest = unsigned.signatureDigest
+        firstTbs[0] = (firstTbs[0].toInt() xor 0xff).toByte()
+        firstDigest[0] = (firstDigest[0].toInt() xor 0xff).toByte()
+        assertContentEquals(hex(v("v1_envelope")).copyOfRange(0, hex(v("v1_envelope")).size - 65), unsigned.toBeSigned, "mutating a returned copy must not change the envelope")
+        assertContentEquals(hex(v("v1_signature_digest")), unsigned.signatureDigest, "mutating a returned copy must not change the digest")
+    }
+
+    /**
      * The profile maximum: a 508-byte signed envelope inside a 512-byte container.
      *
      * The assertions are on the **lengths of the produced bytes**, not only on acceptance, because
@@ -328,7 +407,10 @@ class BarnardB005EnvelopeV2Test {
 
         // Keys: gated mode, because two keys change the eventId and the open-mode binding would
         // otherwise refuse for an unrelated reason.
-        val lo = ByteArray(33) { 2 }; val hi = ByteArray(33) { 3 }
+        // Real compressed points, because the encoder now validates curve membership before
+        // ordering: synthetic 33-byte fillers are refused as KEY_NOT_ON_CURVE and would no longer
+        // isolate the ordering rule. The delegate key sorts below the authority key (022f… < 02f9…).
+        val lo = hex(v("v2_delegate_public_key")); val hi = hex(v("authority_public_key"))
         assertEquals(BarnardB005EncodeError.KEY_ORDER, refusal(gated(listOf(hi, lo))), "descending keys")
         assertEquals(BarnardB005EncodeError.KEY_ORDER, refusal(gated(listOf(lo, lo))), "duplicate keys are not strictly ascending")
         assertNull(refusal(gated(listOf(lo, hi))), "ascending keys must be accepted")

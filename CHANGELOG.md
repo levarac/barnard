@@ -28,9 +28,16 @@ driver draws the drafted summary from (see `RELEASING.md`).
 
   **The encoder refuses anything `verify` would reject**, and names the rule rather than returning
   nothing: key count, length and strict ordering; join mode; `eninSeconds`; the open-mode binding
-  of `eventCodeHash` to the derived `eventId`; display-name length and forbidden control
-  characters; certificate length; the window relations `verify` enforces; the 12-ENIN relay
-  lifetime cap; and the 508-byte bound. An issuer that can emit unverifiable bytes has only moved
+  of `eventCodeHash` to the derived `eventId`; display-name length, forbidden control characters
+  and **NFC normalisation**; **authority keys being valid compressed secp256k1 points**;
+  certificate length; the window relations `verify` enforces; the 12-ENIN relay lifetime cap; and
+  the 508-byte bound. The Kotlin encoder additionally rejects field values outside their wire
+  ranges, which its `Int`/`Long` parameters can express and the wire cannot; Swift's `UInt16` and
+  `UInt32` fields make that unrepresentable.
+
+  `encodeUnsignedEnvelope` therefore takes the same injected capabilities `verify` takes — a
+  display-name normaliser on Swift, and a key recoverer on both — because `BarnardCore` is
+  stdlib-only and NFC and curve arithmetic have to arrive from the platform. An issuer that can emit unverifiable bytes has only moved
   the failure later, to a venue with no connectivity. (barnard#207)
 
 ## Unreleased — 0.9.0

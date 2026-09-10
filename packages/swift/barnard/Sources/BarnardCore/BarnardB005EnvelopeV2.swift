@@ -100,12 +100,17 @@ public struct BarnardB005VerifiedEnvelope {
 /// produce it: a producer that can emit bytes `verify` rejects is a defect in the producer.
 public enum BarnardB005EncodeError: Error, Equatable {
   case registrarLength, anchorOperatorLength, nonceLength
-  case keyCount, keyLength, keyOrder
+  case keyCount, keyLength, keyOrder, keyNotOnCurve
   case joinMode, eninSeconds
   case eventCodeHashLength
   /// `joinMode == open` requires `eventCodeHash == SHA256(UTF8(lowercaseHex(eventId)))[0:8]`.
   case openEventCodeHashMismatch
   case displayNameLength, displayNameCharacters
+  /// The display name is not NFC. `verify` enforces this through its name validator, so an
+  /// encoder that could not check it was able to emit a name the verifier rejects.
+  case displayNameNotNormalized
+  /// An authority key is not a valid compressed secp256k1 point. `verify` checks every key with
+  /// `isValidCompressedKey`, so this closes the same gap on the producing side.
   case certLength
   /// The window relations `verify` enforces: `validFromEnin < relayExpiresAtEnin <=
   /// validThroughEnin`. An inverted or empty window is unsatisfiable there, so it is refused here.
@@ -364,12 +369,18 @@ public enum BarnardB005EnvelopeV2 {
   /// whatever the decoder assumes, which a round-trip test cannot detect because both sides
   /// share the assumption. Byte-reproduction against the committed vectors is the check that
   /// can actually fail.
-  public static func encodeUnsignedEnvelope(_ fields: BarnardB005EnvelopeFields) -> Result<BarnardB005UnsignedEnvelope, BarnardB005EncodeError> {
+  /// `nameValidator` and `recoverer` are the same injected capabilities `verify` takes, and for
+  /// the same reason: `BarnardCore` is stdlib-only, so NFC normalisation and curve arithmetic have
+  /// to arrive from the platform. Without them an encoder cannot perform two of the checks
+  /// `verify` performs, and "refuses anything `verify` would reject" would be false — which it was
+  /// before they were added.
+  public static func encodeUnsignedEnvelope(_ fields: BarnardB005EnvelopeFields, nameValidator: any BarnardB005DisplayNameNormalizing, recoverer: any BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer()) -> Result<BarnardB005UnsignedEnvelope, BarnardB005EncodeError> {
     guard fields.registrar.count == 20 else { return .failure(.registrarLength) }
     guard fields.anchorOperator.count == 20 else { return .failure(.anchorOperatorLength) }
     guard fields.nonce.count == 32 else { return .failure(.nonceLength) }
     guard (1...8).contains(fields.authorityKeys.count) else { return .failure(.keyCount) }
     guard fields.authorityKeys.allSatisfy({ $0.count == 33 }) else { return .failure(.keyLength) }
+    guard fields.authorityKeys.allSatisfy({ recoverer.isValidCompressedKey($0) }) else { return .failure(.keyNotOnCurve) }
     for i in 1..<fields.authorityKeys.count {
       guard lexicographicallyLess(fields.authorityKeys[i - 1], fields.authorityKeys[i]) else { return .failure(.keyOrder) }
     }
@@ -387,6 +398,9 @@ public enum BarnardB005EnvelopeV2 {
     let nameBytes = Array(fields.eventDisplayName.utf8)
     guard (1...64).contains(nameBytes.count) else { return .failure(.displayNameLength) }
     guard fields.eventDisplayName.unicodeScalars.allSatisfy({ $0.value > 0x1f && $0.value != 0x7f }) else { return .failure(.displayNameCharacters) }
+    // Round-trips the encoded bytes through the same check verify applies, rather than
+    // reimplementing it: whatever verify would refuse to decode, this refuses to encode.
+    guard strictDisplayName(nameBytes, nameValidator: nameValidator) == fields.eventDisplayName else { return .failure(.displayNameNotNormalized) }
     guard fields.delegationCert.count <= 255 else { return .failure(.certLength) }
 
     guard let keySet = keySetDigest(fields.authorityKeys),
