@@ -10,6 +10,29 @@ PRs, resolved issues, and `specs/` changes by
 `.github/workflows/release-notes.yml`; the entries here are the input the release
 driver draws the drafted summary from (see `RELEASING.md`).
 
+## Unreleased — 0.9.1
+
+### Added
+
+- **A public B005 v2 envelope encoder on both cores.** `BarnardB005EnvelopeV2.encodeUnsignedEnvelope`
+  takes the typed fields spec 122 defines and returns the canonical `tbs` range together with the
+  digest an issuer signs, `SHA256("barnard-b005-event-info:v1" || tbs)`;
+  `assembleSignedEnvelope` appends the 65-byte signature, and the existing `encodeContainer`
+  wraps the result. New supporting types: `BarnardB005EnvelopeFields`,
+  `BarnardB005UnsignedEnvelope` and `BarnardB005EncodeError`.
+
+  Until now barnard shipped every part of B005 v2 handling **except** the one that produces the
+  bytes — `buildSigStructure`, `signRecoverable`, `encodeContainer` and the whole verify side all
+  existed, but the envelope body had no encoder on either platform, so every issuer would have
+  re-implemented the layout.
+
+  **The encoder refuses anything `verify` would reject**, and names the rule rather than returning
+  nothing: key count, length and strict ordering; join mode; `eninSeconds`; the open-mode binding
+  of `eventCodeHash` to the derived `eventId`; display-name length and forbidden control
+  characters; certificate length; the window relations `verify` enforces; the 12-ENIN relay
+  lifetime cap; and the 508-byte bound. An issuer that can emit unverifiable bytes has only moved
+  the failure later, to a venue with no connectivity. (barnard#207)
+
 ## Unreleased — 0.9.0
 
 ### Added

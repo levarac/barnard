@@ -184,6 +184,115 @@ class BarnardB005EnvelopeV2Test {
         assertNull(BarnardB005EnvelopeV2.schedulingFields(badCertLength), "a container failing the last structural guard yields no fields")
     }
 
+    // --- Envelope encoder (barnard#207) ---
+
+    /** Every field of vector 1, from the decimal values the vector file states. */
+    private fun vectorOneFields(displayName: String = v("v1_display_name"), cert: ByteArray = ByteArray(0)) =
+        BarnardB005EnvelopeFields(
+            registrar = hex(v("registrar")), anchorOperator = hex(v("anchor_operator")), nonce = hex(v("nonce")),
+            authorityKeys = listOf(hex(v("authority_public_key"))),
+            joinMode = v("v1_join_mode").toInt(), eninSeconds = v("v1_enin_seconds").toInt(),
+            validFromEnin = v("v1_valid_from_enin").toLong(), validThroughEnin = v("v1_valid_through_enin").toLong(),
+            relayExpiresAtEnin = v("v1_relay_expires_at_enin").toLong(),
+            eventCodeHash = hex(v("event_code_hash")), eventDisplayName = displayName, delegationCert = cert,
+        )
+
+    private fun encoded(f: BarnardB005EnvelopeFields) =
+        (BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f) as? BarnardB005EncodeResult.Encoded)?.envelope
+
+    private fun refusal(f: BarnardB005EnvelopeFields) =
+        (BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f) as? BarnardB005EncodeResult.Refused)?.error
+
+    /**
+     * **The load-bearing acceptance.** Re-encoding each committed vector's fields must reproduce
+     * its bytes exactly. The vectors were produced by an independent reference implementation (see
+     * the vector file's provenance header), not by this encoder and not by this repository's
+     * decoder, so agreement here is agreement with the spec rather than with ourselves.
+     *
+     * Vector 2's window fields are not stated in the vector file, so they are the literals vector 1
+     * states and vector 2 shares -- reading them out of the bytes and writing them back would be a
+     * fixed-point test that a symmetric offset error would satisfy.
+     */
+    @Test fun encoderReproducesCommittedVectorsByteForByte() {
+        for (spec in listOf(
+            Triple("vector 1 (authority-direct)", "v1", ByteArray(0)),
+            Triple("vector 2 (delegate)", "v2", hex(v("v2_delegation_cert"))),
+        )) {
+            val (label, prefix, cert) = spec
+            val expected = hex(v("${prefix}_envelope"))
+            val unsigned = assertNotNull(encoded(vectorOneFields(v("${prefix}_display_name"), cert)), "$label: encoder refused the vector's own fields")
+            assertContentEquals(expected.copyOfRange(0, expected.size - 65), unsigned.toBeSigned, "$label: unsigned bytes")
+            assertContentEquals(hex(v("${prefix}_signature_digest")), unsigned.signatureDigest, "$label: signature digest")
+            val assembled = BarnardB005EnvelopeV2.assembleSignedEnvelope(unsigned.toBeSigned, hex(v("${prefix}_signature_r_s_v")))
+            val signed = assertNotNull((assembled as? BarnardB005AssembleResult.Assembled)?.signedEnvelope, "$label: assembly refused a 65-byte signature")
+            assertContentEquals(expected, signed, "$label: assembled envelope must be byte-identical to the committed vector")
+        }
+    }
+
+    /**
+     * The byte at spec 122's `A+15` must be **literally 2** on the wire. Asserting it equals
+     * [BarnardB005EnvelopeV2.MAX_RELAY_HOPS] would pass whatever that constant happened to be: it
+     * would witness that the encoder uses the constant, not that the constant is right.
+     */
+    @Test fun encoderEmitsLiteralMaxRelayHopsByteOnTheWire() {
+        val unsigned = assertNotNull(encoded(vectorOneFields()), "encoder refused vector 1's fields")
+        val n = unsigned.toBeSigned[73].toInt() and 0xff
+        val a = 74 + 33 * n
+        assertEquals(2, unsigned.toBeSigned[a + 15].toInt() and 0xff, "spec 122 pins maxRelayHops at A+15 to 0x02")
+        assertEquals(2, BarnardB005EnvelopeV2.MAX_RELAY_HOPS, "and the constant must agree with the spec, not the other way round")
+    }
+
+    /**
+     * A re-encoded vector still verifies -- corroboration, not proof: a round-trip shows the
+     * encoder and the decoder agree, which they would even if both were wrong.
+     */
+    @Test fun encodedVectorRoundTripsThroughVerify() {
+        val unsigned = assertNotNull(encoded(vectorOneFields()), "encoder refused vector 1's fields")
+        val assembled = BarnardB005EnvelopeV2.assembleSignedEnvelope(unsigned.toBeSigned, hex(v("v1_signature_r_s_v")))
+        val signed = assertNotNull((assembled as? BarnardB005AssembleResult.Assembled)?.signedEnvelope)
+        val container = assertNotNull(BarnardB005EnvelopeV2.encodeContainer(0, signed))
+        assertContentEquals(hex(v("v1_container")), container, "container must match the committed vector")
+        val verified = assertNotNull(BarnardB005EnvelopeV2.verify(container, 6_000_000L), "a re-encoded committed vector must verify")
+        assertEquals(6_000_002L, verified.relayExpiresAtEnin)
+    }
+
+    /**
+     * Negative cases, each paired with the input that must stay **accepted** -- a guard with no
+     * such pair cannot be shown to fire only where it should.
+     */
+    @Test fun encoderRefusalsEachHaveAnAcceptedCounterpart() {
+        val base = vectorOneFields()
+        fun window(from: Long, through: Long, expires: Long) = BarnardB005EnvelopeFields(
+            base.registrar, base.anchorOperator, base.nonce, base.authorityKeys, base.joinMode,
+            base.eninSeconds, from, through, expires, base.eventCodeHash, base.eventDisplayName)
+        fun gated(keys: List<ByteArray>) = BarnardB005EnvelopeFields(
+            base.registrar, base.anchorOperator, base.nonce, keys, 1, base.eninSeconds,
+            base.validFromEnin, base.validThroughEnin, base.relayExpiresAtEnin, base.eventCodeHash, base.eventDisplayName)
+
+        // Display name: 65 bytes refused, 64 accepted.
+        assertEquals(BarnardB005EncodeError.DISPLAY_NAME_LENGTH, refusal(vectorOneFields("a".repeat(65))), "65-byte name")
+        assertNull(refusal(vectorOneFields("a".repeat(64))), "a 64-byte name is the maximum and must be accepted")
+        assertEquals(BarnardB005EncodeError.DISPLAY_NAME_CHARACTERS, refusal(vectorOneFields("bad\u007fname")), "DEL is forbidden")
+        assertNull(refusal(vectorOneFields("ok name")), "an ordinary name must be accepted")
+
+        // Keys: gated mode, because two keys change the eventId and the open-mode binding would
+        // otherwise refuse for an unrelated reason.
+        val lo = ByteArray(33) { 2 }; val hi = ByteArray(33) { 3 }
+        assertEquals(BarnardB005EncodeError.KEY_ORDER, refusal(gated(listOf(hi, lo))), "descending keys")
+        assertEquals(BarnardB005EncodeError.KEY_ORDER, refusal(gated(listOf(lo, lo))), "duplicate keys are not strictly ascending")
+        assertNull(refusal(gated(listOf(lo, hi))), "ascending keys must be accepted")
+
+        // Windows. A window whose bounds are EQUAL is not the accepted counterpart -- it is itself
+        // unsatisfiable, since verify needs validFrom <= currentEnin < relayExpires <= validThrough.
+        // The correct counterpart is the minimal satisfiable window.
+        assertEquals(BarnardB005EncodeError.VALIDITY_WINDOW, refusal(window(100, 50, 60)), "inverted window")
+        assertEquals(BarnardB005EncodeError.VALIDITY_WINDOW, refusal(window(100, 100, 100)), "equal bounds leave no servable ENIN")
+        assertEquals(BarnardB005EncodeError.VALIDITY_WINDOW, refusal(window(100, 200, 100)), "relay expiry at the window start")
+        assertNull(refusal(window(100, 101, 101)), "the minimal satisfiable window must be accepted")
+        assertEquals(BarnardB005EncodeError.RELAY_LIFETIME, refusal(window(100, 200, 113)), "a 13-ENIN lifetime")
+        assertNull(refusal(window(100, 200, 112)), "a 12-ENIN lifetime is the cap and must be accepted")
+    }
+
     @Test fun registryAgreementRequiresFullAgreement() {
         val container = hex(v("v1_container"))
         val verified = BarnardB005EnvelopeV2.verify(container, 6_000_000) ?: error("expected RADIO_SELF_VERIFIED baseline")
