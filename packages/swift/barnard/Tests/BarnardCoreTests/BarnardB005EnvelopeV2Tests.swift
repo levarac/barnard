@@ -338,6 +338,83 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     XCTAssertNil(refusal(with(from: 100, through: 200, expires: 112)), "a 12-ENIN lifetime is the cap and must be accepted")
   }
 
+  /// An **open-mode** envelope must carry the `eventCodeHash` derived from its own `eventId`.
+  ///
+  /// This test was written because mutation M4 survived without it: deleting the binding turned
+  /// nothing red, so the guard existed with no witness. It was written from `verify`'s behaviour
+  /// rather than from a failing test, which is exactly the case the rule about guards without
+  /// tests is for.
+  ///
+  /// Gated mode is the paired accepted case: there the derivation does not apply and MUST NOT be
+  /// attempted, per spec 122, so the same mismatched hash is legitimate.
+  func testOpenModeRequiresTheDerivedEventCodeHash() throws {
+    let v = try load()
+    let good = vectorOneFields(v)
+    var wrongHash = good.eventCodeHash
+    wrongHash[0] ^= 1
+
+    func fields(joinMode: UInt8, hash: [UInt8]) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(registrar: good.registrar, anchorOperator: good.anchorOperator, nonce: good.nonce,
+        authorityKeys: good.authorityKeys, joinMode: joinMode, eninSeconds: good.eninSeconds,
+        validFromEnin: good.validFromEnin, validThroughEnin: good.validThroughEnin,
+        relayExpiresAtEnin: good.relayExpiresAtEnin, eventCodeHash: hash, eventDisplayName: good.eventDisplayName)
+    }
+    func refusal(_ f: BarnardB005EnvelopeFields) -> BarnardB005EncodeError? {
+      if case .failure(let e) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f) { return e }
+      return nil
+    }
+
+    XCTAssertEqual(refusal(fields(joinMode: 0, hash: wrongHash)), .openEventCodeHashMismatch, "open mode must reject a hash that is not derived from its own eventId")
+    XCTAssertNil(refusal(fields(joinMode: 0, hash: good.eventCodeHash)), "open mode with the derived hash must be accepted")
+    XCTAssertNil(refusal(fields(joinMode: 1, hash: wrongHash)), "gated mode does not derive the hash, so the same value is legitimate there")
+  }
+
+  /// The profile maximum: a 508-byte signed envelope inside a 512-byte container, which is the
+  /// largest value B005 permits.
+  ///
+  /// The assertions are on the **lengths of the produced bytes**, not only on acceptance. That is
+  /// deliberate: the failure this guards against is not rejection but SILENT TRUNCATION — an
+  /// encoder that returns success while having quietly dropped the tail produces a conforming
+  /// maximum that nobody can verify, and an acceptance-only test cannot see it. One byte over the
+  /// bound must be a named refusal, never a shortened success.
+  ///
+  /// From spec 122's formula `165 + 33n + L + C`: `n = 1`, `L = 64`, `C = 246` sums to exactly
+  /// 508, and the container adds its 4-byte header for exactly 512. Gated mode is used because
+  /// open mode would bind `eventCodeHash` to the derived `eventId` for an unrelated reason.
+  func testEncoderProducesTheProfileMaximumWithoutTruncating() throws {
+    let v = try load()
+    func atSize(certLength: Int) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(
+        registrar: hex(v["registrar"]!), anchorOperator: hex(v["anchor_operator"]!), nonce: hex(v["nonce"]!),
+        authorityKeys: [hex(v["authority_public_key"]!)], joinMode: 1, eninSeconds: 300,
+        validFromEnin: 100, validThroughEnin: 112, relayExpiresAtEnin: 112,
+        eventCodeHash: hex(v["event_code_hash"]!),
+        eventDisplayName: String(repeating: "a", count: 64),
+        delegationCert: [UInt8](repeating: 7, count: certLength))
+    }
+
+    guard case .success(let unsigned) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(atSize(certLength: 246)) else {
+      return XCTFail("the profile maximum must encode")
+    }
+    XCTAssertEqual(unsigned.toBeSigned.count, 508 - 65, "tbs is the envelope minus its signature")
+    guard case .success(let signed) = BarnardB005EnvelopeV2.assembleSignedEnvelope(toBeSigned: unsigned.toBeSigned, signature: [UInt8](repeating: 9, count: 65)) else {
+      return XCTFail("assembly must accept the profile maximum")
+    }
+    XCTAssertEqual(signed.count, 508, "the signed envelope must be the full 508 bytes, not a truncated success")
+    guard let container = BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 0, signedEnvelope: signed) else {
+      return XCTFail("the container must accept a 508-byte envelope")
+    }
+    XCTAssertEqual(container.count, 512, "the container must be exactly the 512-byte profile maximum")
+    XCTAssertEqual(BarnardB005EnvelopeV2.validateStructure(container: container), nil, "and the maximum must be structurally valid")
+
+    // One byte over: a named refusal, not a shortened success.
+    if case .success(let over) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(atSize(certLength: 247)) {
+      XCTFail("509 bytes must be refused, not truncated to \(over.toBeSigned.count + 65)")
+    } else if case .failure(let e) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(atSize(certLength: 247)) {
+      XCTAssertEqual(e, .envelopeLength, "one byte over the bound must name the length rule")
+    }
+  }
+
   /// Every field of vector 1, from the decimal values the vector file states.
   private func vectorOneFields(_ v: [String: String]) -> BarnardB005EnvelopeFields {
     BarnardB005EnvelopeFields(

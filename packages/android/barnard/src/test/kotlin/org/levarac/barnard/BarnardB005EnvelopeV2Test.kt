@@ -257,6 +257,57 @@ class BarnardB005EnvelopeV2Test {
     }
 
     /**
+     * An **open-mode** envelope must carry the `eventCodeHash` derived from its own `eventId`.
+     *
+     * Written because mutation M4 survived without it: deleting the binding turned nothing red, so
+     * the guard existed with no witness. Gated mode is the paired accepted case — there the
+     * derivation does not apply and MUST NOT be attempted, per spec 122.
+     */
+    @Test fun openModeRequiresTheDerivedEventCodeHash() {
+        val good = vectorOneFields()
+        val wrongHash = good.eventCodeHash.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+        fun fields(joinMode: Int, hash: ByteArray) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, joinMode,
+            good.eninSeconds, good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            hash, good.eventDisplayName)
+
+        assertEquals(BarnardB005EncodeError.OPEN_EVENT_CODE_HASH_MISMATCH, refusal(fields(0, wrongHash)), "open mode must reject a hash that is not derived from its own eventId")
+        assertNull(refusal(fields(0, good.eventCodeHash)), "open mode with the derived hash must be accepted")
+        assertNull(refusal(fields(1, wrongHash)), "gated mode does not derive the hash, so the same value is legitimate there")
+    }
+
+    /**
+     * The profile maximum: a 508-byte signed envelope inside a 512-byte container.
+     *
+     * The assertions are on the **lengths of the produced bytes**, not only on acceptance, because
+     * the failure this guards against is not rejection but SILENT TRUNCATION — an encoder that
+     * returns success having quietly dropped the tail produces a conforming maximum nobody can
+     * verify, and an acceptance-only test cannot see it. One byte over must be a named refusal,
+     * never a shortened success.
+     *
+     * From spec 122's `165 + 33n + L + C`: `n = 1`, `L = 64`, `C = 246` is exactly 508, plus the
+     * container's 4-byte header for exactly 512. Gated mode avoids the open-mode hash binding.
+     */
+    @Test fun encoderProducesTheProfileMaximumWithoutTruncating() {
+        fun atSize(certLength: Int) = BarnardB005EnvelopeFields(
+            hex(v("registrar")), hex(v("anchor_operator")), hex(v("nonce")),
+            listOf(hex(v("authority_public_key"))), 1, 300, 100L, 112L, 112L,
+            hex(v("event_code_hash")), "a".repeat(64), ByteArray(certLength) { 7 })
+
+        val unsigned = assertNotNull(encoded(atSize(246)), "the profile maximum must encode")
+        assertEquals(508 - 65, unsigned.toBeSigned.size, "tbs is the envelope minus its signature")
+        val assembled = BarnardB005EnvelopeV2.assembleSignedEnvelope(unsigned.toBeSigned, ByteArray(65) { 9 })
+        val signed = assertNotNull((assembled as? BarnardB005AssembleResult.Assembled)?.signedEnvelope, "assembly must accept the profile maximum")
+        assertEquals(508, signed.size, "the signed envelope must be the full 508 bytes, not a truncated success")
+        val container = assertNotNull(BarnardB005EnvelopeV2.encodeContainer(0, signed), "the container must accept a 508-byte envelope")
+        assertEquals(512, container.size, "the container must be exactly the 512-byte profile maximum")
+        assertNull(BarnardB005EnvelopeV2.validateStructure(container), "and the maximum must be structurally valid")
+
+        assertNull(encoded(atSize(247)), "509 bytes must be refused, not truncated")
+        assertEquals(BarnardB005EncodeError.ENVELOPE_LENGTH, refusal(atSize(247)), "one byte over the bound must name the length rule")
+    }
+
+    /**
      * Negative cases, each paired with the input that must stay **accepted** -- a guard with no
      * such pair cannot be shown to fire only where it should.
      */
