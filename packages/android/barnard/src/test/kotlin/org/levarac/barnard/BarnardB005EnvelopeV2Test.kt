@@ -184,6 +184,248 @@ class BarnardB005EnvelopeV2Test {
         assertNull(BarnardB005EnvelopeV2.schedulingFields(badCertLength), "a container failing the last structural guard yields no fields")
     }
 
+    // --- Envelope encoder (barnard#207) ---
+
+    /** Every field of vector 1, from the decimal values the vector file states. */
+    private fun vectorOneFields(displayName: String = v("v1_display_name"), cert: ByteArray = ByteArray(0)) =
+        BarnardB005EnvelopeFields(
+            registrar = hex(v("registrar")), anchorOperator = hex(v("anchor_operator")), nonce = hex(v("nonce")),
+            authorityKeys = listOf(hex(v("authority_public_key"))),
+            joinMode = v("v1_join_mode").toInt(), eninSeconds = v("v1_enin_seconds").toInt(),
+            validFromEnin = v("v1_valid_from_enin").toLong(), validThroughEnin = v("v1_valid_through_enin").toLong(),
+            relayExpiresAtEnin = v("v1_relay_expires_at_enin").toLong(),
+            eventCodeHash = hex(v("event_code_hash")), eventDisplayName = displayName, delegationCert = cert,
+        )
+
+    private fun encoded(f: BarnardB005EnvelopeFields) =
+        (BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f) as? BarnardB005EncodeResult.Encoded)?.envelope
+
+    private fun refusal(f: BarnardB005EnvelopeFields) =
+        (BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f) as? BarnardB005EncodeResult.Refused)?.error
+
+    /**
+     * **The load-bearing acceptance.** Re-encoding each committed vector's fields must reproduce
+     * its bytes exactly. The vectors were produced by an independent reference implementation (see
+     * the vector file's provenance header), not by this encoder and not by this repository's
+     * decoder, so agreement here is agreement with the spec rather than with ourselves.
+     *
+     * Vector 2's window fields are not stated in the vector file, so they are the literals vector 1
+     * states and vector 2 shares -- reading them out of the bytes and writing them back would be a
+     * fixed-point test that a symmetric offset error would satisfy.
+     */
+    @Test fun encoderReproducesCommittedVectorsByteForByte() {
+        for (spec in listOf(
+            Triple("vector 1 (authority-direct)", "v1", ByteArray(0)),
+            Triple("vector 2 (delegate)", "v2", hex(v("v2_delegation_cert"))),
+        )) {
+            val (label, prefix, cert) = spec
+            val expected = hex(v("${prefix}_envelope"))
+            val unsigned = assertNotNull(encoded(vectorOneFields(v("${prefix}_display_name"), cert)), "$label: encoder refused the vector's own fields")
+            assertContentEquals(expected.copyOfRange(0, expected.size - 65), unsigned.toBeSigned, "$label: unsigned bytes")
+            assertContentEquals(hex(v("${prefix}_signature_digest")), unsigned.signatureDigest, "$label: signature digest")
+            val assembled = BarnardB005EnvelopeV2.assembleSignedEnvelope(unsigned.toBeSigned, hex(v("${prefix}_signature_r_s_v")))
+            val signed = assertNotNull((assembled as? BarnardB005AssembleResult.Assembled)?.signedEnvelope, "$label: assembly refused a 65-byte signature")
+            assertContentEquals(expected, signed, "$label: assembled envelope must be byte-identical to the committed vector")
+        }
+    }
+
+    /**
+     * The byte at spec 122's `A+15` must be **literally 2** on the wire. Asserting it equals
+     * [BarnardB005EnvelopeV2.MAX_RELAY_HOPS] would pass whatever that constant happened to be: it
+     * would witness that the encoder uses the constant, not that the constant is right.
+     */
+    @Test fun encoderEmitsLiteralMaxRelayHopsByteOnTheWire() {
+        val unsigned = assertNotNull(encoded(vectorOneFields()), "encoder refused vector 1's fields")
+        val n = unsigned.toBeSigned[73].toInt() and 0xff
+        val a = 74 + 33 * n
+        assertEquals(2, unsigned.toBeSigned[a + 15].toInt() and 0xff, "spec 122 pins maxRelayHops at A+15 to 0x02")
+        assertEquals(2, BarnardB005EnvelopeV2.MAX_RELAY_HOPS, "and the constant must agree with the spec, not the other way round")
+    }
+
+    /**
+     * A re-encoded vector still verifies -- corroboration, not proof: a round-trip shows the
+     * encoder and the decoder agree, which they would even if both were wrong.
+     */
+    @Test fun encodedVectorRoundTripsThroughVerify() {
+        val unsigned = assertNotNull(encoded(vectorOneFields()), "encoder refused vector 1's fields")
+        val assembled = BarnardB005EnvelopeV2.assembleSignedEnvelope(unsigned.toBeSigned, hex(v("v1_signature_r_s_v")))
+        val signed = assertNotNull((assembled as? BarnardB005AssembleResult.Assembled)?.signedEnvelope)
+        val container = assertNotNull(BarnardB005EnvelopeV2.encodeContainer(0, signed))
+        assertContentEquals(hex(v("v1_container")), container, "container must match the committed vector")
+        val verified = assertNotNull(BarnardB005EnvelopeV2.verify(container, 6_000_000L), "a re-encoded committed vector must verify")
+        assertEquals(6_000_002L, verified.relayExpiresAtEnin)
+    }
+
+    /**
+     * An **open-mode** envelope must carry the `eventCodeHash` derived from its own `eventId`.
+     *
+     * Written because mutation M4 survived without it: deleting the binding turned nothing red, so
+     * the guard existed with no witness. Gated mode is the paired accepted case — there the
+     * derivation does not apply and MUST NOT be attempted, per spec 122.
+     */
+    @Test fun openModeRequiresTheDerivedEventCodeHash() {
+        val good = vectorOneFields()
+        val wrongHash = good.eventCodeHash.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+        fun fields(joinMode: Int, hash: ByteArray) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, joinMode,
+            good.eninSeconds, good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            hash, good.eventDisplayName)
+
+        assertEquals(BarnardB005EncodeError.OPEN_EVENT_CODE_HASH_MISMATCH, refusal(fields(0, wrongHash)), "open mode must reject a hash that is not derived from its own eventId")
+        assertNull(refusal(fields(0, good.eventCodeHash)), "open mode with the derived hash must be accepted")
+        assertNull(refusal(fields(1, wrongHash)), "gated mode does not derive the hash, so the same value is legitimate there")
+    }
+
+    /**
+     * The encoder must refuse an authority key that is not a valid compressed point, because
+     * `verify` checks every key with `isValidCompressedKey` and would reject the envelope.
+     *
+     * Found by review: the encoder validated key *length* and *ordering* but never curve
+     * membership, so "refuses anything verify would reject" was false for keys.
+     */
+    @Test fun encoderRefusesAuthorityKeysThatAreNotValidPoints() {
+        val good = vectorOneFields()
+        // 33 bytes, right shape, not on the curve. A length-and-ordering check accepts it.
+        val notOnCurve = byteArrayOf(0x02) + ByteArray(32) { 0xff.toByte() }
+        fun fields(keys: List<ByteArray>) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, keys, 1, good.eninSeconds,
+            good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            good.eventCodeHash, good.eventDisplayName)
+        assertEquals(BarnardB005EncodeError.KEY_NOT_ON_CURVE, refusal(fields(listOf(notOnCurve))), "a 33-byte non-point must be refused")
+        assertNull(refusal(fields(good.authorityKeys)), "the vector's real authority key must still be accepted")
+    }
+
+    /**
+     * The encoder must refuse a display name that is not NFC, because `verify` normalises and
+     * would reject it. Same shape as the key check: a check `verify` performs that the encoder
+     * did not.
+     */
+    @Test fun encoderRefusesADisplayNameThatIsNotNormalized() {
+        val good = vectorOneFields()
+        fun refuseName(name: String) = refusal(BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, good.joinMode,
+            good.eninSeconds, good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            good.eventCodeHash, name))
+        // "e" + COMBINING ACUTE is NFD; its NFC form is the single scalar U+00E9.
+        assertEquals(BarnardB005EncodeError.DISPLAY_NAME_NOT_NORMALIZED, refuseName("Caf\u0065\u0301"), "an NFD name must be refused")
+        assertNull(refuseName("Caf\u00e9"), "the NFC form of the same name must be accepted")
+    }
+
+    /**
+     * Fields outside their wire ranges must be refused rather than silently truncated.
+     *
+     * **This case cannot arise in Swift**, whose fields are typed `UInt16` and `UInt32`; Kotlin's
+     * `Int` and `Long` can hold values the wire cannot, and `eninSeconds = 65536` serialised to
+     * the two bytes `00 00` — an envelope claiming `eninSeconds` zero, which `verify` rejects.
+     * Found by review. The guard runs BEFORE the window arithmetic so an unrepresentable value
+     * can never reach a subtraction either.
+     */
+    @Test fun encoderRefusesFieldsOutsideTheirWireRanges() {
+        val good = vectorOneFields()
+        fun withEnin(seconds: Int) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, good.joinMode,
+            seconds, good.validFromEnin, good.validThroughEnin, good.relayExpiresAtEnin,
+            good.eventCodeHash, good.eventDisplayName)
+        fun withWindow(from: Long, through: Long, expires: Long) = BarnardB005EnvelopeFields(
+            good.registrar, good.anchorOperator, good.nonce, good.authorityKeys, good.joinMode,
+            good.eninSeconds, from, through, expires, good.eventCodeHash, good.eventDisplayName)
+
+        assertEquals(BarnardB005EncodeError.FIELD_WIRE_RANGE, refusal(withEnin(65_536)), "eninSeconds above 0xffff would serialise as zero")
+        assertNull(refusal(withEnin(0xffff)), "the largest representable eninSeconds must be accepted")
+        assertEquals(BarnardB005EncodeError.FIELD_WIRE_RANGE, refusal(withWindow(0x1_0000_0000L, 0x1_0000_000cL, 0x1_0000_000cL)), "an ENIN above 0xffffffff would truncate")
+        assertEquals(BarnardB005EncodeError.FIELD_WIRE_RANGE, refusal(withWindow(-1L, 10L, 10L)), "a negative ENIN has no wire representation")
+        assertNull(refusal(withWindow(0xffff_fff0L, 0xffff_fffcL, 0xffff_fffcL)), "the top of the representable range must be accepted")
+    }
+
+    /**
+     * [BarnardB005UnsignedEnvelope] must hand out copies, not its own arrays.
+     *
+     * Found by review. Mutating `toBeSigned` after encoding while `signatureDigest` kept its
+     * computed value would let a caller sign a digest that no longer represents the bytes.
+     * [BarnardB005VerifiedEnvelope] in the same file already defends this way; the new type did
+     * not. **Swift needs no equivalent — its arrays are value types.**
+     */
+    @Test fun unsignedEnvelopeHandsOutCopiesRatherThanItsOwnArrays() {
+        val unsigned = assertNotNull(encoded(vectorOneFields()))
+        val firstTbs = unsigned.toBeSigned
+        val firstDigest = unsigned.signatureDigest
+        firstTbs[0] = (firstTbs[0].toInt() xor 0xff).toByte()
+        firstDigest[0] = (firstDigest[0].toInt() xor 0xff).toByte()
+        assertContentEquals(hex(v("v1_envelope")).copyOfRange(0, hex(v("v1_envelope")).size - 65), unsigned.toBeSigned, "mutating a returned copy must not change the envelope")
+        assertContentEquals(hex(v("v1_signature_digest")), unsigned.signatureDigest, "mutating a returned copy must not change the digest")
+    }
+
+    /**
+     * The profile maximum: a 508-byte signed envelope inside a 512-byte container.
+     *
+     * The assertions are on the **lengths of the produced bytes**, not only on acceptance, because
+     * the failure this guards against is not rejection but SILENT TRUNCATION — an encoder that
+     * returns success having quietly dropped the tail produces a conforming maximum nobody can
+     * verify, and an acceptance-only test cannot see it. One byte over must be a named refusal,
+     * never a shortened success.
+     *
+     * From spec 122's `165 + 33n + L + C`: `n = 1`, `L = 64`, `C = 246` is exactly 508, plus the
+     * container's 4-byte header for exactly 512. Gated mode avoids the open-mode hash binding.
+     */
+    @Test fun encoderProducesTheProfileMaximumWithoutTruncating() {
+        fun atSize(certLength: Int) = BarnardB005EnvelopeFields(
+            hex(v("registrar")), hex(v("anchor_operator")), hex(v("nonce")),
+            listOf(hex(v("authority_public_key"))), 1, 300, 100L, 112L, 112L,
+            hex(v("event_code_hash")), "a".repeat(64), ByteArray(certLength) { 7 })
+
+        val unsigned = assertNotNull(encoded(atSize(246)), "the profile maximum must encode")
+        assertEquals(508 - 65, unsigned.toBeSigned.size, "tbs is the envelope minus its signature")
+        val assembled = BarnardB005EnvelopeV2.assembleSignedEnvelope(unsigned.toBeSigned, ByteArray(65) { 9 })
+        val signed = assertNotNull((assembled as? BarnardB005AssembleResult.Assembled)?.signedEnvelope, "assembly must accept the profile maximum")
+        assertEquals(508, signed.size, "the signed envelope must be the full 508 bytes, not a truncated success")
+        val container = assertNotNull(BarnardB005EnvelopeV2.encodeContainer(0, signed), "the container must accept a 508-byte envelope")
+        assertEquals(512, container.size, "the container must be exactly the 512-byte profile maximum")
+        assertNull(BarnardB005EnvelopeV2.validateStructure(container), "and the maximum must be structurally valid")
+
+        assertNull(encoded(atSize(247)), "509 bytes must be refused, not truncated")
+        assertEquals(BarnardB005EncodeError.ENVELOPE_LENGTH, refusal(atSize(247)), "one byte over the bound must name the length rule")
+    }
+
+    /**
+     * Negative cases, each paired with the input that must stay **accepted** -- a guard with no
+     * such pair cannot be shown to fire only where it should.
+     */
+    @Test fun encoderRefusalsEachHaveAnAcceptedCounterpart() {
+        val base = vectorOneFields()
+        fun window(from: Long, through: Long, expires: Long) = BarnardB005EnvelopeFields(
+            base.registrar, base.anchorOperator, base.nonce, base.authorityKeys, base.joinMode,
+            base.eninSeconds, from, through, expires, base.eventCodeHash, base.eventDisplayName)
+        fun gated(keys: List<ByteArray>) = BarnardB005EnvelopeFields(
+            base.registrar, base.anchorOperator, base.nonce, keys, 1, base.eninSeconds,
+            base.validFromEnin, base.validThroughEnin, base.relayExpiresAtEnin, base.eventCodeHash, base.eventDisplayName)
+
+        // Display name: 65 bytes refused, 64 accepted.
+        assertEquals(BarnardB005EncodeError.DISPLAY_NAME_LENGTH, refusal(vectorOneFields("a".repeat(65))), "65-byte name")
+        assertNull(refusal(vectorOneFields("a".repeat(64))), "a 64-byte name is the maximum and must be accepted")
+        assertEquals(BarnardB005EncodeError.DISPLAY_NAME_CHARACTERS, refusal(vectorOneFields("bad\u007fname")), "DEL is forbidden")
+        assertNull(refusal(vectorOneFields("ok name")), "an ordinary name must be accepted")
+
+        // Keys: gated mode, because two keys change the eventId and the open-mode binding would
+        // otherwise refuse for an unrelated reason.
+        // Real compressed points, because the encoder now validates curve membership before
+        // ordering: synthetic 33-byte fillers are refused as KEY_NOT_ON_CURVE and would no longer
+        // isolate the ordering rule. The delegate key sorts below the authority key (022f… < 02f9…).
+        val lo = hex(v("v2_delegate_public_key")); val hi = hex(v("authority_public_key"))
+        assertEquals(BarnardB005EncodeError.KEY_ORDER, refusal(gated(listOf(hi, lo))), "descending keys")
+        assertEquals(BarnardB005EncodeError.KEY_ORDER, refusal(gated(listOf(lo, lo))), "duplicate keys are not strictly ascending")
+        assertNull(refusal(gated(listOf(lo, hi))), "ascending keys must be accepted")
+
+        // Windows. A window whose bounds are EQUAL is not the accepted counterpart -- it is itself
+        // unsatisfiable, since verify needs validFrom <= currentEnin < relayExpires <= validThrough.
+        // The correct counterpart is the minimal satisfiable window.
+        assertEquals(BarnardB005EncodeError.VALIDITY_WINDOW, refusal(window(100, 50, 60)), "inverted window")
+        assertEquals(BarnardB005EncodeError.VALIDITY_WINDOW, refusal(window(100, 100, 100)), "equal bounds leave no servable ENIN")
+        assertEquals(BarnardB005EncodeError.VALIDITY_WINDOW, refusal(window(100, 200, 100)), "relay expiry at the window start")
+        assertNull(refusal(window(100, 101, 101)), "the minimal satisfiable window must be accepted")
+        assertEquals(BarnardB005EncodeError.RELAY_LIFETIME, refusal(window(100, 200, 113)), "a 13-ENIN lifetime")
+        assertNull(refusal(window(100, 200, 112)), "a 12-ENIN lifetime is the cap and must be accepted")
+    }
+
     @Test fun registryAgreementRequiresFullAgreement() {
         val container = hex(v("v1_container"))
         val verified = BarnardB005EnvelopeV2.verify(container, 6_000_000) ?: error("expected RADIO_SELF_VERIFIED baseline")

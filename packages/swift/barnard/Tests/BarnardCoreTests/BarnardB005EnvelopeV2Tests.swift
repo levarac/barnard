@@ -193,6 +193,289 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     XCTAssertNil(BarnardB005EnvelopeV2.schedulingFields(container: badCertLength), "a container failing the last structural guard yields no fields")
   }
 
+  // MARK: - Envelope encoder (barnard#207)
+
+  /// **The load-bearing acceptance.** Re-encoding each committed vector's fields must reproduce
+  /// its bytes exactly. This is the half that can actually fail: the vectors were produced by an
+  /// independent reference implementation (see the vector file's provenance header), not by this
+  /// encoder and not by this repository's decoder, so agreement here is agreement with the spec
+  /// rather than with ourselves.
+  ///
+  /// Vector 1's field values are taken from the **decimal values the vector file states** —
+  /// `v1_join_mode`, `v1_enin_seconds`, `v1_valid_from_enin`, `v1_valid_through_enin`,
+  /// `v1_relay_expires_at_enin` — so a wrong offset writes a known number in the wrong place and
+  /// the bytes diverge.
+  ///
+  /// Vector 2's window fields are **not stated in the vector file**, which is why they appear
+  /// here as literals rather than as parsed values: reading them out of the bytes and writing
+  /// them back would be a fixed-point test that a symmetric offset error would satisfy. The
+  /// literals below are the values vector 1 states, which vector 2 shares.
+  func testEncoderReproducesCommittedVectorsByteForByte() throws {
+    let v = try load()
+    let sharedKeys = [hex(v["authority_public_key"]!)]
+
+    func fields(displayName: String, cert: [UInt8]) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(
+        registrar: hex(v["registrar"]!), anchorOperator: hex(v["anchor_operator"]!), nonce: hex(v["nonce"]!),
+        authorityKeys: sharedKeys,
+        joinMode: UInt8(v["v1_join_mode"]!)!,
+        eninSeconds: UInt16(v["v1_enin_seconds"]!)!,
+        validFromEnin: UInt32(v["v1_valid_from_enin"]!)!,
+        validThroughEnin: UInt32(v["v1_valid_through_enin"]!)!,
+        relayExpiresAtEnin: UInt32(v["v1_relay_expires_at_enin"]!)!,
+        eventCodeHash: hex(v["event_code_hash"]!),
+        eventDisplayName: displayName, delegationCert: cert)
+    }
+
+    for (label, name, cert, envelopeKey, sigKey) in [
+      ("vector 1 (authority-direct)", v["v1_display_name"]!, [UInt8](), "v1_envelope", "v1_signature_r_s_v"),
+      ("vector 2 (delegate)", v["v2_display_name"]!, hex(v["v2_delegation_cert"]!), "v2_envelope", "v2_signature_r_s_v"),
+    ] {
+      let expected = hex(v[envelopeKey]!)
+      guard case .success(let unsigned) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(fields(displayName: name, cert: cert), nameValidator: nameValidator) else {
+        return XCTFail("\(label): encoder refused the committed vector's own fields")
+      }
+      // tbs is the envelope minus its trailing 65-byte signature.
+      XCTAssertEqual(unsigned.toBeSigned, Array(expected.dropLast(65)), "\(label): unsigned bytes must match the committed envelope")
+      // The digest an issuer signs must match what the vector recorded.
+      XCTAssertEqual(unsigned.signatureDigest, hex(v[envelopeKey == "v1_envelope" ? "v1_signature_digest" : "v2_signature_digest"]!), "\(label): signature digest")
+
+      guard case .success(let signed) = BarnardB005EnvelopeV2.assembleSignedEnvelope(toBeSigned: unsigned.toBeSigned, signature: hex(v[sigKey]!)) else {
+        return XCTFail("\(label): assembly refused a 65-byte signature")
+      }
+      XCTAssertEqual(signed, expected, "\(label): assembled envelope must be byte-identical to the committed vector")
+    }
+  }
+
+  /// The weaker half, kept because it exercises the container boundary the encoder does not own:
+  /// a re-encoded vector still verifies. A round-trip proves the encoder and the decoder agree,
+  /// which they would even if both were wrong — so it is reported as corroboration, not proof.
+  func testEncodedVectorRoundTripsThroughVerify() throws {
+    let v = try load()
+    let expected = hex(v["v1_envelope"]!)
+    guard case .success(let unsigned) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(BarnardB005EnvelopeFields(
+      registrar: hex(v["registrar"]!), anchorOperator: hex(v["anchor_operator"]!), nonce: hex(v["nonce"]!),
+      authorityKeys: [hex(v["authority_public_key"]!)], joinMode: 0, eninSeconds: 300,
+      validFromEnin: 5_999_990, validThroughEnin: 6_000_010, relayExpiresAtEnin: 6_000_002,
+      eventCodeHash: hex(v["event_code_hash"]!), eventDisplayName: v["v1_display_name"]!), nameValidator: nameValidator) else {
+      return XCTFail("encoder refused vector 1's fields")
+    }
+    guard case .success(let signed) = BarnardB005EnvelopeV2.assembleSignedEnvelope(toBeSigned: unsigned.toBeSigned, signature: hex(v["v1_signature_r_s_v"]!)),
+          let container = BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 0, signedEnvelope: signed) else {
+      return XCTFail("assembly or container encoding refused a valid input")
+    }
+    XCTAssertEqual(container, hex(v["v1_container"]!), "container must match the committed vector")
+    guard let verified = BarnardB005EnvelopeV2.verify(container: container, currentEnin: 6_000_000, nameValidator: nameValidator) else {
+      return XCTFail("a re-encoded committed vector must verify")
+    }
+    XCTAssertEqual(verified.relayExpiresAtEnin, 6_000_002)
+    XCTAssertEqual(verified.eventDisplayName, v["v1_display_name"]!)
+  }
+
+  /// The byte at spec 122's `A+15` must be **literally 2** on the wire.
+  ///
+  /// Asserting it equals `BarnardB005EnvelopeV2.maxRelayHops` would pass whatever that constant
+  /// happened to be: it would witness that the encoder uses the constant, not that the constant is
+  /// right. The constant is the implementation; the literal is the spec.
+  func testEncoderEmitsLiteralMaxRelayHopsByteOnTheWire() throws {
+    let v = try load()
+    guard case .success(let unsigned) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(vectorOneFields(v), nameValidator: nameValidator) else {
+      return XCTFail("encoder refused vector 1's fields")
+    }
+    let n = Int(unsigned.toBeSigned[73])
+    let a = 74 + 33 * n
+    XCTAssertEqual(unsigned.toBeSigned[a + 15], 2, "spec 122 pins maxRelayHops at A+15 to 0x02")
+    XCTAssertEqual(BarnardB005EnvelopeV2.maxRelayHops, 2, "and the constant must agree with the spec, not the other way round")
+  }
+
+  /// Negative cases, each paired with the input that must stay **accepted** — a guard with no such
+  /// pair cannot be shown to fire only where it should.
+  func testEncoderRefusalsEachHaveAnAcceptedCounterpart() throws {
+    let v = try load()
+    let base = vectorOneFields(v)
+
+    func with(name: String? = nil, keys: [[UInt8]]? = nil, from: UInt32? = nil, through: UInt32? = nil, expires: UInt32? = nil) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(registrar: base.registrar, anchorOperator: base.anchorOperator, nonce: base.nonce,
+        authorityKeys: keys ?? base.authorityKeys, joinMode: base.joinMode, eninSeconds: base.eninSeconds,
+        validFromEnin: from ?? base.validFromEnin, validThroughEnin: through ?? base.validThroughEnin,
+        relayExpiresAtEnin: expires ?? base.relayExpiresAtEnin, eventCodeHash: base.eventCodeHash,
+        eventDisplayName: name ?? base.eventDisplayName, delegationCert: base.delegationCert)
+    }
+    func refusal(_ f: BarnardB005EnvelopeFields) -> BarnardB005EncodeError? {
+      if case .failure(let e) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f, nameValidator: nameValidator) { return e }
+      return nil
+    }
+
+    // Display name: 65 bytes refused, 64 accepted. The accepted half is what shows the bound is
+    // not simply "long names are rejected".
+    XCTAssertEqual(refusal(with(name: String(repeating: "a", count: 65))), .displayNameLength, "65-byte name")
+    XCTAssertNil(refusal(with(name: String(repeating: "a", count: 64))), "a 64-byte name is the maximum and must be accepted")
+    XCTAssertEqual(refusal(with(name: "bad\u{7f}name")), .displayNameCharacters, "DEL is forbidden")
+    XCTAssertNil(refusal(with(name: "ok name")), "an ordinary name must be accepted")
+
+    // Keys: descending refused, ascending accepted. Uses gated mode, because two keys change the
+    // eventId and so the open-mode code-hash binding would refuse for an unrelated reason.
+    // Real compressed points, because the encoder now validates curve membership before ordering:
+    // synthetic 33-byte fillers are refused as .keyNotOnCurve and would no longer isolate the
+    // ordering rule. The delegate key sorts below the authority key (022f… < 02f9…).
+    let lo = hex(v["v2_delegate_public_key"]!), hi = hex(v["authority_public_key"]!)
+    func gated(_ keys: [[UInt8]]) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(registrar: base.registrar, anchorOperator: base.anchorOperator, nonce: base.nonce,
+        authorityKeys: keys, joinMode: 1, eninSeconds: base.eninSeconds, validFromEnin: base.validFromEnin,
+        validThroughEnin: base.validThroughEnin, relayExpiresAtEnin: base.relayExpiresAtEnin,
+        eventCodeHash: base.eventCodeHash, eventDisplayName: base.eventDisplayName)
+    }
+    XCTAssertEqual(refusal(gated([hi, lo])), .keyOrder, "descending keys")
+    XCTAssertEqual(refusal(gated([lo, lo])), .keyOrder, "duplicate keys are not strictly ascending")
+    XCTAssertNil(refusal(gated([lo, hi])), "ascending keys must be accepted")
+
+    // Windows. The brief's suggested accepted counterpart — a window whose bounds are equal — is
+    // itself unsatisfiable: verify needs validFrom <= currentEnin < relayExpires <= validThrough,
+    // so validFrom == validThrough leaves no currentEnin at all. The correct counterpart is the
+    // MINIMAL satisfiable window, a one-ENIN relay lifetime.
+    XCTAssertEqual(refusal(with(from: 100, through: 50, expires: 60)), .validityWindow, "inverted window")
+    XCTAssertEqual(refusal(with(from: 100, through: 100, expires: 100)), .validityWindow, "equal bounds leave no servable ENIN")
+    XCTAssertEqual(refusal(with(from: 100, through: 200, expires: 100)), .validityWindow, "relay expiry at the window start")
+    XCTAssertNil(refusal(with(from: 100, through: 101, expires: 101)), "the minimal satisfiable window must be accepted")
+    XCTAssertEqual(refusal(with(from: 100, through: 200, expires: 113)), .relayLifetime, "a 13-ENIN lifetime")
+    XCTAssertNil(refusal(with(from: 100, through: 200, expires: 112)), "a 12-ENIN lifetime is the cap and must be accepted")
+  }
+
+  /// An **open-mode** envelope must carry the `eventCodeHash` derived from its own `eventId`.
+  ///
+  /// This test was written because mutation M4 survived without it: deleting the binding turned
+  /// nothing red, so the guard existed with no witness. It was written from `verify`'s behaviour
+  /// rather than from a failing test, which is exactly the case the rule about guards without
+  /// tests is for.
+  ///
+  /// Gated mode is the paired accepted case: there the derivation does not apply and MUST NOT be
+  /// attempted, per spec 122, so the same mismatched hash is legitimate.
+  func testOpenModeRequiresTheDerivedEventCodeHash() throws {
+    let v = try load()
+    let good = vectorOneFields(v)
+    var wrongHash = good.eventCodeHash
+    wrongHash[0] ^= 1
+
+    func fields(joinMode: UInt8, hash: [UInt8]) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(registrar: good.registrar, anchorOperator: good.anchorOperator, nonce: good.nonce,
+        authorityKeys: good.authorityKeys, joinMode: joinMode, eninSeconds: good.eninSeconds,
+        validFromEnin: good.validFromEnin, validThroughEnin: good.validThroughEnin,
+        relayExpiresAtEnin: good.relayExpiresAtEnin, eventCodeHash: hash, eventDisplayName: good.eventDisplayName)
+    }
+    func refusal(_ f: BarnardB005EnvelopeFields) -> BarnardB005EncodeError? {
+      if case .failure(let e) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f, nameValidator: nameValidator) { return e }
+      return nil
+    }
+
+    XCTAssertEqual(refusal(fields(joinMode: 0, hash: wrongHash)), .openEventCodeHashMismatch, "open mode must reject a hash that is not derived from its own eventId")
+    XCTAssertNil(refusal(fields(joinMode: 0, hash: good.eventCodeHash)), "open mode with the derived hash must be accepted")
+    XCTAssertNil(refusal(fields(joinMode: 1, hash: wrongHash)), "gated mode does not derive the hash, so the same value is legitimate there")
+  }
+
+  /// The encoder must refuse an authority key that is not a valid compressed point, because
+  /// `verify` checks every key with `isValidCompressedKey` and would reject the envelope.
+  ///
+  /// Found by review: the encoder previously validated key *length* and *ordering* but never
+  /// curve membership, so "refuses anything `verify` would reject" was false for keys. The fix
+  /// was to take the same injected recoverer `verify` takes; this test is what makes the claim
+  /// checkable rather than asserted.
+  func testEncoderRefusesAuthorityKeysThatAreNotValidPoints() throws {
+    let v = try load()
+    let good = vectorOneFields(v)
+    // 33 bytes, right shape, not on the curve. A length-and-ordering check accepts it.
+    let notOnCurve: [UInt8] = [0x02] + [UInt8](repeating: 0xff, count: 32)
+    func fields(_ keys: [[UInt8]]) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(registrar: good.registrar, anchorOperator: good.anchorOperator, nonce: good.nonce,
+        authorityKeys: keys, joinMode: 1, eninSeconds: good.eninSeconds, validFromEnin: good.validFromEnin,
+        validThroughEnin: good.validThroughEnin, relayExpiresAtEnin: good.relayExpiresAtEnin,
+        eventCodeHash: good.eventCodeHash, eventDisplayName: good.eventDisplayName)
+    }
+    func refusal(_ f: BarnardB005EnvelopeFields) -> BarnardB005EncodeError? {
+      if case .failure(let e) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f, nameValidator: nameValidator) { return e }
+      return nil
+    }
+    XCTAssertEqual(refusal(fields([notOnCurve])), .keyNotOnCurve, "a 33-byte non-point must be refused")
+    XCTAssertNil(refusal(fields(good.authorityKeys)), "the vector's real authority key must still be accepted")
+  }
+
+  /// The encoder must refuse a display name that is not NFC, because `verify` normalises through
+  /// its name validator and would reject it.
+  ///
+  /// Also found by review, and the same shape as the key check: `verify` takes an injected
+  /// capability the encoder did not, so the encoder could emit a name the verifier refuses.
+  func testEncoderRefusesADisplayNameThatIsNotNormalized() throws {
+    let v = try load()
+    let good = vectorOneFields(v)
+    func refusal(_ name: String) -> BarnardB005EncodeError? {
+      let f = BarnardB005EnvelopeFields(registrar: good.registrar, anchorOperator: good.anchorOperator, nonce: good.nonce,
+        authorityKeys: good.authorityKeys, joinMode: good.joinMode, eninSeconds: good.eninSeconds,
+        validFromEnin: good.validFromEnin, validThroughEnin: good.validThroughEnin,
+        relayExpiresAtEnin: good.relayExpiresAtEnin, eventCodeHash: good.eventCodeHash, eventDisplayName: name)
+      if case .failure(let e) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(f, nameValidator: nameValidator) { return e }
+      return nil
+    }
+    // "e" + COMBINING ACUTE is NFD; its NFC form is the single scalar U+00E9.
+    XCTAssertEqual(refusal("Caf\u{0065}\u{0301}"), .displayNameNotNormalized, "an NFD name must be refused")
+    XCTAssertNil(refusal("Caf\u{00e9}"), "the NFC form of the same name must be accepted")
+  }
+
+  /// The profile maximum: a 508-byte signed envelope inside a 512-byte container, which is the
+  /// largest value B005 permits.
+  ///
+  /// The assertions are on the **lengths of the produced bytes**, not only on acceptance. That is
+  /// deliberate: the failure this guards against is not rejection but SILENT TRUNCATION — an
+  /// encoder that returns success while having quietly dropped the tail produces a conforming
+  /// maximum that nobody can verify, and an acceptance-only test cannot see it. One byte over the
+  /// bound must be a named refusal, never a shortened success.
+  ///
+  /// From spec 122's formula `165 + 33n + L + C`: `n = 1`, `L = 64`, `C = 246` sums to exactly
+  /// 508, and the container adds its 4-byte header for exactly 512. Gated mode is used because
+  /// open mode would bind `eventCodeHash` to the derived `eventId` for an unrelated reason.
+  func testEncoderProducesTheProfileMaximumWithoutTruncating() throws {
+    let v = try load()
+    func atSize(certLength: Int) -> BarnardB005EnvelopeFields {
+      BarnardB005EnvelopeFields(
+        registrar: hex(v["registrar"]!), anchorOperator: hex(v["anchor_operator"]!), nonce: hex(v["nonce"]!),
+        authorityKeys: [hex(v["authority_public_key"]!)], joinMode: 1, eninSeconds: 300,
+        validFromEnin: 100, validThroughEnin: 112, relayExpiresAtEnin: 112,
+        eventCodeHash: hex(v["event_code_hash"]!),
+        eventDisplayName: String(repeating: "a", count: 64),
+        delegationCert: [UInt8](repeating: 7, count: certLength))
+    }
+
+    guard case .success(let unsigned) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(atSize(certLength: 246), nameValidator: nameValidator) else {
+      return XCTFail("the profile maximum must encode")
+    }
+    XCTAssertEqual(unsigned.toBeSigned.count, 508 - 65, "tbs is the envelope minus its signature")
+    guard case .success(let signed) = BarnardB005EnvelopeV2.assembleSignedEnvelope(toBeSigned: unsigned.toBeSigned, signature: [UInt8](repeating: 9, count: 65)) else {
+      return XCTFail("assembly must accept the profile maximum")
+    }
+    XCTAssertEqual(signed.count, 508, "the signed envelope must be the full 508 bytes, not a truncated success")
+    guard let container = BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 0, signedEnvelope: signed) else {
+      return XCTFail("the container must accept a 508-byte envelope")
+    }
+    XCTAssertEqual(container.count, 512, "the container must be exactly the 512-byte profile maximum")
+    XCTAssertEqual(BarnardB005EnvelopeV2.validateStructure(container: container), nil, "and the maximum must be structurally valid")
+
+    // One byte over: a named refusal, not a shortened success.
+    if case .success(let over) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(atSize(certLength: 247), nameValidator: nameValidator) {
+      XCTFail("509 bytes must be refused, not truncated to \(over.toBeSigned.count + 65)")
+    } else if case .failure(let e) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(atSize(certLength: 247), nameValidator: nameValidator) {
+      XCTAssertEqual(e, .envelopeLength, "one byte over the bound must name the length rule")
+    }
+  }
+
+  /// Every field of vector 1, from the decimal values the vector file states.
+  private func vectorOneFields(_ v: [String: String]) -> BarnardB005EnvelopeFields {
+    BarnardB005EnvelopeFields(
+      registrar: hex(v["registrar"]!), anchorOperator: hex(v["anchor_operator"]!), nonce: hex(v["nonce"]!),
+      authorityKeys: [hex(v["authority_public_key"]!)],
+      joinMode: UInt8(v["v1_join_mode"]!)!, eninSeconds: UInt16(v["v1_enin_seconds"]!)!,
+      validFromEnin: UInt32(v["v1_valid_from_enin"]!)!, validThroughEnin: UInt32(v["v1_valid_through_enin"]!)!,
+      relayExpiresAtEnin: UInt32(v["v1_relay_expires_at_enin"]!)!,
+      eventCodeHash: hex(v["event_code_hash"]!), eventDisplayName: v["v1_display_name"]!)
+  }
+
   // MARK: - Registry agreement (pure comparison; this SDK never assigns REGISTRY_VERIFIED)
 
   func testRegistryAgreementRequiresFullAgreement() throws {
