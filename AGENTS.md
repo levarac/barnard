@@ -150,7 +150,7 @@ If GitHub Projects tooling is available via MCP, also update the relevant Projec
 
 Defaults:
 
-- Project: “Projects/Beid Barnard Project” (id: `4`)
+- Project: **Levarac Dev** (number `1`)
 
 Guidance:
 

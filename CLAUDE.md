@@ -74,10 +74,14 @@ gitignored and must stay that way.
 
 Set `JAVA_HOME` explicitly rather than relying on a default — a stock macOS has
 no system JDK, and `/usr/bin/java` is a stub that only prints "Unable to locate
-a Java Runtime". On one machine set up for this repo the working values were
-`JAVA_HOME=/opt/homebrew/opt/openjdk@17` (Homebrew `openjdk@17`) and
-`ANDROID_HOME=/opt/homebrew/share/android-commandlinetools` (Homebrew cask
-`android-commandlinetools`); adjust to wherever your JDK 17 and SDK live.
+a Java Runtime". On one machine set up for this repo the working JDK value was
+`JAVA_HOME=/opt/homebrew/opt/openjdk@17` (Homebrew `openjdk@17`); adjust it to
+wherever your JDK 17 lives. Resolve the Android SDK from `ANDROID_HOME`, then
+`ANDROID_SDK_ROOT`, and finally the default install location:
+
+```
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+```
 
 ```
 cd packages/android/barnard
