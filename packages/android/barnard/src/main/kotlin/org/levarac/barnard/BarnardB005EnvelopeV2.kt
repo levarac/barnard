@@ -57,10 +57,19 @@ class BarnardB005VerifiedEnvelope private constructor(
      * validThroughEnin` and the 12-ENIN lifetime cap, so a host may use this directly as a relay
      * lease bound instead of falling back to a pessimistic `currentEnin + 1`.
      *
-     * The half-open convention here is settled by spec 134. `validThroughEnin`'s inclusivity is
-     * not: it is treated throughout this SDK as the INCLUSIVE last valid ENIN, which is the
-     * reading `registryAgreement` documents, and barnard#180 is the erratum that would settle it
-     * normatively.
+     * Both conventions a host needs to read this window are settled. `relayExpiresAtEnin` is the
+     * **exclusive** end of the relay window, fixed by spec 134. `validThroughEnin` is the
+     * **inclusive** last ENIN lying wholly inside the definition's validity window, per the
+     * maintainer decision of 2026-09-10 on barnard#180, which also fixes the issuer derivation:
+     * `validThroughEnin = floorDiv(validUntil + 1, eninSeconds) - 1` and
+     * `validFromEnin = ceilDiv(validFrom, eninSeconds)`, the formulas `registryAgreement`
+     * computes as `registryEndEnin` and `registryStartEnin`. Any other issuer derivation fails
+     * spec 134 step 4. A host reading these values therefore applies the same rule the SDK does.
+     *
+     * One consequence of the two conventions together, recorded rather than hidden: because step
+     * 5 requires `currentEnin < relayExpiresAtEnin <= validThroughEnin`, no envelope is servable
+     * at `currentEnin == validThroughEnin`. Whether that final ENIN should become servable is the
+     * part of barnard#180 still open, and it does not affect the meaning of this field.
      */
     val relayExpiresAtEnin: Long,
     val eninSeconds: Int,

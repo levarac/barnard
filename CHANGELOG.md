@@ -21,6 +21,14 @@ driver draws the drafted summary from (see `RELEASING.md`).
   signed expiry instead of falling back to a pessimistic `currentEnin + 1`, which re-verified
   and re-leased every ENIN even when the envelope said it stayed valid for an hour.
   `validFromEnin`, `validThroughEnin` and `eninSeconds` were already public and are unchanged.
+
+  **The window conventions are settled, so a host applies the same rule the SDK does.**
+  `relayExpiresAtEnin` is the **exclusive** end of the relay window `[validFromEnin,
+  relayExpiresAtEnin)`, per spec 134. `validThroughEnin` is the **inclusive** last ENIN lying
+  wholly inside the definition's validity window, and an issuer derives it as
+  `floorDiv(validUntil + 1, eninSeconds) - 1`, with `validFromEnin = ceilDiv(validFrom,
+  eninSeconds)` — the maintainer decision of 2026-09-10 on barnard#180, matching what
+  `registryAgreement` already computes. Any other issuer derivation fails spec 134 step 4.
   (barnard#197)
 
 - **`BarnardB005EnvelopeV2.schedulingFields(container:)`** and the
