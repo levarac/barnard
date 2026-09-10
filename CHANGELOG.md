@@ -28,7 +28,13 @@ driver draws the drafted summary from (see `RELEASING.md`).
   **Issuers act on this**: a long event is served by re-issuing envelopes inside
   one definition, each with a later `validFromEnin`, rather than by registering
   one definition per hour. A 24-hour event needs 24 envelopes at the 300-second
-  default. **Consumers need no change**: an envelope that was accepted before is
+  default, covering every ENIN of the definition except its final one — step 5
+  requires `relayExpiresAtEnin <= validThroughEnin` and `currentEnin <
+  relayExpiresAtEnin`, so the last inclusive ENIN of a definition is not
+  servable by any envelope. That one-ENIN tail is unchanged by this fix: it
+  applies identically under the previous exact-agreement rule, and no number of
+  refreshes removes it. It is tracked separately (barnard#180), not here.
+  **Consumers need no change**: an envelope that was accepted before is
   still accepted, and the 12-ENIN cap, receiver step 5, and exact agreement on
   `eventId`, `eventCodeHash` and signer-authority are all unchanged. No wire
   format, schema, or stored data changed. (barnard#200)
