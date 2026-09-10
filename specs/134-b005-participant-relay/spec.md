@@ -200,7 +200,7 @@ the definition it sits inside does not.
 
 A device is eligible after all checks pass, Peripheral operation is available,
 and observed hop is below signed `maxRelayHops`. Joining is not required: a
-walk-up receiver that has passed all verification checks may relay
+walk-up receiver that has passed all verification checks MAY relay
 automatically before admission, subject to host permission and operating-system
 policy.
 
