@@ -10,7 +10,11 @@ PRs, resolved issues, and `specs/` changes by
 `.github/workflows/release-notes.yml`; the entries here are the input the release
 driver draws the drafted summary from (see `RELEASING.md`).
 
-## Unreleased — 0.9.1
+## Unreleased
+
+Nothing yet.
+
+## 0.9.1 — 2026-09-10
 
 ### Added
 
@@ -40,7 +44,33 @@ driver draws the drafted summary from (see `RELEASING.md`).
   stdlib-only and NFC and curve arithmetic have to arrive from the platform. An issuer that can emit unverifiable bytes has only moved
   the failure later, to a venue with no connectivity. (barnard#207)
 
-## Unreleased — 0.9.0
+### Fixed
+
+*Both entries below were added on 2026-09-11, after the v0.9.1 tag was cut. They record
+specification changes that shipped in that tag and were missing from this file. They are written
+as dated corrections rather than filled in silently, so the gap is visible in the record.*
+
+- **A registrar allowlist cannot be applied offline.** `specification 122` previously said that a
+  host wanting an "organizer" claim needs a registrar allowlist **which it MAY apply offline**,
+  because `registrar` is carried in the envelope. That does not hold. `registrar` is folded into
+  the `eventId` preimage but is unauthenticated on its own, so an attacker who chooses both that
+  field and their own key set can produce an `eventId` that is self-consistent over it — and an
+  allowlist checked against the value as received over radio is then satisfied by an event the
+  allowlisted registrar never registered.
+
+  **A host MUST apply the allowlist to the registrar confirmed by the on-chain definition**
+  (`specification 134` receiver step 3), not to the field as read from the envelope. A host that
+  implemented the earlier offline reading should treat this as a correction to act on. Recorded as
+  a dated erratum in the specification itself. (barnard#201)
+
+- **Relay eligibility names the verification tier it requires.** `specification 134` described
+  relay election, walk-up relay and unjoined relay as available to a "verified" receiver.
+  "Verified" spans two tiers in this protocol and the intended one was never stated. All three now
+  require a receiver that has passed **all** verification checks, **including the registry check**.
+  This narrows who may relay rather than restating what was already there: a host relaying on the
+  weaker tier is doing something the specification no longer permits. (barnard#198)
+
+## 0.9.0 — 2026-09-10
 
 ### Added
 
