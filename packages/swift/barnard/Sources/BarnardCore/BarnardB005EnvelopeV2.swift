@@ -100,7 +100,10 @@ public struct BarnardB005VerifiedEnvelope {
 /// produce it: a producer that can emit bytes `verify` rejects is a defect in the producer.
 public enum BarnardB005EncodeError: Error, Equatable {
   case registrarLength, anchorOperatorLength, nonceLength
-  case keyCount, keyLength, keyOrder, keyNotOnCurve
+  case keyCount, keyLength, keyOrder
+  /// An authority key is not a valid compressed secp256k1 point. `verify` checks every key with
+  /// `isValidCompressedKey`, so this closes the same gap on the producing side.
+  case keyNotOnCurve
   case joinMode, eninSeconds
   case eventCodeHashLength
   /// `joinMode == open` requires `eventCodeHash == SHA256(UTF8(lowercaseHex(eventId)))[0:8]`.
@@ -109,8 +112,7 @@ public enum BarnardB005EncodeError: Error, Equatable {
   /// The display name is not NFC. `verify` enforces this through its name validator, so an
   /// encoder that could not check it was able to emit a name the verifier rejects.
   case displayNameNotNormalized
-  /// An authority key is not a valid compressed secp256k1 point. `verify` checks every key with
-  /// `isValidCompressedKey`, so this closes the same gap on the producing side.
+  /// The delegation certificate exceeds the 255 bytes its one-byte length field can express.
   case certLength
   /// The window relations `verify` enforces: `validFromEnin < relayExpiresAtEnin <=
   /// validThroughEnin`. An inverted or empty window is unsatisfiable there, so it is refused here.
