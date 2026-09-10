@@ -49,6 +49,29 @@ class BarnardB005VerifiedEnvelope private constructor(
     val eventDisplayName: String,
     val validFromEnin: Long,
     val validThroughEnin: Long,
+    /**
+     * The signed relay expiry, and the **exclusive** end of the half-open relay window
+     * `[validFromEnin, relayExpiresAtEnin)` (spec 134: an envelope is relayable while
+     * `currentEnin < relayExpiresAtEnin` and stops the moment `currentEnin` reaches it).
+     * [BarnardB005EnvelopeV2.verify] has already enforced `relayExpiresAtEnin <=
+     * validThroughEnin` and the 12-ENIN lifetime cap, so a host may use this directly as a relay
+     * lease bound instead of falling back to a pessimistic `currentEnin + 1`.
+     *
+     * Both conventions a host needs to read this window are settled. `relayExpiresAtEnin` is the
+     * **exclusive** end of the relay window, fixed by spec 134. `validThroughEnin` is the
+     * **inclusive** last ENIN lying wholly inside the definition's validity window, per the
+     * maintainer decision of 2026-09-10 on barnard#180, which also fixes the issuer derivation:
+     * `validThroughEnin = floorDiv(validUntil + 1, eninSeconds) - 1` and
+     * `validFromEnin = ceilDiv(validFrom, eninSeconds)`, the formulas `registryAgreement`
+     * computes as `registryEndEnin` and `registryStartEnin`. Any other issuer derivation fails
+     * spec 134 step 4. A host reading these values therefore applies the same rule the SDK does.
+     *
+     * One consequence of the two conventions together, recorded rather than hidden: because step
+     * 5 requires `currentEnin < relayExpiresAtEnin <= validThroughEnin`, no envelope is servable
+     * at `currentEnin == validThroughEnin`. Whether that final ENIN should become servable is the
+     * part of barnard#180 still open, and it does not affect the meaning of this field.
+     */
+    val relayExpiresAtEnin: Long,
     val eninSeconds: Int,
     private val signedEnvelopeBacking: ByteArray,
 ) {
@@ -70,11 +93,13 @@ class BarnardB005VerifiedEnvelope private constructor(
             eventDisplayName: String,
             validFromEnin: Long,
             validThroughEnin: Long,
+            relayExpiresAtEnin: Long,
             eninSeconds: Int,
             signedEnvelope: ByteArray,
         ) = BarnardB005VerifiedEnvelope(
             BarnardB005ReceiverState.RADIO_SELF_VERIFIED, relayHopCount, eventId, keySetDigest, joinMode,
-            eventCodeHash, eventDisplayName, validFromEnin, validThroughEnin, eninSeconds, signedEnvelope,
+            eventCodeHash, eventDisplayName, validFromEnin, validThroughEnin, relayExpiresAtEnin, eninSeconds,
+            signedEnvelope,
         )
     }
 }
@@ -108,6 +133,33 @@ sealed class BarnardRegistryAgreement {
     object Agrees : BarnardRegistryAgreement()
     data class Mismatched(val mismatchedFields: Set<BarnardRegistryMismatchField>) : BarnardRegistryAgreement()
 }
+
+/**
+ * The four scheduling fields a B005 v2 container carries, read after **structure validation
+ * only**: no signature check, no key recovery, no registry read, and no current ENIN.
+ *
+ * **Trust boundary, in one sentence: a window a host acts on comes only from a verified
+ * envelope, and these values may be used solely to choose the ENIN it asks
+ * [BarnardB005EnvelopeV2.verify] to run at.** An attacker controls every byte here, so treating
+ * any of them as a fact about the event is a defect; using them to decide *what to ask* is not,
+ * because the answer still comes from `verify`.
+ *
+ * This exists because decode and time-parameterised verification are fused: `verify` takes a
+ * container and a `currentEnin`, so a host holding several pre-signed envelopes for one event must
+ * already know an envelope's window in order to verify it, and that window lives in bytes it has
+ * not decoded. Two alternatives were rejected and should not be reintroduced. A host-side parser
+ * copies spec 122's offsets into the host and creates removal debt. An unsigned schedule hint
+ * carried beside the envelopes is unverifiable by construction: `verify` sees only the container
+ * and `currentEnin` and never sees the hint, so a hint claiming `[100, 112)` over a signed
+ * `[100, 105)` verifies at the hinted start and the extra ENINs are checked by nothing.
+ */
+class BarnardB005SchedulingFields internal constructor(
+    val validFromEnin: Long,
+    val validThroughEnin: Long,
+    /** Exclusive end of the half-open relay window, as on [BarnardB005VerifiedEnvelope]. */
+    val relayExpiresAtEnin: Long,
+    val eninSeconds: Int,
+)
 
 /**
  * Why a B005 v2 container failed the clock-independent structural checks.
@@ -199,6 +251,37 @@ object BarnardB005EnvelopeV2 {
         }
         return null
     }
+    /**
+     * Reads the four scheduling fields at the offsets spec 122 fixes, from an envelope body that
+     * has already passed [validateStructure]. [a] is the post-key-set base offset, `74 + 33 * n`.
+     *
+     * This is the single offset table for those four fields: [verify] and [schedulingFields] both
+     * read through it, so the trusted and untrusted paths cannot come to disagree about where a
+     * window lives in the bytes.
+     */
+    private fun readSchedulingFields(e: ByteArray, a: Int) = BarnardB005SchedulingFields(
+        validFromEnin = read32(e, a + 3),
+        validThroughEnin = read32(e, a + 7),
+        relayExpiresAtEnin = read32(e, a + 11),
+        eninSeconds = read16(e, a + 1),
+    )
+
+    /**
+     * Structure-only scheduling accessor: the window a container claims, before any signature, key
+     * recovery, registry read or clock. Returns null when [validateStructure] rejects the
+     * container, so a caller receives four fields or none -- never a partial read of a malformed
+     * container.
+     *
+     * **The values are untrusted.** See [BarnardB005SchedulingFields] for the trust boundary: use
+     * them only to choose the `currentEnin` to pass to [verify], and take every value a host acts
+     * on from `verify`'s result.
+     */
+    fun schedulingFields(container: ByteArray): BarnardB005SchedulingFields? {
+        if (validateStructure(container) != null) return null
+        val e = container.copyOfRange(4, container.size)
+        return readSchedulingFields(e, 74 + 33 * e[73].u)
+    }
+
     private val signatureDomain = "barnard-b005-event-info:v1".encodeToByteArray()
 
     fun keccak256(input: ByteArray): ByteArray {
@@ -245,7 +328,9 @@ object BarnardB005EnvelopeV2 {
             keys += key
         }
         val joinMode = e[a].u
-        val validFrom = read32(e, a + 3); val validThrough = read32(e, a + 7); val expires = read32(e, a + 11)
+        val scheduling = readSchedulingFields(e, a)
+        val validFrom = scheduling.validFromEnin; val validThrough = scheduling.validThroughEnin
+        val expires = scheduling.relayExpiresAtEnin
         val codeHash = e.copyOfRange(a + 16, a + 24); val nameLength = e[a + 24].u
         val nameStart = a + 25; val certLengthOffset = nameStart + nameLength
         val certLength = e[certLengthOffset].u
@@ -275,7 +360,8 @@ object BarnardB005EnvelopeV2 {
             else recoverMember(signature, digest, keys, recoverer) != null
         if (!accepted) return null
         return BarnardB005VerifiedEnvelope.radioSelfVerified(
-            container[1].u, eventId, ks, joinMode, codeHash, name, validFrom, validThrough, read16(e, a + 1), e,
+            container[1].u, eventId, ks, joinMode, codeHash, name, validFrom, validThrough, expires,
+            scheduling.eninSeconds, e,
         )
     }
 
