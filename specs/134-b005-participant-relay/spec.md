@@ -9,8 +9,9 @@ information must reach venue edges through participant devices, but continuous
 relay by every participant wastes Advertise, GATT, and battery capacity.
 
 This specification adds signature-preserving participant relay and a bounded
-local density controller. A verified receiver automatically enters election;
-sparse neighborhoods elect more relays than dense ones.
+local density controller. A receiver that has passed all verification checks,
+including the registry check, automatically enters election; sparse
+neighborhoods elect more relays than dense ones.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 this document are to be interpreted as described in RFC 2119 and RFC 8174 when,
@@ -199,8 +200,9 @@ the definition it sits inside does not.
 
 A device is eligible after all checks pass, Peripheral operation is available,
 and observed hop is below signed `maxRelayHops`. Joining is not required: a
-verified walk-up receiver may relay automatically before admission, subject to
-host permission and operating-system policy.
+walk-up receiver that has passed all verification checks MAY relay
+automatically before admission, subject to host permission and operating-system
+policy.
 
 A device MUST actively serve at most one payload digest at a time. The default
 selection policy is:
@@ -381,8 +383,9 @@ The questions raised in the draft were settled as follows (levarac/barnard#168).
 2. **Maximum relay lifetime**: 12 ENIN. Hourly refresh bounds replay while avoiding
    per-window signing. Issue #122 decides whether direct authority signing or delegated
    liveness signing performs the refresh.
-3. **Unjoined relays**: an unjoined but fully verified receiver MAY relay. Early and edge
-   coverage is the feature's purpose; joined-only remains an optional host privacy policy.
+3. **Unjoined relays**: an unjoined receiver that has passed all verification checks,
+   including step 3 against the pinned block, MAY relay. Early and edge coverage is the
+   feature's purpose; joined-only remains an optional host privacy policy.
 4. **One-event tie-break**: lowest hop plus a five-minute pin. It is deterministic and adds
    no UI dependency. Note for consumers: in beid v1.0 the join surface is always one
    explicit tap (a single candidate is preselected, several are listed), so relayed
