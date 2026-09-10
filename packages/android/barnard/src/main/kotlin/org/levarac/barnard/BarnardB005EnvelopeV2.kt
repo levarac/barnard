@@ -135,6 +135,82 @@ sealed class BarnardRegistryAgreement {
 }
 
 /**
+ * Why a set of envelope fields cannot be encoded. Each entry names the rule from
+ * `specification 122`'s signed-envelope table that the input breaks.
+ *
+ * Every case here is a shape the shipped verifier would reject, so the encoder refuses to produce
+ * it: a producer that can emit bytes [BarnardB005EnvelopeV2.verify] rejects is a defect in the
+ * producer.
+ */
+enum class BarnardB005EncodeError {
+    REGISTRAR_LENGTH, ANCHOR_OPERATOR_LENGTH, NONCE_LENGTH,
+    KEY_COUNT, KEY_LENGTH, KEY_ORDER,
+    JOIN_MODE, ENIN_SECONDS,
+    EVENT_CODE_HASH_LENGTH,
+
+    /** `joinMode == open` requires `eventCodeHash == SHA256(UTF8(lowercaseHex(eventId)))[0:8]`. */
+    OPEN_EVENT_CODE_HASH_MISMATCH,
+    DISPLAY_NAME_LENGTH, DISPLAY_NAME_CHARACTERS,
+    CERT_LENGTH,
+
+    /**
+     * The window relations `verify` enforces: `validFromEnin < relayExpiresAtEnin <=
+     * validThroughEnin`. An inverted or empty window is unsatisfiable there, so it is refused here.
+     */
+    VALIDITY_WINDOW,
+
+    /** `relayExpiresAtEnin - validFromEnin` exceeds the 12-ENIN relay lifetime cap. */
+    RELAY_LIFETIME,
+
+    /** The assembled envelope would not fit the 508-byte `signedEnvelope` bound. */
+    ENVELOPE_LENGTH,
+    SIGNATURE_LENGTH,
+}
+
+/**
+ * The typed fields of a B005 v2 signed envelope, in the order `specification 122` lays them out.
+ * This is the encoder's input; [BarnardB005VerifiedEnvelope] is the decoder's output, and the two
+ * are deliberately separate types — one carries what an issuer chose, the other what a receiver
+ * established.
+ */
+class BarnardB005EnvelopeFields(
+    val registrar: ByteArray,
+    val anchorOperator: ByteArray,
+    val nonce: ByteArray,
+    /** Compressed secp256k1 points, `1..8`, strictly ascending and unique. */
+    val authorityKeys: List<ByteArray>,
+    val joinMode: Int,
+    val eninSeconds: Int,
+    val validFromEnin: Long,
+    val validThroughEnin: Long,
+    val relayExpiresAtEnin: Long,
+    val eventCodeHash: ByteArray,
+    val eventDisplayName: String,
+    /** COSE_Sign1 delegation certificate, byte-identical to the bundle copy. Empty is authority-direct mode. */
+    val delegationCert: ByteArray = ByteArray(0),
+)
+
+/** What an issuer signs, and what it signs it over. */
+class BarnardB005UnsignedEnvelope internal constructor(
+    /** The envelope from offset 0 up to but excluding the 65-byte signature — spec 122's `tbs`. */
+    val toBeSigned: ByteArray,
+    /** `SHA256("barnard-b005-event-info:v1" || tbs)`, the value an issuer signs (spec 122). */
+    val signatureDigest: ByteArray,
+)
+
+/** The outcome of an encode attempt: the bytes, or the rule that refused them. */
+sealed class BarnardB005EncodeResult {
+    class Encoded(val envelope: BarnardB005UnsignedEnvelope) : BarnardB005EncodeResult()
+    class Refused(val error: BarnardB005EncodeError) : BarnardB005EncodeResult()
+}
+
+/** The outcome of assembling a signed envelope. */
+sealed class BarnardB005AssembleResult {
+    class Assembled(val signedEnvelope: ByteArray) : BarnardB005AssembleResult()
+    class Refused(val error: BarnardB005EncodeError) : BarnardB005AssembleResult()
+}
+
+/**
  * The four scheduling fields a B005 v2 container carries, read after **structure validation
  * only**: no signature check, no key recovery, no registry read, and no current ENIN.
  *
@@ -281,6 +357,104 @@ object BarnardB005EnvelopeV2 {
         val e = container.copyOfRange(4, container.size)
         return readSchedulingFields(e, 74 + 33 * e[73].u)
     }
+
+    /**
+     * The value at spec 122's offset `A+15`, which that table names `maxRelayHops` and pins to
+     * `0x02` for `envelopeVersion 0x01`. Spec 134 requires the same value and describes a relayer
+     * respecting it.
+     *
+     * Note for a future version: both cores validate this byte but neither reads it as a hop limit
+     * — the two-hop bound is enforced by a separate constant — so a version permitting another
+     * value would need the relay path changed too. Tracked as barnard#209.
+     */
+    const val MAX_RELAY_HOPS = 2
+
+    /**
+     * Encodes the canonical unsigned envelope for [fields], together with the digest an issuer
+     * signs, per `specification 122`'s signed-envelope table. Refusal names the rule broken rather
+     * than returning null, so a caller learns which field to fix.
+     *
+     * **The encoder refuses anything [verify] would reject.** An issuer that can produce
+     * unverifiable bytes has only moved the failure later, to a venue with no connectivity.
+     *
+     * The layout is taken from the spec text rather than from [verify]'s reverse: an encoder
+     * written as the decoder's inverse agrees with the decoder by construction and inherits
+     * whatever the decoder assumes, which a round-trip test cannot detect because both sides share
+     * the assumption. Byte-reproduction against the committed vectors is the check that can fail.
+     */
+    fun encodeUnsignedEnvelope(fields: BarnardB005EnvelopeFields): BarnardB005EncodeResult {
+        fun refuse(e: BarnardB005EncodeError) = BarnardB005EncodeResult.Refused(e)
+        if (fields.registrar.size != 20) return refuse(BarnardB005EncodeError.REGISTRAR_LENGTH)
+        if (fields.anchorOperator.size != 20) return refuse(BarnardB005EncodeError.ANCHOR_OPERATOR_LENGTH)
+        if (fields.nonce.size != 32) return refuse(BarnardB005EncodeError.NONCE_LENGTH)
+        if (fields.authorityKeys.size !in 1..8) return refuse(BarnardB005EncodeError.KEY_COUNT)
+        if (fields.authorityKeys.any { it.size != 33 }) return refuse(BarnardB005EncodeError.KEY_LENGTH)
+        for (i in 1 until fields.authorityKeys.size) {
+            if (compare(fields.authorityKeys[i - 1], fields.authorityKeys[i]) >= 0) return refuse(BarnardB005EncodeError.KEY_ORDER)
+        }
+        if (fields.joinMode !in 0..1) return refuse(BarnardB005EncodeError.JOIN_MODE)
+        if (fields.eninSeconds == 0) return refuse(BarnardB005EncodeError.ENIN_SECONDS)
+        if (fields.eventCodeHash.size != 8) return refuse(BarnardB005EncodeError.EVENT_CODE_HASH_LENGTH)
+
+        // verify requires validFromEnin <= currentEnin < relayExpiresAtEnin <= validThroughEnin, so
+        // a window that is inverted, or whose relay expiry sits at or before its start, is
+        // unsatisfiable there for every currentEnin. Refuse it rather than emit unverifiable bytes.
+        if (fields.validFromEnin >= fields.relayExpiresAtEnin || fields.relayExpiresAtEnin > fields.validThroughEnin) {
+            return refuse(BarnardB005EncodeError.VALIDITY_WINDOW)
+        }
+        if (fields.relayExpiresAtEnin - fields.validFromEnin > 12) return refuse(BarnardB005EncodeError.RELAY_LIFETIME)
+
+        val nameBytes = fields.eventDisplayName.encodeToByteArray()
+        if (nameBytes.size !in 1..64) return refuse(BarnardB005EncodeError.DISPLAY_NAME_LENGTH)
+        if (fields.eventDisplayName.any { it.code <= 0x1f || it.code == 0x7f }) return refuse(BarnardB005EncodeError.DISPLAY_NAME_CHARACTERS)
+        if (fields.delegationCert.size > 255) return refuse(BarnardB005EncodeError.CERT_LENGTH)
+
+        val ks = keySetDigest(fields.authorityKeys) ?: return refuse(BarnardB005EncodeError.KEY_LENGTH)
+        val eventId = computeEventId(fields.registrar, fields.anchorOperator, fields.nonce, ks)
+            ?: return refuse(BarnardB005EncodeError.KEY_LENGTH)
+        if (fields.joinMode == 0) {
+            val expected = openEventCodeHash(eventId) ?: return refuse(BarnardB005EncodeError.EVENT_CODE_HASH_LENGTH)
+            if (!expected.contentEquals(fields.eventCodeHash)) return refuse(BarnardB005EncodeError.OPEN_EVENT_CODE_HASH_MISMATCH)
+        }
+
+        var envelope = byteArrayOf(ENVELOPE_VERSION.toByte())
+        envelope += fields.registrar
+        envelope += fields.anchorOperator
+        envelope += fields.nonce
+        envelope += byteArrayOf(fields.authorityKeys.size.toByte())
+        for (key in fields.authorityKeys) envelope += key
+        envelope += byteArrayOf(fields.joinMode.toByte())
+        envelope += byteArrayOf((fields.eninSeconds shr 8).toByte(), fields.eninSeconds.toByte())
+        envelope += be32(fields.validFromEnin)
+        envelope += be32(fields.validThroughEnin)
+        envelope += be32(fields.relayExpiresAtEnin)
+        envelope += byteArrayOf(MAX_RELAY_HOPS.toByte())
+        envelope += fields.eventCodeHash
+        envelope += byteArrayOf(nameBytes.size.toByte())
+        envelope += nameBytes
+        envelope += byteArrayOf(fields.delegationCert.size.toByte())
+        envelope += fields.delegationCert
+
+        // Spec 122: the total is 165 + 33n + L + C, and the signature is the trailing 65 bytes.
+        val total = envelope.size + 65
+        if (total != 165 + 33 * fields.authorityKeys.size + nameBytes.size + fields.delegationCert.size || total > 508) {
+            return refuse(BarnardB005EncodeError.ENVELOPE_LENGTH)
+        }
+        return BarnardB005EncodeResult.Encoded(BarnardB005UnsignedEnvelope(envelope, sha256(signatureDomain + envelope)))
+    }
+
+    /**
+     * Appends the 65-byte `r‖s‖v` signature to a [toBeSigned] range, producing the signed envelope
+     * that [encodeContainer] wraps. Split from [encodeUnsignedEnvelope] because the signature is
+     * not knowable until after signing, and because an issuer's signing key may live elsewhere.
+     */
+    fun assembleSignedEnvelope(toBeSigned: ByteArray, signature: ByteArray): BarnardB005AssembleResult {
+        if (signature.size != 65) return BarnardB005AssembleResult.Refused(BarnardB005EncodeError.SIGNATURE_LENGTH)
+        if (toBeSigned.size + 65 > 508) return BarnardB005AssembleResult.Refused(BarnardB005EncodeError.ENVELOPE_LENGTH)
+        return BarnardB005AssembleResult.Assembled(toBeSigned + signature)
+    }
+
+    private fun be32(v: Long) = byteArrayOf((v shr 24).toByte(), (v shr 16).toByte(), (v shr 8).toByte(), v.toByte())
 
     private val signatureDomain = "barnard-b005-event-info:v1".encodeToByteArray()
 

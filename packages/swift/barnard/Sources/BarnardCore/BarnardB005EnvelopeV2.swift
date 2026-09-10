@@ -93,6 +93,81 @@ public struct BarnardB005VerifiedEnvelope {
 
 }
 
+/// Why a set of envelope fields cannot be encoded. Each case names the rule from
+/// `specification 122`'s signed-envelope table that the input breaks.
+///
+/// Every case here is a shape the shipped verifier would reject, so the encoder refuses to
+/// produce it: a producer that can emit bytes `verify` rejects is a defect in the producer.
+public enum BarnardB005EncodeError: Error, Equatable {
+  case registrarLength, anchorOperatorLength, nonceLength
+  case keyCount, keyLength, keyOrder
+  case joinMode, eninSeconds
+  case eventCodeHashLength
+  /// `joinMode == open` requires `eventCodeHash == SHA256(UTF8(lowercaseHex(eventId)))[0:8]`.
+  case openEventCodeHashMismatch
+  case displayNameLength, displayNameCharacters
+  case certLength
+  /// The window relations `verify` enforces: `validFromEnin < relayExpiresAtEnin <=
+  /// validThroughEnin`. An inverted or empty window is unsatisfiable there, so it is refused here.
+  case validityWindow
+  /// `relayExpiresAtEnin - validFromEnin` exceeds the 12-ENIN relay lifetime cap.
+  case relayLifetime
+  /// The assembled envelope would not fit the 508-byte `signedEnvelope` bound.
+  case envelopeLength
+  case signatureLength
+}
+
+/// The typed fields of a B005 v2 signed envelope, in the order
+/// [`specification 122`](https://github.com/levarac/barnard/blob/main/specs/122-b005-v2-signed-envelope/spec.md)
+/// lays them out. This is the encoder's input; `BarnardB005VerifiedEnvelope` is the decoder's
+/// output, and the two are deliberately separate types — one carries what an issuer chose, the
+/// other carries what a receiver established.
+public struct BarnardB005EnvelopeFields {
+  public let registrar: [UInt8]
+  public let anchorOperator: [UInt8]
+  public let nonce: [UInt8]
+  /// Compressed secp256k1 points, `1...8`, strictly ascending and unique.
+  public let authorityKeys: [[UInt8]]
+  public let joinMode: UInt8
+  public let eninSeconds: UInt16
+  public let validFromEnin: UInt32
+  public let validThroughEnin: UInt32
+  public let relayExpiresAtEnin: UInt32
+  public let eventCodeHash: [UInt8]
+  public let eventDisplayName: String
+  /// COSE_Sign1 delegation certificate, byte-identical to the bundle copy. Empty is
+  /// authority-direct mode.
+  public let delegationCert: [UInt8]
+
+  public init(registrar: [UInt8], anchorOperator: [UInt8], nonce: [UInt8], authorityKeys: [[UInt8]], joinMode: UInt8, eninSeconds: UInt16, validFromEnin: UInt32, validThroughEnin: UInt32, relayExpiresAtEnin: UInt32, eventCodeHash: [UInt8], eventDisplayName: String, delegationCert: [UInt8] = []) {
+    self.registrar = registrar
+    self.anchorOperator = anchorOperator
+    self.nonce = nonce
+    self.authorityKeys = authorityKeys
+    self.joinMode = joinMode
+    self.eninSeconds = eninSeconds
+    self.validFromEnin = validFromEnin
+    self.validThroughEnin = validThroughEnin
+    self.relayExpiresAtEnin = relayExpiresAtEnin
+    self.eventCodeHash = eventCodeHash
+    self.eventDisplayName = eventDisplayName
+    self.delegationCert = delegationCert
+  }
+}
+
+/// What an issuer signs, and what it signs it over.
+public struct BarnardB005UnsignedEnvelope {
+  /// The envelope from offset 0 up to but excluding the 65-byte signature — spec 122's `tbs`.
+  public let toBeSigned: [UInt8]
+  /// `SHA256("barnard-b005-event-info:v1" || tbs)`, the value an issuer signs (spec 122).
+  public let signatureDigest: [UInt8]
+
+  internal init(toBeSigned: [UInt8], signatureDigest: [UInt8]) {
+    self.toBeSigned = toBeSigned
+    self.signatureDigest = signatureDigest
+  }
+}
+
 /// The four scheduling fields a B005 v2 container carries, read after **structure validation
 /// only**: no signature check, no key recovery, no registry read, and no current ENIN.
 ///
@@ -264,6 +339,100 @@ public enum BarnardB005EnvelopeV2 {
     guard validateStructure(container: container) == nil else { return nil }
     let envelope = Array(container[4...])
     return readSchedulingFields(envelope, 74 + 33 * Int(envelope[73]))
+  }
+
+  /// The value at spec 122's offset `A+15`, which that table names `maxRelayHops` and pins to
+  /// `0x02` for `envelopeVersion 0x01`. Spec 134 requires the same value.
+  ///
+  /// Note for a future version: both cores validate this byte but neither reads it as a hop
+  /// limit — the two-hop bound is enforced by a separate constant — so a version that permitted
+  /// another value would need the relay path changed too. Tracked as barnard#209.
+  public static let maxRelayHops: UInt8 = 2
+
+  /// Encodes the canonical unsigned envelope for `fields`, together with the digest an issuer
+  /// signs, per `specification 122`'s signed-envelope table. Returns the error naming the rule
+  /// broken, rather than nil, so a caller learns which field to fix.
+  ///
+  /// **The encoder refuses anything `verify` would reject.** That is the point of it: an issuer
+  /// that can produce unverifiable bytes has only moved the failure later, to a venue with no
+  /// connectivity. So the window relations, the 12-ENIN relay cap, the open-mode event-code-hash
+  /// binding, key ordering and the length bound are all enforced here, on the producing side,
+  /// even though `verify` enforces them again on the consuming side.
+  ///
+  /// The layout is taken from the spec text rather than from `verify`'s reverse: an encoder
+  /// written as the decoder's inverse agrees with the decoder by construction and inherits
+  /// whatever the decoder assumes, which a round-trip test cannot detect because both sides
+  /// share the assumption. Byte-reproduction against the committed vectors is the check that
+  /// can actually fail.
+  public static func encodeUnsignedEnvelope(_ fields: BarnardB005EnvelopeFields) -> Result<BarnardB005UnsignedEnvelope, BarnardB005EncodeError> {
+    guard fields.registrar.count == 20 else { return .failure(.registrarLength) }
+    guard fields.anchorOperator.count == 20 else { return .failure(.anchorOperatorLength) }
+    guard fields.nonce.count == 32 else { return .failure(.nonceLength) }
+    guard (1...8).contains(fields.authorityKeys.count) else { return .failure(.keyCount) }
+    guard fields.authorityKeys.allSatisfy({ $0.count == 33 }) else { return .failure(.keyLength) }
+    for i in 1..<fields.authorityKeys.count {
+      guard lexicographicallyLess(fields.authorityKeys[i - 1], fields.authorityKeys[i]) else { return .failure(.keyOrder) }
+    }
+    guard fields.joinMode <= 1 else { return .failure(.joinMode) }
+    guard fields.eninSeconds != 0 else { return .failure(.eninSeconds) }
+    guard fields.eventCodeHash.count == 8 else { return .failure(.eventCodeHashLength) }
+
+    // verify requires validFromEnin <= currentEnin < relayExpiresAtEnin <= validThroughEnin, so a
+    // window that is inverted, or whose relay expiry sits at or before its start, is unsatisfiable
+    // there for every currentEnin. Refuse it here rather than emit bytes nobody can verify.
+    guard fields.validFromEnin < fields.relayExpiresAtEnin,
+          fields.relayExpiresAtEnin <= fields.validThroughEnin else { return .failure(.validityWindow) }
+    guard UInt64(fields.relayExpiresAtEnin) - UInt64(fields.validFromEnin) <= 12 else { return .failure(.relayLifetime) }
+
+    let nameBytes = Array(fields.eventDisplayName.utf8)
+    guard (1...64).contains(nameBytes.count) else { return .failure(.displayNameLength) }
+    guard fields.eventDisplayName.unicodeScalars.allSatisfy({ $0.value > 0x1f && $0.value != 0x7f }) else { return .failure(.displayNameCharacters) }
+    guard fields.delegationCert.count <= 255 else { return .failure(.certLength) }
+
+    guard let keySet = keySetDigest(fields.authorityKeys),
+          let eventId = computeEventId(registrar: fields.registrar, anchorOperator: fields.anchorOperator, nonce: fields.nonce, keySetDigest: keySet) else {
+      return .failure(.keyLength)
+    }
+    if fields.joinMode == 0 {
+      guard fields.eventCodeHash == openEventCodeHash(eventId: eventId) else { return .failure(.openEventCodeHashMismatch) }
+    }
+
+    var envelope: [UInt8] = [envelopeVersion]
+    envelope += fields.registrar
+    envelope += fields.anchorOperator
+    envelope += fields.nonce
+    envelope += [UInt8(fields.authorityKeys.count)]
+    for key in fields.authorityKeys { envelope += key }
+    envelope += [fields.joinMode]
+    envelope += [UInt8(fields.eninSeconds >> 8), UInt8(fields.eninSeconds & 0xff)]
+    envelope += be32(fields.validFromEnin)
+    envelope += be32(fields.validThroughEnin)
+    envelope += be32(fields.relayExpiresAtEnin)
+    envelope += [maxRelayHops]
+    envelope += fields.eventCodeHash
+    envelope += [UInt8(nameBytes.count)]
+    envelope += nameBytes
+    envelope += [UInt8(fields.delegationCert.count)]
+    envelope += fields.delegationCert
+
+    // Spec 122: the total is 165 + 33n + L + C, and the signature is the trailing 65 bytes.
+    guard envelope.count + 65 == 165 + 33 * fields.authorityKeys.count + nameBytes.count + fields.delegationCert.count,
+          envelope.count + 65 <= 508 else { return .failure(.envelopeLength) }
+
+    return .success(BarnardB005UnsignedEnvelope(toBeSigned: envelope, signatureDigest: BarnardCoreCrypto.sha256(signatureDomain + envelope)))
+  }
+
+  /// Appends the 65-byte `r‖s‖v` signature to a `toBeSigned` range, producing the signed envelope
+  /// that `encodeContainer` wraps. Split from `encodeUnsignedEnvelope` because the signature is
+  /// not knowable until after signing, and because an issuer's signing key may live elsewhere.
+  public static func assembleSignedEnvelope(toBeSigned: [UInt8], signature: [UInt8]) -> Result<[UInt8], BarnardB005EncodeError> {
+    guard signature.count == 65 else { return .failure(.signatureLength) }
+    guard toBeSigned.count + 65 <= 508 else { return .failure(.envelopeLength) }
+    return .success(toBeSigned + signature)
+  }
+
+  private static func be32(_ value: UInt32) -> [UInt8] {
+    [UInt8(value >> 24), UInt8((value >> 16) & 0xff), UInt8((value >> 8) & 0xff), UInt8(value & 0xff)]
   }
 
   private static let signatureDomain = Array("barnard-b005-event-info:v1".utf8)
