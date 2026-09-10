@@ -49,13 +49,25 @@ public struct BarnardB005VerifiedEnvelope {
   public let eventDisplayName: String
   public let validFromEnin: Int64
   public let validThroughEnin: Int64
+  /// The signed relay expiry, and the **exclusive** end of the half-open relay window
+  /// `[validFromEnin, relayExpiresAtEnin)` (spec 134: an envelope is relayable while
+  /// `currentEnin < relayExpiresAtEnin` and stops the moment `currentEnin` reaches it).
+  /// `verify` has already enforced `relayExpiresAtEnin <= validThroughEnin` and the 12-ENIN
+  /// lifetime cap, so a host may use this directly as a relay lease bound instead of falling
+  /// back to a pessimistic `currentEnin + 1`.
+  ///
+  /// The half-open convention here is settled by spec 134. `validThroughEnin`'s inclusivity is
+  /// not: it is treated throughout this SDK as the INCLUSIVE last valid ENIN, which is the
+  /// reading `registryAgreement` documents, and barnard#180 is the erratum that would settle it
+  /// normatively.
+  public let relayExpiresAtEnin: Int64
   public let eninSeconds: UInt16
   public let signedEnvelope: [UInt8]
 
   /// This SDK never assigns `.REGISTRY_VERIFIED`: doing so is the responsibility of the
   /// component that performed the authenticated registry read (the host app), per spec 122's
   /// receiver policy; tracked as beid#367 / dispatch#11 (P4).
-  internal init(receiverState: BarnardB005ReceiverState, relayHopCount: UInt8, eventId: [UInt8], keySetDigest: [UInt8], joinMode: UInt8, eventCodeHash: [UInt8], eventDisplayName: String, validFromEnin: Int64, validThroughEnin: Int64, eninSeconds: UInt16, signedEnvelope: [UInt8]) {
+  internal init(receiverState: BarnardB005ReceiverState, relayHopCount: UInt8, eventId: [UInt8], keySetDigest: [UInt8], joinMode: UInt8, eventCodeHash: [UInt8], eventDisplayName: String, validFromEnin: Int64, validThroughEnin: Int64, relayExpiresAtEnin: Int64, eninSeconds: UInt16, signedEnvelope: [UInt8]) {
     self.receiverState = receiverState
     self.relayHopCount = relayHopCount
     self.eventId = eventId
@@ -65,10 +77,44 @@ public struct BarnardB005VerifiedEnvelope {
     self.eventDisplayName = eventDisplayName
     self.validFromEnin = validFromEnin
     self.validThroughEnin = validThroughEnin
+    self.relayExpiresAtEnin = relayExpiresAtEnin
     self.eninSeconds = eninSeconds
     self.signedEnvelope = signedEnvelope
   }
 
+}
+
+/// The four scheduling fields a B005 v2 container carries, read after **structure validation
+/// only**: no signature check, no key recovery, no registry read, and no current ENIN.
+///
+/// **Trust boundary, in one sentence: a window a host acts on comes only from a verified
+/// envelope, and these values may be used solely to choose the ENIN it asks `verify` to run
+/// at.** An attacker controls every byte here, so treating any of them as a fact about the
+/// event is a defect; using them to decide *what to ask* is not, because the answer still
+/// comes from `verify`.
+///
+/// This exists because decode and time-parameterised verification are fused: `verify` takes a
+/// container and a `currentEnin`, so a host holding several pre-signed envelopes for one event
+/// must already know an envelope's window in order to verify it, and that window lives in bytes
+/// it has not decoded. Two alternatives were rejected and should not be reintroduced. A
+/// host-side parser copies spec 122's offsets into the host and creates removal debt. An
+/// unsigned schedule hint carried beside the envelopes is unverifiable by construction: `verify`
+/// sees only the container and `currentEnin` and never sees the hint, so a hint claiming
+/// `[100, 112)` over a signed `[100, 105)` verifies at the hinted start and the extra ENINs are
+/// checked by nothing.
+public struct BarnardB005SchedulingFields {
+  public let validFromEnin: Int64
+  public let validThroughEnin: Int64
+  /// Exclusive end of the half-open relay window, as on `BarnardB005VerifiedEnvelope`.
+  public let relayExpiresAtEnin: Int64
+  public let eninSeconds: UInt16
+
+  internal init(validFromEnin: Int64, validThroughEnin: Int64, relayExpiresAtEnin: Int64, eninSeconds: UInt16) {
+    self.validFromEnin = validFromEnin
+    self.validThroughEnin = validThroughEnin
+    self.relayExpiresAtEnin = relayExpiresAtEnin
+    self.eninSeconds = eninSeconds
+  }
 }
 
 /// The subset of parallax's anchored `EventDefinitionV1` (protocol/spec/v0.1/event-definition.md)
@@ -182,6 +228,35 @@ public enum BarnardB005EnvelopeV2 {
     guard 165 + 33 * n + nameLength + certLength == envelope.count else { return .fieldLayout }
     return nil
   }
+  /// Reads the four scheduling fields at the offsets spec 122 fixes, from an envelope body that
+  /// has already passed `validateStructure`. `a` is the post-key-set base offset,
+  /// `74 + 33 * n`.
+  ///
+  /// This is the single offset table for those four fields: `verify` and
+  /// `schedulingFields(container:)` both read through it, so the trusted and untrusted paths
+  /// cannot come to disagree about where a window lives in the bytes.
+  private static func readSchedulingFields(_ envelope: [UInt8], _ a: Int) -> BarnardB005SchedulingFields {
+    BarnardB005SchedulingFields(
+      validFromEnin: Int64(read32(envelope, a + 3)),
+      validThroughEnin: Int64(read32(envelope, a + 7)),
+      relayExpiresAtEnin: Int64(read32(envelope, a + 11)),
+      eninSeconds: read16(envelope, a + 1))
+  }
+
+  /// Structure-only scheduling accessor: the window a container claims, before any signature,
+  /// key recovery, registry read or clock. Returns nil when `validateStructure` rejects the
+  /// container, so a caller receives four fields or none -- never a partial read of a malformed
+  /// container.
+  ///
+  /// **The values are untrusted.** See `BarnardB005SchedulingFields` for the trust boundary:
+  /// use them only to choose the `currentEnin` to pass to `verify`, and take every value a host
+  /// acts on from `verify`'s result.
+  public static func schedulingFields(container: [UInt8]) -> BarnardB005SchedulingFields? {
+    guard validateStructure(container: container) == nil else { return nil }
+    let envelope = Array(container[4...])
+    return readSchedulingFields(envelope, 74 + 33 * Int(envelope[73]))
+  }
+
   private static let signatureDomain = Array("barnard-b005-event-info:v1".utf8)
 
   public static func eventKeySetBytes(_ keys: [[UInt8]]) -> [UInt8]? {
@@ -229,8 +304,9 @@ public enum BarnardB005EnvelopeV2 {
       keys.append(key)
     }
     let joinMode = envelope[a]
-    let eninSeconds = read16(envelope, a + 1)
-    let validFrom = Int64(read32(envelope, a + 3)), validThrough = Int64(read32(envelope, a + 7)), expires = Int64(read32(envelope, a + 11))
+    let scheduling = readSchedulingFields(envelope, a)
+    let eninSeconds = scheduling.eninSeconds
+    let validFrom = scheduling.validFromEnin, validThrough = scheduling.validThroughEnin, expires = scheduling.relayExpiresAtEnin
     let codeHash = Array(envelope[(a + 16)..<(a + 24)])
     let nameLength = Int(envelope[a + 24])
     let nameStart = a + 25, certLengthOffset = nameStart + nameLength
@@ -271,7 +347,7 @@ public enum BarnardB005EnvelopeV2 {
       signatureKey = recoverMember(signature, digest: digest, keys: keys, recoverer: recoverer)
     }
     guard signatureKey != nil else { return nil }
-    return BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: container[1], eventId: eventId, keySetDigest: ksDigest, joinMode: joinMode, eventCodeHash: codeHash, eventDisplayName: name, validFromEnin: validFrom, validThroughEnin: validThrough, eninSeconds: eninSeconds, signedEnvelope: envelope)
+    return BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: container[1], eventId: eventId, keySetDigest: ksDigest, joinMode: joinMode, eventCodeHash: codeHash, eventDisplayName: name, validFromEnin: validFrom, validThroughEnin: validThrough, relayExpiresAtEnin: expires, eninSeconds: eninSeconds, signedEnvelope: envelope)
   }
 
   /// Pure comparison of a `.RADIO_SELF_VERIFIED` envelope against a registered

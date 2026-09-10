@@ -12,6 +12,32 @@ driver draws the drafted summary from (see `RELEASING.md`).
 
 ## Unreleased — 0.9.0
 
+### Added
+
+- **`BarnardB005VerifiedEnvelope.relayExpiresAtEnin`** (Swift and Kotlin). `verify` already
+  parsed the signed relay expiry and enforced `currentEnin < relayExpiresAtEnin <=
+  validThroughEnin` and the 12-ENIN lifetime cap against it, then dropped it before returning
+  the receipt. It is now carried. A host implementing a relay verifier can return the true
+  signed expiry instead of falling back to a pessimistic `currentEnin + 1`, which re-verified
+  and re-leased every ENIN even when the envelope said it stayed valid for an hour.
+  `validFromEnin`, `validThroughEnin` and `eninSeconds` were already public and are unchanged.
+  (barnard#197)
+
+- **`BarnardB005EnvelopeV2.schedulingFields(container:)`** and the
+  **`BarnardB005SchedulingFields`** value type (Swift and Kotlin, identical field names). Given
+  a container, it returns the claimed `validFromEnin`, `validThroughEnin`,
+  `relayExpiresAtEnin` and `eninSeconds` after **structure validation only** — no signature, no
+  key recovery, no registry read, no clock — or nothing at all if the container is malformed.
+
+  **The values are untrusted, and the trust boundary is not optional.** A host that holds
+  several pre-signed envelopes for one event needs an envelope's window in order to choose the
+  ENIN to verify it at, and that window lives in bytes it has not decoded. This accessor exists
+  to break that circularity and for nothing else: use it to decide *what to ask*, and take
+  every value acted on from the verified result. (barnard#203)
+
+Both are additive. No existing member changes meaning, no wire format, schema or stored data
+changes, and `BarnardB005VerifiedEnvelope` still has no public constructor on either platform.
+
 ### Fixed
 
 - **A B005 v2 envelope no longer has to span its event definition exactly.**

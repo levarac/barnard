@@ -114,6 +114,76 @@ class BarnardB005EnvelopeV2Test {
 
     // --- Registry agreement (pure comparison; this SDK never assigns REGISTRY_VERIFIED) ---
 
+    // --- Signed relay expiry and the structural scheduling accessor (barnard#197, #203) ---
+
+    /**
+     * [BarnardB005EnvelopeV2.verify] parses `relayExpiresAtEnin`, enforces `currentEnin <
+     * relayExpiresAtEnin <= validThroughEnin` and the 12-ENIN cap against it, and now carries it
+     * on the receipt instead of discarding it. Asserted against the committed conformance vector,
+     * so a value that disagrees with the vector fails.
+     */
+    @Test fun verifiedEnvelopeExposesSignedWindowFromVector() {
+        val container = hex(v("v1_container"))
+        val verified = assertNotNull(BarnardB005EnvelopeV2.verify(container, 6_000_000L), "expected the v1 vector container to verify")
+        assertEquals(v("v1_relay_expires_at_enin").toLong(), verified.relayExpiresAtEnin, "relayExpiresAtEnin must match the vector")
+        assertEquals(v("v1_valid_from_enin").toLong(), verified.validFromEnin, "validFromEnin must match the vector")
+        assertEquals(v("v1_valid_through_enin").toLong(), verified.validThroughEnin, "validThroughEnin must match the vector")
+        assertEquals(v("v1_enin_seconds").toInt(), verified.eninSeconds, "eninSeconds must match the vector")
+
+        // The relay window is half-open, so the expiry ENIN itself is outside it while the one
+        // before it is inside -- the property a host leases against.
+        assertNotNull(BarnardB005EnvelopeV2.verify(container, verified.relayExpiresAtEnin - 1), "the ENIN before expiry is still relayable")
+        assertNull(BarnardB005EnvelopeV2.verify(container, verified.relayExpiresAtEnin), "the expiry ENIN itself is not relayable")
+    }
+
+    /**
+     * The structural accessor reads the same four fields without a signature, a key recovery, a
+     * registry read or a clock. Both vector containers are checked, and each is cross-checked
+     * against `verify`'s own result: the untrusted read and the trusted read go through one offset
+     * table, so they must agree on every field.
+     */
+    @Test fun schedulingFieldsMatchVectorAndAgreeWithVerify() {
+        val v1 = assertNotNull(BarnardB005EnvelopeV2.schedulingFields(hex(v("v1_container"))), "expected scheduling fields for the v1 vector container")
+        assertEquals(v("v1_valid_from_enin").toLong(), v1.validFromEnin)
+        assertEquals(v("v1_valid_through_enin").toLong(), v1.validThroughEnin)
+        assertEquals(v("v1_relay_expires_at_enin").toLong(), v1.relayExpiresAtEnin)
+        assertEquals(v("v1_enin_seconds").toInt(), v1.eninSeconds)
+
+        for (key in listOf("v1_container", "v2_container")) {
+            val container = hex(v(key))
+            val structural = assertNotNull(BarnardB005EnvelopeV2.schedulingFields(container), "expected scheduling fields for $key")
+            val verified = assertNotNull(BarnardB005EnvelopeV2.verify(container, structural.validFromEnin), "expected $key to verify at its own validFromEnin")
+            assertEquals(structural.validFromEnin, verified.validFromEnin, "$key: validFromEnin")
+            assertEquals(structural.validThroughEnin, verified.validThroughEnin, "$key: validThroughEnin")
+            assertEquals(structural.relayExpiresAtEnin, verified.relayExpiresAtEnin, "$key: relayExpiresAtEnin")
+            assertEquals(structural.eninSeconds, verified.eninSeconds, "$key: eninSeconds")
+        }
+    }
+
+    /**
+     * A malformed container yields no accessor result rather than partial fields. Both a
+     * first-guard rejection (truncation) and a LAST-guard rejection (the length arithmetic, which
+     * is the final check [BarnardB005EnvelopeV2.validateStructure] runs) are exercised, so "no
+     * partial fields" is not tested only at the point where nothing has been read yet.
+     */
+    @Test fun schedulingFieldsRejectsMalformedContainerWithoutPartialFields() {
+        val container = hex(v("v1_container"))
+
+        assertNull(BarnardB005EnvelopeV2.schedulingFields(ByteArray(0)), "empty container")
+        assertNull(BarnardB005EnvelopeV2.schedulingFields(container.copyOfRange(0, 120)), "truncated container")
+
+        // Last guard: 165 + 33n + nameLength + certLength must equal the envelope length. The
+        // vector is n=1, nameLength=58, certLength=0 summing to 256; raising the certLength byte
+        // breaks only that final equality, so every earlier structural check still passes.
+        val n = container[4 + 73].toInt() and 0xff
+        val nameLength = container[4 + 74 + 33 * n + 24].toInt() and 0xff
+        val certLengthContainerOffset = 4 + 74 + 33 * n + 25 + nameLength
+        assertNull(BarnardB005EnvelopeV2.validateStructure(container), "the unmodified vector container is structurally valid")
+        val badCertLength = container.copyOf().also { it[certLengthContainerOffset] = 1 }
+        assertEquals(BarnardB005StructureError.FIELD_LAYOUT, BarnardB005EnvelopeV2.validateStructure(badCertLength), "expected the final length-arithmetic guard to reject")
+        assertNull(BarnardB005EnvelopeV2.schedulingFields(badCertLength), "a container failing the last structural guard yields no fields")
+    }
+
     @Test fun registryAgreementRequiresFullAgreement() {
         val container = hex(v("v1_container"))
         val verified = BarnardB005EnvelopeV2.verify(container, 6_000_000) ?: error("expected RADIO_SELF_VERIFIED baseline")
@@ -251,12 +321,13 @@ class BarnardB005EnvelopeV2Test {
      */
     @Test fun registryAgreementRejectsInvertedEnvelopeWindow() {
         val envelope = synthesizeWindow(eninSeconds = 300, validFromEnin = 22, validThroughEnin = 33)
-        // validFromEnin=22, validThroughEnin=10. Both bounds below are chosen so that each side of
+        // validFromEnin=22, validThroughEnin=10; relayExpiresAtEnin is not read by
+        // registryAgreement and carries no meaning for this case. Both bounds below are chosen so that each side of
         // the containment test passes on its own and only the ordering check refuses them, which is
         // what makes this a witness for the guard rather than for the arithmetic.
         val inverted = BarnardB005VerifiedEnvelope.radioSelfVerified(
             0, envelope.eventId, envelope.keySetDigest, envelope.joinMode, envelope.eventCodeHash,
-            envelope.eventDisplayName, 22L, 10L, 300, envelope.signedEnvelope,
+            envelope.eventDisplayName, 22L, 10L, 22L, 300, envelope.signedEnvelope,
         )
         fun definition(validFrom: Long, validUntil: Long) = BarnardEventDefinitionV1(
             envelope.eventId, envelope.keySetDigest, envelope.joinMode, envelope.eventCodeHash,
@@ -297,7 +368,7 @@ class BarnardB005EnvelopeV2Test {
         // the internal factory to exercise registryAgreement's own defense in depth.
         val zeroEninEnvelope = BarnardB005VerifiedEnvelope.radioSelfVerified(
             0, envelope.eventId, envelope.keySetDigest, envelope.joinMode, envelope.eventCodeHash,
-            envelope.eventDisplayName, 0L, 0L, 0, envelope.signedEnvelope,
+            envelope.eventDisplayName, 0L, 0L, 0L, 0, envelope.signedEnvelope,
         )
         assertEquals(BarnardRegistryAgreement.Mismatched(setOf(BarnardRegistryMismatchField.VALIDITY_WINDOW)), BarnardB005EnvelopeV2.registryAgreement(zeroEninEnvelope, definition(validFrom = 0, validUntil = 299)), "eninSeconds=0 must not agree")
     }
