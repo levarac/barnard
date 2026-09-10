@@ -120,7 +120,10 @@ relayExpiresAtEnin)`: an envelope is relayable while `currentEnin <
 relayExpiresAtEnin` and stops the moment `currentEnin` reaches
 `relayExpiresAtEnin`, so a lifetime of 12 covers exactly 12 ENIN values. Under
 B004's 300-second default that is one hour. Longer events require
-authority or delegate refresh (a new envelope with a later `validFromEnin`). A
+authority or delegate refresh (a new envelope with a later `validFromEnin`). One
+on-chain definition covers the whole event: a refresh does not register a second
+definition, it re-issues an envelope whose window sits **inside** the one
+definition's window, which is what step 4's containment check below admits. A
 receiver MUST NOT extend expiry.
 
 A receiver MUST, in this order:
@@ -128,8 +131,10 @@ A receiver MUST, in this order:
 1. enforce the 512-byte container bound and canonical envelope structure;
 2. verify the authority key or delegation chain and signature;
 3. obtain the authoritative on-chain definition for `eventId`;
-4. require exact `eventId`, `eventCodeHash`, validity-window, and signer-authority
-   agreement with that definition;
+4. require exact `eventId`, `eventCodeHash`, and signer-authority agreement with that
+   definition, and require the envelope's validity window to be **contained** in the
+   definition's: `definitionStart <= validFromEnin` and `validThroughEnin <=
+   definitionEnd`;
 5. require `validFromEnin <= currentEnin < relayExpiresAtEnin <=
    validThroughEnin`; and
 6. only then expose the event to host display or relay APIs.
@@ -167,6 +172,28 @@ that impersonating an existing event, or pairing a genuine event-code hash with 
 misleading display name, become infeasible for a third party at first sight. The
 byte layout that makes this possible is fixed by
 [`specification 122`](../122-b005-v2-signed-envelope/spec.md).
+
+*Erratum (2026-09-10), validity-window containment:* step 4 originally required
+**exact** validity-window agreement with the on-chain definition. That is unsatisfiable
+for any definition covering more than 12 ENINs, and it contradicts the refresh sentence
+in *Minimal signed-envelope contract shared with issue #122* ("Longer events require
+authority or delegate refresh (a new envelope with a later `validFromEnin`)"). Exact
+agreement forces every envelope to carry `validFromEnin = definitionStart`, and the
+12-ENIN relay lifetime cap then forces `relayExpiresAtEnin <= definitionStart + 12`, so
+after the first 12 ENINs no envelope can satisfy both step 4 and step 5: no candidate
+display, no join, no relay for the rest of the event. The refresh that sentence
+prescribes is exactly what exact agreement rejected. Step 4 therefore requires
+**containment** of the envelope's window in the definition's, `definitionStart <=
+validFromEnin` and `validThroughEnin <= definitionEnd`, and one definition per event
+remains the model. The 12-ENIN cap on `relayExpiresAtEnin - validFromEnin` is unchanged,
+step 5 is unchanged, and nothing about who signs changes. Of the four agreements the
+display-name erratum above left in step 4, three (`eventId`, `eventCodeHash`,
+signer-authority) remain **exact** and only the validity-window one becomes containment;
+read that erratum's "other four agreements" clause in that light. The freshness bullet
+of [`specification 122`](../122-b005-v2-signed-envelope/spec.md) (*Freshness and
+relay-eligibility are two different states*) already presumes as much: it calls
+`validFromEnin` the envelope's *issue point*, which moves from refresh to refresh while
+the definition it sits inside does not.
 
 ## Relay eligibility and the one-event cap
 
@@ -274,9 +301,14 @@ policy, but is not the protocol default.
   probabilistic suppression, bounded retry policy, and bounded state limit
   conforming amplification. A malicious implementation can ignore congestion
   rules; receivers still apply signature, definition, and expiry checks.
-- **Fake events and tampering:** a valid signature plus exact on-chain definition
-  agreement is required before display as verified or relay. A copied signature
-  cannot authorize changed display text, hash, validity, event ID, or hop limit.
+- **Fake events and tampering:** a valid signature plus on-chain definition
+  agreement is required before display as verified or relay — exact agreement on
+  `eventId`, `eventCodeHash` and signer-authority, and containment of the
+  envelope's validity window in the definition's (see step 4 and its 2026-09-10
+  erratum). A copied signature cannot authorize changed display text, hash,
+  validity, event ID, or hop limit; containment does not weaken that, because
+  every one of those fields is still signed and the window an envelope may claim
+  is still bounded by the definition on both sides.
 - **Wrong-venue replay:** a genuine unexpired event can be replayed at another
   venue. Signatures do not prove physical location. Host UX and explicit event
   selection contain this risk; relay volume MUST NOT be treated as location
