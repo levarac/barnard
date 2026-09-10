@@ -242,7 +242,14 @@ Steps 1–7 require no network and produce the `authenticated` tier. Step 8 is t
      `relayExpiresAtEnin - validFromEnin <= 12`.
    - If ENIN cannot be established, **fail closed**: no relay, no verified display.
 8. *(Online, optional.)* Obtain and verify the anchored `EventDefinitionV1` for this `eventId` and
-   require agreement. Success raises the tier to `registered`.
+   require agreement. Success raises the tier to `registered`. Agreement on `eventId`,
+   `eventCodeHash` and signer-authority is exact; agreement on the validity window is
+   **containment** of the envelope's window in the definition's, not equality, so a refresh
+   envelope carrying a later `validFromEnin` inside the same definition agrees. See
+   [`specification 134`](../134-b005-participant-relay/spec.md), receiver step 4 and its
+   *validity-window containment* erratum of 2026-09-10. Exact window equality would contradict
+   pre-issuance and the *issue point* reading of `validFromEnin` recorded in this document
+   (*Freshness and relay-eligibility are two different states*) and in *Not liveness* above.
 
 ### Receiver policy — the display and relay gate
 

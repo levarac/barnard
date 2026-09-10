@@ -287,7 +287,15 @@ object BarnardB005EnvelopeV2 {
      * responsibility of the component that performed the authenticated registry read (the host
      * app), per spec 122's receiver policy; tracked as beid#367 / dispatch#11 (P4).
      *
-     * Spec 134 step 4 requires "exact ... validity-window ... agreement", not containment.
+     * Spec 134 step 4 requires validity-window CONTAINMENT, not equality: the envelope's window
+     * must lie inside the definition's, `definitionStart <= validFromEnin` and `validThroughEnin
+     * <= definitionEnd` (spec 134 erratum of 2026-09-10; see barnard#200). Equality made the rule
+     * unsatisfiable for any definition longer than the 12-ENIN relay cap: spec 134:122-123 directs
+     * an issuer to refresh with a LATER `validFromEnin`, and equality rejected every such refresh
+     * as a `VALIDITY_WINDOW` mismatch, so nothing was servable after the first 12 ENINs. The cap
+     * itself (`relayExpiresAtEnin - validFromEnin <= 12`) and step 5 are unchanged and stay in
+     * [verify]. Spec 122:477-482 calls `validFromEnin` the issue point, which likewise presumes it
+     * can move.
      * `validThroughEnin` is treated as the INCLUSIVE last valid ENIN (window `[validFromEnin,
      * validThroughEnin]`): spec 122 never states its own convention for this field, but parallax's
      * `event-definition.md` (`validFrom`/`validUntil`, lines 52-53) is explicitly inclusive on both
@@ -295,9 +303,16 @@ object BarnardB005EnvelopeV2 {
      * spec 122:211) is likewise inclusive -- this is an issuer derivation erratum, tracked in the
      * spec 122 errata. `eninSeconds`-denominated ENINs each cover `eninSeconds` consecutive Unix
      * seconds, so the registry's inclusive Unix-second window is converted to the same inclusive
-     * ENIN shape conservatively (start rounded up, end rounded down) before the two windows are
-     * compared for exact equality. A registry window that does not fall on ENIN boundaries
-     * converts to an empty range and can never agree with anything.
+     * ENIN shape conservatively (start rounded up, end rounded down) before the envelope's window
+     * is tested for containment in it. A registry window that does not fall on ENIN boundaries
+     * converts to an empty range and still agrees with nothing: containment also requires the
+     * envelope's own window to be well formed (`validFromEnin <= validThroughEnin`), so the chain
+     * `registryStart <= validFromEnin <= validThroughEnin <= registryEnd` is unsatisfiable whenever
+     * `registryEnd < registryStart`. Under equality that emptiness argument needed nothing from the
+     * envelope; under containment it does, so well-formedness is re-checked here rather than
+     * inherited from [verify]'s `validFromEnin <= currentEnin < relayExpiresAtEnin <=
+     * validThroughEnin` -- the same defense-in-depth footing as the `eninSeconds <= 0` rejection
+     * below.
      *
      * The conversion is `expectedFrom = ceilDiv(validFromUnixSeconds, eninSeconds)` and
      * `expectedThrough = floorDiv(validUntilUnixSeconds + 1, eninSeconds) - 1` (spec 122 erratum
@@ -325,12 +340,16 @@ object BarnardB005EnvelopeV2 {
             val r = Math.floorMod(validUntil, eninPerSecond)
             if (r == eninPerSecond - 1L) q else q - 1
         }
+        val windowIsContained = registryStartEnin != null && registryEndEnin != null &&
+            verified.validFromEnin <= verified.validThroughEnin &&
+            registryStartEnin <= verified.validFromEnin &&
+            verified.validThroughEnin <= registryEndEnin
         val mismatches = buildSet {
             if (!verified.eventId.contentEquals(definition.eventId)) add(BarnardRegistryMismatchField.EVENT_ID)
             if (!verified.eventCodeHash.contentEquals(definition.eventCodeHash)) add(BarnardRegistryMismatchField.EVENT_CODE_HASH)
             if (!verified.keySetDigest.contentEquals(definition.keySetDigest)) add(BarnardRegistryMismatchField.KEY_SET_DIGEST)
             if (verified.joinMode != definition.joinMode) add(BarnardRegistryMismatchField.JOIN_MODE)
-            if (registryStartEnin != verified.validFromEnin || registryEndEnin != verified.validThroughEnin) add(BarnardRegistryMismatchField.VALIDITY_WINDOW)
+            if (!windowIsContained) add(BarnardRegistryMismatchField.VALIDITY_WINDOW)
         }
         return if (mismatches.isEmpty()) BarnardRegistryAgreement.Agrees else BarnardRegistryAgreement.Mismatched(mismatches)
     }

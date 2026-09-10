@@ -173,11 +173,92 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     let singleEnin = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: aligned.validFromUnixSeconds, validUntilUnixSeconds: 3299)
     XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: singleEnin), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "validThroughEnin=11 must not agree with [3000, 3299]")
 
-    // Off-by-one ENIN at both ends of the aligned registry window must still be rejected.
-    let startOffByOne = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: 2700, validUntilUnixSeconds: aligned.validUntilUnixSeconds)
-    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: startOffByOne), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "start off-by-one must not agree")
+    // Widening the registry window at the START is exactly the refresh case spec 134's
+    // validity-window containment erratum (2026-09-10) admits: "definitionStart <= validFromEnin".
+    // Registry seconds [2700, 3599] is ENIN [9, 11]; the envelope's [10, 11] sits inside it, so it
+    // agrees. This assertion states the erratum, not a relaxation of the old one -- under exact
+    // agreement a definition that merely started earlier was rejected, which is what made every
+    // refresh envelope unservable past the 12-ENIN cap.
+    let startWidened = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: 2700, validUntilUnixSeconds: aligned.validUntilUnixSeconds)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: startWidened), .agrees, "a definition starting before validFromEnin contains the envelope window")
+
+    // Narrowing at the END is still rejected: containment requires validThroughEnin <= definitionEnd.
     let endOffByOne = BarnardEventDefinitionV1(eventId: aligned.eventId, keySetDigest: aligned.keySetDigest, joinMode: aligned.joinMode, eventCodeHash: aligned.eventCodeHash, validFromUnixSeconds: aligned.validFromUnixSeconds, validUntilUnixSeconds: 3299)
     XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(misaligned, definition: endOffByOne), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "end off-by-one must not agree")
+  }
+
+  // MARK: - Validity-window containment (spec 134 erratum 2026-09-10; barnard#200)
+
+  /// The refresh case the erratum exists for. One definition covers ENIN [10, 40] -- 31 ENINs,
+  /// well past the 12-ENIN relay lifetime cap -- and an envelope re-issued for the slice [22, 33]
+  /// sits inside it. Under the old exact-agreement rule this envelope was rejected as a
+  /// `.VALIDITY_WINDOW` mismatch, which is precisely why nothing was servable after the first 12
+  /// ENINs of any longer event.
+  ///
+  /// Registry seconds are the inclusive ENIN window scaled by `eninSeconds`: ENIN [10, 40] is
+  /// seconds [10 * 300, (40 + 1) * 300 - 1] = [3000, 12299].
+  func testRegistryAgreementAcceptsRefreshedEnvelopeInsideDefinitionWindow() throws {
+    let refreshed = synthesizeWindow(eninSeconds: 300, validFromEnin: 22, validThroughEnin: 33)
+    let definition = BarnardEventDefinitionV1(eventId: refreshed.eventId, keySetDigest: refreshed.keySetDigest, joinMode: refreshed.joinMode, eventCodeHash: refreshed.eventCodeHash, validFromUnixSeconds: 3000, validUntilUnixSeconds: 12_299)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(refreshed, definition: definition), .agrees, "a later validFromEnin inside the definition window must agree")
+  }
+
+  /// The two containment failures, each isolating one side of
+  /// `definitionStart <= validFromEnin` and `validThroughEnin <= definitionEnd`.
+  func testRegistryAgreementRejectsEnvelopeOutsideDefinitionWindow() throws {
+    let refreshed = synthesizeWindow(eninSeconds: 300, validFromEnin: 22, validThroughEnin: 33)
+
+    // validFromEnin < definitionStart: definition ENIN [25, 40] is seconds [7500, 12299]; the
+    // envelope starts at 22, three ENINs before the definition does.
+    let startsTooEarly = BarnardEventDefinitionV1(eventId: refreshed.eventId, keySetDigest: refreshed.keySetDigest, joinMode: refreshed.joinMode, eventCodeHash: refreshed.eventCodeHash, validFromUnixSeconds: 7_500, validUntilUnixSeconds: 12_299)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(refreshed, definition: startsTooEarly), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "validFromEnin before definitionStart must not agree")
+
+    // validThroughEnin > definitionEnd: definition ENIN [10, 30] is seconds [3000, 9299]; the
+    // envelope runs through 33, three ENINs past the definition's end.
+    let endsTooLate = BarnardEventDefinitionV1(eventId: refreshed.eventId, keySetDigest: refreshed.keySetDigest, joinMode: refreshed.joinMode, eventCodeHash: refreshed.eventCodeHash, validFromUnixSeconds: 3_000, validUntilUnixSeconds: 9_299)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(refreshed, definition: endsTooLate), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "validThroughEnin past definitionEnd must not agree")
+  }
+
+  /// The 12-ENIN relay lifetime cap is unchanged by the erratum, and it is enforced in `verify`,
+  /// not in `registryAgreement` -- so containment does not let a long-lived envelope through some
+  /// other door. `synthesizeWindowContainer` sets `relayExpiresAtEnin = validThroughEnin`, so a
+  /// window of [0, 13] is a lifetime of 13 and must be refused at the wire.
+  func testVerifyRejectsRelayLifetimeOverTwelveEnins() throws {
+    let recoverer = AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))
+    let atCap = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 0, validThroughEnin: 12)
+    XCTAssertNotNil(BarnardB005EnvelopeV2.verify(container: atCap, currentEnin: 0, nameValidator: nameValidator, recoverer: recoverer), "a lifetime of exactly 12 is still accepted")
+    let overCap = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 0, validThroughEnin: 13)
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overCap, currentEnin: 0, nameValidator: nameValidator, recoverer: recoverer), "a lifetime of 13 must still be rejected")
+  }
+
+  /// Containment makes an inverted ENVELOPE window reachable in a way exact agreement did not.
+  /// Under equality, a registry window that does not fall on ENIN boundaries converts to an empty
+  /// range and could never equal anything, whatever the envelope carried. Under containment,
+  /// `registryStart <= validFromEnin && validThroughEnin <= registryEnd` is satisfiable by an
+  /// empty range exactly when `validThroughEnin < validFromEnin` -- so the emptiness argument now
+  /// depends on the envelope's own window being ordered. `verify` guarantees that ordering, but
+  /// `registryAgreement` is a separate function, so it re-checks rather than inherits, on the same
+  /// footing as its `eninSeconds <= 0` branch. Built through the internal initializer because
+  /// `verify` will not produce an inverted window.
+  func testRegistryAgreementRejectsInvertedEnvelopeWindow() throws {
+    let envelope = synthesizeWindow(eninSeconds: 300, validFromEnin: 22, validThroughEnin: 33)
+    // validFromEnin=22, validThroughEnin=10. Both bounds below are chosen so that each side of
+    // the containment test passes on its own and only the ordering check refuses them, which is
+    // what makes this a witness for the guard rather than for the arithmetic.
+    let inverted = BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: 0, eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, eventDisplayName: envelope.eventDisplayName, validFromEnin: 22, validThroughEnin: 10, eninSeconds: 300, signedEnvelope: envelope.signedEnvelope)
+
+    // A well-formed definition, ENIN [10, 40] as seconds [3000, 12299]: 10 <= 22 and 10 <= 40 both
+    // hold, so without the ordering check this inverted envelope would agree.
+    let wide = BarnardEventDefinitionV1(eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, validFromUnixSeconds: 3_000, validUntilUnixSeconds: 12_299)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(inverted, definition: wide), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "an inverted envelope window must not agree with a window that spans it")
+
+    // And the empty range an off-boundary registry window converts to: seconds [3001, 3299] is
+    // ENIN start ceil(3001/300) = 11, end floorDiv(3300, 300) - 1 = 10, i.e. the empty [11, 10].
+    // 11 <= 22 and 10 <= 10 both hold, so this is the exact shape that would let an EMPTY registry
+    // range agree with something -- the claim the rationale comment makes -- if the envelope's own
+    // window were not required to be ordered.
+    let emptyRange = BarnardEventDefinitionV1(eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, validFromUnixSeconds: 3_001, validUntilUnixSeconds: 3_299)
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(inverted, definition: emptyRange), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "an empty registry range must still agree with nothing")
   }
 
   func testRegistryAgreementFailsClosedOnInvalidRegistryWindow() throws {
@@ -207,11 +288,18 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
   func testRegistryAgreementEndConversionIsOverflowSafeAtInt64Max() throws {
     // eninPerSecond=1 makes floorMod(Int64.max, 1)==0==eninPerSecond-1, which is exactly the
     // branch that would try to compute Int64.max + 1 (overflowing/trapping) without the
-    // floorMod-identity guard in registryAgreement. Must not crash or wrap to a value that could
-    // spuriously agree with a small validThroughEnin.
+    // floorMod-identity guard in registryAgreement.
+    //
+    // Under spec 134's containment erratum (2026-09-10) the expected verdict here is `.agrees`,
+    // and that is the STRONGER assertion, not a weakened one. Registry seconds [10, Int64.max] at
+    // eninSeconds=1 is ENIN [10, Int64.max], which genuinely contains the envelope's [10, 11], so
+    // containment holds -- but only if the end conversion did not wrap. Had it overflowed to a
+    // negative registryEndEnin, `validThroughEnin <= registryEndEnin` would fail and this would
+    // report a mismatch. So `.agrees` is precisely the statement that no wrap occurred; under the
+    // old exact rule the same probe could only say "did not wrap INTO an equality".
     let envelope = synthesizeWindow(eninSeconds: 1, validFromEnin: 10, validThroughEnin: 11)
     let definition = BarnardEventDefinitionV1(eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, validFromUnixSeconds: 10, validUntilUnixSeconds: Int64.max)
-    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(envelope, definition: definition), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "must not overflow into a spurious agreement")
+    XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(envelope, definition: definition), .agrees, "an unwrapped Int64.max end contains ENIN [10, 11]")
   }
 
   /// Builds a structurally-valid `RADIO_SELF_VERIFIED` envelope with a caller-chosen
@@ -221,6 +309,17 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
   /// validFromEnin`: a verified envelope's `expires` field must satisfy `validFromEnin <=
   /// currentEnin < expires <= validThroughEnin`, which is unsatisfiable when the two are equal.
   private func synthesizeWindow(eninSeconds: UInt16, validFromEnin: Int64, validThroughEnin: Int64) -> BarnardB005VerifiedEnvelope {
+    let container = synthesizeWindowContainer(eninSeconds: eninSeconds, validFromEnin: validFromEnin, validThroughEnin: validThroughEnin)
+    guard let result = BarnardB005EnvelopeV2.verify(container: container, currentEnin: validFromEnin, nameValidator: nameValidator, recoverer: AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))) else {
+      fatalError("expected synthetic window container to verify")
+    }
+    return result
+  }
+
+  /// The container half of `synthesizeWindow`, without the verification step, so a test can assert
+  /// that `verify` REJECTS a window (the 12-ENIN relay lifetime cap) rather than only exercising
+  /// windows it accepts.
+  private func synthesizeWindowContainer(eninSeconds: UInt16, validFromEnin: Int64, validThroughEnin: Int64) -> [UInt8] {
     var envelope: [UInt8] = [1] + [UInt8](repeating: 0, count: 20) + [UInt8](repeating: 0, count: 20) + [UInt8](repeating: 0, count: 32) + [1]
     envelope += [UInt8](repeating: 1, count: 33)
     envelope += [1] // joinMode = gated
@@ -234,11 +333,7 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     envelope += Array("X".utf8)
     envelope += [0] // certLength = 0
     envelope += [UInt8](repeating: 0, count: 31) + [1] + [UInt8](repeating: 0, count: 31) + [1] + [0] // r=1, s=1, v=0
-    let container = BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 0, signedEnvelope: envelope)!
-    guard let result = BarnardB005EnvelopeV2.verify(container: container, currentEnin: validFromEnin, nameValidator: nameValidator, recoverer: AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))) else {
-      fatalError("expected synthetic window container to verify")
-    }
-    return result
+    return BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 0, signedEnvelope: envelope)!
   }
 
   // MARK: - Recover-once and low-S (P1)

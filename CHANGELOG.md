@@ -12,7 +12,32 @@ driver draws the drafted summary from (see `RELEASING.md`).
 
 ## Unreleased — 0.9.0
 
-Nothing yet.
+### Fixed
+
+- **A B005 v2 envelope no longer has to span its event definition exactly.**
+  Spec 134 receiver step 4 required *exact* validity-window agreement with the
+  on-chain definition, which no event longer than 12 ENINs could satisfy: exact
+  agreement forced `validFromEnin = definitionStart`, and the 12-ENIN relay
+  lifetime cap then forced `relayExpiresAtEnin <= definitionStart + 12`, so past
+  the first 12 ENINs (one hour at the 300-second default) every envelope was
+  rejected as a `VALIDITY_WINDOW` mismatch — no candidate display, no join, no
+  relay for the rest of the event. The rule is now **containment**:
+  `definitionStart <= validFromEnin` and `validThroughEnin <= definitionEnd`.
+  `BarnardB005EnvelopeV2.registryAgreement` (Swift and Kotlin) implements it.
+
+  **Issuers act on this**: a long event is served by re-issuing envelopes inside
+  one definition, each with a later `validFromEnin`, rather than by registering
+  one definition per hour. A 24-hour event needs 24 envelopes at the 300-second
+  default, covering every ENIN of the definition except its final one — step 5
+  requires `relayExpiresAtEnin <= validThroughEnin` and `currentEnin <
+  relayExpiresAtEnin`, so the last inclusive ENIN of a definition is not
+  servable by any envelope. That one-ENIN tail is unchanged by this fix: it
+  applies identically under the previous exact-agreement rule, and no number of
+  refreshes removes it. It is tracked separately (barnard#180), not here.
+  **Consumers need no change**: an envelope that was accepted before is
+  still accepted, and the 12-ENIN cap, receiver step 5, and exact agreement on
+  `eventId`, `eventCodeHash` and signer-authority are all unchanged. No wire
+  format, schema, or stored data changed. (barnard#200)
 
 ## 0.8.0 — 2026-09-07
 

@@ -120,6 +120,12 @@ Spec 134 receiver step 4 requires "exact `eventId`, `eventCodeHash`, display-nam
 validity-window, and signer-authority agreement with that definition", where "that definition"
 is the authoritative on-chain definition obtained in step 3.
 
+> Later note (2026-09-10). The step 4 wording quoted above is the version current when this
+> section was written; it has since been amended twice and is kept verbatim as the record of
+> what was analysed. Spec 134's *validity-window containment* erratum of 2026-09-10 replaced
+> exact validity-window agreement with containment (`definitionStart <= validFromEnin` and
+> `validThroughEnin <= definitionEnd`); see barnard#200. Read spec 134 for the current rule.
+
 `EventDefinitionV1` on parallax **`main`** (`protocol/spec/v0.1/event-definition.md`) has 15
 labels: the 13 base labels (`version, eventId, registrar, anchorOperator, nonce, keySetDigest,
 sequence, previousDefinitionDigest, receiptPublicKey, operatorId, submissionEndpoint, validFrom,
