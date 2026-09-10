@@ -181,7 +181,10 @@ Two wording points that matter, both from the gate:
   permissionless** — an attacker with gas registers a fabricated event as easily as a real one.
   `registered` therefore proves existence and `registeredAt`, not legitimacy, and the gap between
   the two tiers is narrower than it looks. A host wanting "organizer" needs a registrar allowlist,
-  which it can apply offline because `registrar` is already in the envelope.
+  and it cannot apply that offline: `registrar` is carried in the envelope but is unauthenticated on
+  its own, since an attacker choosing both the field and their own key set produces a self-consistent
+  `eventId` over it. The allowlist must be applied to the registrar confirmed by the on-chain
+  definition (spec 134 step 3), not to the field as received over radio.
 - **`registered` means the anchored definition, not a bare registry read.** A registry-existence
   read is weaker than spec 134 step 3 and does not carry `validFrom`/`validUntil` or, for open
   events, `eventCodeHash`. Use parallax's full `verifyEventDefinition` path.

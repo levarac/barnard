@@ -313,8 +313,15 @@ exists because unbacked assurance has had to be withdrawn from a consumer produc
   generates a key set, derives an `eventId` from it, signs an envelope — passes every offline check,
   and can be registered too. `registered` proves existence, not legitimacy.
 - **Not "organizer".** Both tiers prove control of the event's authority key set and nothing more.
-  A host wanting an organizer claim needs a registrar allowlist, which it MAY apply offline because
-  `registrar` is carried in the envelope.
+  A host wanting an organizer claim needs a registrar allowlist. The `registrar` field in the
+  envelope is unauthenticated on its own; a host MUST apply the allowlist to the registrar confirmed
+  by the on-chain definition (spec 134 step 3), not to the field as received over radio.
+  *Erratum (2026-09-10), registrar allowlist:* this bullet originally said a host MAY apply the
+  allowlist **offline** because `registrar` is carried in the envelope. `registrar` is folded into
+  the `eventId` preimage by the self-certification step, which performs no registry read, so an
+  attacker choosing both that field and their own key set passes an offline allowlist check for a
+  fabricated event. A host that implemented the offline reading MUST move the check to the registrar
+  confirmed by spec 134 step 3.
 - **Not liveness.** No per-window freshness is carried. An envelope MAY be pre-signed for a whole
   event in advance, which is the intended operating mode for a cold authority key. The 12-ENIN bound
   limits replay of a captured envelope; it says nothing about whether the signer is currently active.
