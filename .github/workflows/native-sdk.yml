@@ -187,6 +187,33 @@ jobs:
         # runners have no Bluetooth radio.
         run: ./scripts/bundle.sh
 
+  venue-envelope-producer:
+    # tools/venue-envelope-producer is a small SwiftPM CLI + library wrapping
+    # packages/swift/barnard's public B005 v2 encoder/signing chain to produce a real signed
+    # venue envelope (see PR #215). It has no CI coverage of its own yet; this job runs its
+    # test suite so a crypto-adjacent producer is not shipped with zero automated checks.
+    # macOS runner because it depends on packages/swift/barnard, same as macos-lab-runner-example
+    # above -- no Xcode project, no simulator: `swift test` builds what it runs.
+    runs-on: macos-15
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tools/venue-envelope-producer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: swift test
+        run: swift test
+      - name: Confirm the committed cross-language fixture matches the producer's current output
+        # testWriteCrossLanguageFixture (run above) overwrites test-vectors/venue-envelope-
+        # producer-fixture.txt unconditionally rather than comparing against it, so `swift test`
+        # passing does not by itself prove the committed fixture is current -- and
+        # BarnardVenueEnvelopeProducerFixtureTest.kt (android-library) only ever reads whatever
+        # is checked in, never what this job just produced. Deterministic ECDSA (RFC 6979) means
+        # a diff here can only mean the fixture is genuinely stale, not incidental signature churn.
+        run: git diff --exit-code -- ../../test-vectors/venue-envelope-producer-fixture.txt
+
   android-library:
     # Flutter-free: builds/tests packages/android/barnard directly. No
     # Flutter or React Native toolchain is installed in this job (barnard#56
