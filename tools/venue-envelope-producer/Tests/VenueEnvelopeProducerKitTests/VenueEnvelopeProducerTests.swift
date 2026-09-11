@@ -130,10 +130,12 @@ final class VenueEnvelopeProducerTests: XCTestCase {
 
   /// Writes the shared fixture `test-vectors/venue-envelope-producer-fixture.txt` that the Kotlin
   /// test in `packages/android/barnard` reads. This is a checked-in snapshot, not something
-  /// generated at Kotlin test time (Kotlin's test module has no Swift toolchain to invoke): no CI
-  /// job currently builds or tests `tools/venue-envelope-producer` (see the PR description), so
-  /// today the fixture is only regenerated when someone runs `swift test` here -- e.g. when this
-  /// tool's producer or the shared encoder changes -- and commits the result.
+  /// generated at Kotlin test time (Kotlin's test module has no Swift toolchain to invoke): this
+  /// test unconditionally overwrites the fixture rather than comparing against it, so someone
+  /// changing this tool's producer or the shared encoder must run `swift test` here and commit
+  /// the result. CI (`native-sdk.yml`'s `venue-envelope-producer` job) enforces that the commit
+  /// actually happened, via a `git diff --exit-code` step after this test runs -- see that job
+  /// for why the check has to live there rather than in this test itself.
   func testWriteCrossLanguageFixture() throws {
     guard case .success(let output) = VenueEnvelopeProducer.produce(Fixture.input()) else {
       return XCTFail("produce refused")
