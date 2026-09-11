@@ -205,6 +205,14 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode.app
       - name: swift test
         run: swift test
+      - name: Confirm the committed cross-language fixture matches the producer's current output
+        # testWriteCrossLanguageFixture (run above) overwrites test-vectors/venue-envelope-
+        # producer-fixture.txt unconditionally rather than comparing against it, so `swift test`
+        # passing does not by itself prove the committed fixture is current -- and
+        # BarnardVenueEnvelopeProducerFixtureTest.kt (android-library) only ever reads whatever
+        # is checked in, never what this job just produced. Deterministic ECDSA (RFC 6979) means
+        # a diff here can only mean the fixture is genuinely stale, not incidental signature churn.
+        run: git diff --exit-code -- ../../test-vectors/venue-envelope-producer-fixture.txt
 
   android-library:
     # Flutter-free: builds/tests packages/android/barnard directly. No
