@@ -82,6 +82,12 @@ internal object BouncyCastleSecp256k1Backend : Secp256k1Backend {
         return if (q.isInfinity || !q.isValid) null else q.getEncoded(true)
     }
 
+    override fun uncompressedPublicKey(publicKeyCompressed: ByteArray): ByteArray? = try {
+        curve.curve.decodePoint(publicKeyCompressed).let { point ->
+            if (point.isInfinity || !point.isValid) null else point.normalize().getEncoded(false)
+        }
+    } catch (_: IllegalArgumentException) { null }
+
     private fun fixed32(value: BigInteger): ByteArray {
         val unsigned = value.toByteArray().let { if (it.size == 33 && it[0] == 0.toByte()) it.copyOfRange(1, 33) else it }
         require(unsigned.size <= 32)
