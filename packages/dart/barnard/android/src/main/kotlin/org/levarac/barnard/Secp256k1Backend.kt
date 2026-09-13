@@ -11,6 +11,7 @@ internal interface Secp256k1Backend {
     fun isValidCompressedPublicKey(publicKey: ByteArray): Boolean
     fun signRecoverable(privateKey: BigInteger, messageHash32: ByteArray): Secp256k1Signature
     fun recoverPublicKey(recoveryId: Int, r: ByteArray, s: ByteArray, messageHash32: ByteArray): ByteArray?
+    fun uncompressedPublicKey(publicKeyCompressed: ByteArray): ByteArray? = null
 }
 
 internal data class Secp256k1Signature(val r: ByteArray, val s: ByteArray, val v: Int)
