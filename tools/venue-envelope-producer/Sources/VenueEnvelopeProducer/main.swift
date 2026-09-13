@@ -15,6 +15,21 @@ func fail(_ message: String) -> Never {
 }
 
 let arguments = CommandLine.arguments
+if arguments.count == 2 && arguments[1] == "--signed-envelope-stdin" {
+  func runDriver() -> Int32 {
+    var frame = Array(FileHandle.standardInput.readDataToEndOfFile())
+    defer { VenueEnvelopeProducerDriver.zeroize(&frame) }
+    switch VenueEnvelopeProducerDriver.produceSignedEnvelope(from: frame) {
+    case .failure(let error):
+      FileHandle.standardError.write(Data(("refused: \(error)\n").utf8))
+      return 1
+    case .success(let output):
+      print(VenueEnvelopeProducerDriver.outputJSON(output))
+      return 0
+    }
+  }
+  exit(runDriver())
+}
 guard arguments.count == 2 else {
   fail("usage: venue-envelope-producer <input.json>\n\nSee tools/venue-envelope-producer/README.md for the JSON shape.")
 }

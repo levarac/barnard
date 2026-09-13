@@ -45,6 +45,23 @@ cert), per beid#432's design -- the venue device holds no key, so there is nothi
 The container hex goes to stdout; `eventId`, the derived signer public key, and the container's
 byte length go to stderr as a sanity check.
 
+## Ceremony driver mode
+
+`VenueEnvelopeProducer --signed-envelope-stdin` is the native signing boundary for a ceremony
+driver. It reads exactly one frame from stdin: a four-byte big-endian descriptor length, that many
+UTF-8 JSON descriptor bytes (the input shape above without `signingPrivateKeyHex`), then exactly 32
+raw private-key bytes, followed by EOF. It writes exactly one JSON line to stdout:
+
+```json
+{"kind":"SIGNED_ENVELOPE_V1","eventIdHex":"...","signedEnvelopeHex":"..."}
+```
+
+`signedEnvelopeHex` is the assembled B005 envelope before BLE wrapping. The key is never accepted
+from argv, JSON, or stderr. The descriptor is capped at 16 KiB and malformed, truncated, trailing,
+or key-mismatched input is refused. The caller owns the input buffer and should clear it after the
+process returns; the Swift boundary also clears its temporary mutable key buffer on exit, without
+claiming secure-memory erasure of copies made by the runtime.
+
 If you have a private key but not yet its compressed public key for `authorityKeysHex`, derive it
 first with `VenueEnvelopeProducer.derivePublicKeyHex(fromPrivateKeyHex:)` (see
 `Sources/VenueEnvelopeProducerKit/VenueEnvelopeProducer.swift`) -- there is no separate CLI flag

@@ -54,6 +54,100 @@ public struct VenueEnvelopeProducerInput: Decodable, Equatable {
   }
 }
 
+/// Public descriptor used by the ceremony driver. It deliberately contains no private key.
+public struct VenueEnvelopeProducerDescriptor: Codable, Equatable {
+  public let registrarHex: String
+  public let anchorOperatorHex: String
+  public let nonceHex: String
+  public let authorityKeysHex: [String]
+  public let joinMode: UInt8
+  public let eninSeconds: UInt16
+  public let validFromEnin: UInt32
+  public let validThroughEnin: UInt32
+  public let relayExpiresAtEnin: UInt32
+  public let eventCodeHashHex: String?
+  public let eventDisplayName: String
+  public let relayHopCount: UInt8
+
+  public init(registrarHex: String, anchorOperatorHex: String, nonceHex: String, authorityKeysHex: [String], joinMode: UInt8, eninSeconds: UInt16, validFromEnin: UInt32, validThroughEnin: UInt32, relayExpiresAtEnin: UInt32, eventCodeHashHex: String?, eventDisplayName: String, relayHopCount: UInt8) {
+    self.registrarHex = registrarHex
+    self.anchorOperatorHex = anchorOperatorHex
+    self.nonceHex = nonceHex
+    self.authorityKeysHex = authorityKeysHex
+    self.joinMode = joinMode
+    self.eninSeconds = eninSeconds
+    self.validFromEnin = validFromEnin
+    self.validThroughEnin = validThroughEnin
+    self.relayExpiresAtEnin = relayExpiresAtEnin
+    self.eventCodeHashHex = eventCodeHashHex
+    self.eventDisplayName = eventDisplayName
+    self.relayHopCount = relayHopCount
+  }
+
+  fileprivate func input(signingPrivateKeyHex: String) -> VenueEnvelopeProducerInput {
+    VenueEnvelopeProducerInput(registrarHex: registrarHex, anchorOperatorHex: anchorOperatorHex, nonceHex: nonceHex, authorityKeysHex: authorityKeysHex, signingPrivateKeyHex: signingPrivateKeyHex, joinMode: joinMode, eninSeconds: eninSeconds, validFromEnin: validFromEnin, validThroughEnin: validThroughEnin, relayExpiresAtEnin: relayExpiresAtEnin, eventCodeHashHex: eventCodeHashHex, eventDisplayName: eventDisplayName, relayHopCount: relayHopCount)
+  }
+}
+
+public enum VenueEnvelopeProducerDriverError: Error, Equatable, CustomStringConvertible {
+  case descriptorTooLarge
+  case truncatedDescriptor
+  case trailingBytes
+  case invalidDescriptor(String)
+  case invalidPrivateKey
+
+  public var description: String {
+    switch self {
+    case .descriptorTooLarge: return "descriptor exceeds 16384 bytes"
+    case .truncatedDescriptor: return "descriptor frame is truncated"
+    case .trailingBytes: return "input has trailing bytes after the private key"
+    case .invalidDescriptor(let detail): return "invalid descriptor: \(detail)"
+    case .invalidPrivateKey: return "private key must be exactly 32 bytes"
+    }
+  }
+}
+
+/// Length-framed native signing interface for a ceremony driver.
+/// Wire: uint32 big-endian descriptor length, UTF-8 JSON descriptor, then 32 raw key bytes, EOF.
+public enum VenueEnvelopeProducerDriver {
+  public static let maxDescriptorBytes = 16 * 1024
+
+  /// Best-effort clearing for a caller-owned mutable buffer. Swift does not promise that copies
+  /// made by Codable or String interpolation are erased; callers must still keep the key buffer
+  /// ephemeral and must not treat this as a secure-memory guarantee.
+  public static func zeroize(_ bytes: inout [UInt8]) {
+    bytes.withUnsafeMutableBufferPointer { $0.initialize(repeating: 0) }
+  }
+
+  public static func produceSignedEnvelope(from frame: [UInt8]) -> Result<VenueEnvelopeProducerOutput, VenueEnvelopeProducerDriverError> {
+    guard frame.count >= 4 else { return .failure(.truncatedDescriptor) }
+    let descriptorLength = Int(frame[0]) << 24 | Int(frame[1]) << 16 | Int(frame[2]) << 8 | Int(frame[3])
+    guard descriptorLength <= maxDescriptorBytes else { return .failure(.descriptorTooLarge) }
+    let descriptorEnd = 4 + descriptorLength
+    guard frame.count >= descriptorEnd + 32 else { return .failure(.truncatedDescriptor) }
+    guard frame.count == descriptorEnd + 32 else { return .failure(.trailingBytes) }
+    let descriptorData = Data(frame[4..<descriptorEnd])
+    let descriptor: VenueEnvelopeProducerDescriptor
+    do {
+      descriptor = try JSONDecoder().decode(VenueEnvelopeProducerDescriptor.self, from: descriptorData)
+    } catch {
+      return .failure(.invalidDescriptor(String(describing: error)))
+    }
+    var privateKey = Array(frame[descriptorEnd..<frame.count])
+    defer { zeroize(&privateKey) }
+    guard privateKey.count == 32 else { return .failure(.invalidPrivateKey) }
+    let result = VenueEnvelopeProducer.produce(descriptor, signingPrivateKey: privateKey)
+    guard case .success(let output) = result else { return .failure(.invalidDescriptor("descriptor or key refused by B005 encoder")) }
+    return .success(output)
+  }
+
+  public static func outputJSON(_ output: VenueEnvelopeProducerOutput) -> String {
+    let eventId = output.eventId.map { String(format: "%02x", $0) }.joined()
+    let signedEnvelope = output.signedEnvelope.map { String(format: "%02x", $0) }.joined()
+    return "{\"kind\":\"SIGNED_ENVELOPE_V1\",\"eventIdHex\":\"\(eventId)\",\"signedEnvelopeHex\":\"\(signedEnvelope)\"}"
+  }
+}
+
 public enum VenueEnvelopeProducerError: Error, Equatable, CustomStringConvertible {
   case invalidHex(field: String)
   case signingKeyNotAnAuthorityKey
@@ -81,6 +175,7 @@ public enum VenueEnvelopeProducerError: Error, Equatable, CustomStringConvertibl
 /// cross-check the result without re-deriving it by hand.
 public struct VenueEnvelopeProducerOutput {
   public let container: [UInt8]
+  public let signedEnvelope: [UInt8]
   public let eventId: [UInt8]
   public let signerPublicKeyHex: String
 }
@@ -106,7 +201,7 @@ public enum VenueEnvelopeProducer {
     // The signer must be one of the embedded authority keys, or `verify` will recover a key that
     // matches nothing in the envelope and reject -- catch that here with a named error rather
     // than let it surface as an opaque `.encode`/`.assemble` success followed by a verify failure.
-    guard signingPrivateKey.count == 32 else { return .failure(.invalidHex(field: "signingPrivateKeyHex")) }
+    guard isValidPrivateKey(signingPrivateKey) else { return .failure(.invalidHex(field: "signingPrivateKeyHex")) }
     guard let signerPublicKey = compressedPublicKey(fromPrivateKey: signingPrivateKey) else {
       return .failure(.invalidHex(field: "signingPrivateKeyHex"))
     }
@@ -169,7 +264,11 @@ public enum VenueEnvelopeProducer {
       return .failure(.containerTooLarge)
     }
 
-    return .success(VenueEnvelopeProducerOutput(container: container, eventId: eventId, signerPublicKeyHex: hexString(signerPublicKey)))
+    return .success(VenueEnvelopeProducerOutput(container: container, signedEnvelope: signed, eventId: eventId, signerPublicKeyHex: hexString(signerPublicKey)))
+  }
+
+  fileprivate static func produce(_ descriptor: VenueEnvelopeProducerDescriptor, signingPrivateKey: [UInt8]) -> Result<VenueEnvelopeProducerOutput, VenueEnvelopeProducerError> {
+    produce(descriptor.input(signingPrivateKeyHex: hexString(signingPrivateKey)))
   }
 
   /// Recomputes the compressed public key for a raw 32-byte private key. BarnardCore exposes no
@@ -181,7 +280,7 @@ public enum VenueEnvelopeProducer {
   /// Public because any real caller assembling `authorityKeysHex` for a given
   /// `signingPrivateKeyHex` needs this too -- it is not test-only.
   public static func compressedPublicKey(fromPrivateKey privateKey: [UInt8]) -> [UInt8]? {
-    guard privateKey.count == 32 else { return nil }
+    guard isValidPrivateKey(privateKey) else { return nil }
     let probeDigest = BarnardCoreCrypto.sha256(Array("venue-envelope-producer:pubkey-probe:v1".utf8))
     let probeSignature = BarnardCoreSigning.signRecoverable(privateKey: privateKey, messageHash32: probeDigest)
     return BarnardCoreSigning.recoverPublicKey(recoveryId: probeSignature.v, r: probeSignature.r, s: probeSignature.s, messageHash32: probeDigest)
@@ -192,6 +291,18 @@ public enum VenueEnvelopeProducer {
     guard let privateKey = hex(privateKeyHex), let publicKey = compressedPublicKey(fromPrivateKey: privateKey) else { return nil }
     return hexString(publicKey)
   }
+}
+
+private func isValidPrivateKey(_ key: [UInt8]) -> Bool {
+  guard key.count == 32 else { return false }
+  let order: [UInt8] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+    0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b,
+    0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+  ]
+  guard key.contains(where: { $0 != 0 }) else { return false }
+  return zip(key, order).first(where: { $0 != $1 }).map { $0.0 < $0.1 } ?? false
 }
 
 private func hex(_ s: String) -> [UInt8]? {
