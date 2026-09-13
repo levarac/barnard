@@ -24,6 +24,7 @@ swift_mirrored_pairs=(
 android_mirrored_files=(
   "BarnardCrypto.kt"
   "BarnardSigning.kt"
+  "WalletBindingVerification.kt"
   "Secp256k1Backend.kt"
   "BouncyCastleSecp256k1Backend.kt"
   "BarnardV2Policy.kt"
