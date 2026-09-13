@@ -7,6 +7,10 @@ plugins {
 }
 
 val releaseVersion = providers.exec {
+    // Gradle may evaluate this included build from the consumer's checkout.
+    // Anchor Git's discovery at Barnard's repository root instead of relying
+    // on the caller's current working directory.
+    workingDir(rootDir.resolve("../..").canonicalFile)
     commandLine("git", "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0")
 }.standardOutput.asText.map { tag ->
     tag.trim().also {
