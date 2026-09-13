@@ -3,6 +3,10 @@
 package org.levarac.barnard
 
 import java.math.BigInteger
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import org.bouncycastle.crypto.digests.KeccakDigest
 
 /**
  * Per-event device signing identity (barnard#65).
@@ -379,6 +383,62 @@ internal object BarnardSigning {
 
     fun recoverPublicKey(recId: Int, r: ByteArray, s: ByteArray, messageHash32: ByteArray): ByteArray? =
         secp256k1.recoverPublicKey(recId, r, s, messageHash32)
+
+    fun classifyWalletSignature(signature: ByteArray): WalletSignatureClassification =
+        when {
+            signature.size == 65 -> WalletSignatureClassification.VALID_EOA_SHAPE
+            signature.size >= ERC6492_MAGIC.size && signature.copyOfRange(signature.size - ERC6492_MAGIC.size, signature.size).contentEquals(ERC6492_MAGIC) -> WalletSignatureClassification.SMART_WALLET_UNSUPPORTED
+            else -> WalletSignatureClassification.INVALID
+        }
+
+    fun verifyWalletBinding(
+        text: String,
+        walletSignature: ByteArray,
+        expectedWalletAddress: ByteArray,
+        expectedOwnerPublicKey: ByteArray,
+        acknowledgement: RecoverableSignature,
+    ): WalletBindingVerification {
+        val fields = parseBindingText(text) ?: return WalletBindingVerification.INVALID
+        if (!fields.wallet.contentEquals(expectedWalletAddress) || !fields.owner.contentEquals(expectedOwnerPublicKey)) return WalletBindingVerification.INVALID
+        if (classifyWalletSignature(walletSignature) != WalletSignatureClassification.VALID_EOA_SHAPE) return classifyWalletSignature(walletSignature).toVerification()
+        val recoveryId = when (walletSignature[64].toInt() and 0xff) { 0, 27 -> 0; 1, 28 -> 1; else -> return WalletBindingVerification.INVALID }
+        val recovered = secp256k1.recoverPublicKey(recoveryId, walletSignature.copyOfRange(0, 32), walletSignature.copyOfRange(32, 64), eip191Digest(text)) ?: return WalletBindingVerification.INVALID
+        val uncompressed = secp256k1.uncompressedPublicKey(recovered) ?: return WalletBindingVerification.INVALID
+        val address = keccak256(uncompressed.copyOfRange(1, uncompressed.size)).copyOfRange(12, 32)
+        if (!address.contentEquals(expectedWalletAddress)) return WalletBindingVerification.INVALID
+        val ackMessage = buildWalletAcknowledgementMessage(expectedWalletAddress, walletSignature) ?: return WalletBindingVerification.INVALID
+        val ackV = when (acknowledgement.v) { 0, 27 -> 0; 1, 28 -> 1; else -> return WalletBindingVerification.INVALID }
+        val ackRecovered = secp256k1.recoverPublicKey(ackV, acknowledgement.r, acknowledgement.s, sha256(ackMessage)) ?: return WalletBindingVerification.INVALID
+        return if (ackRecovered.contentEquals(expectedOwnerPublicKey)) WalletBindingVerification.VALID else WalletBindingVerification.INVALID
+    }
+
+    private data class BindingFields(val wallet: ByteArray, val owner: ByteArray)
+    private fun parseBindingText(text: String): BindingFields? {
+        if (text.endsWith("\n")) return null
+        val lines = text.split('\n')
+        if (lines.size != 11 || lines[1].isNotEmpty() || lines[3].isNotEmpty()) return null
+        val suffix = " wants to bind this wallet to a Levarac owner key."
+        val domain = lines[0].removeSuffix(suffix).takeIf { it != lines[0] } ?: return null
+        val wallet = parseHexField(lines[5], "Wallet: 0x", 20) ?: return null
+        val owner = parseHexField(lines[6], "Owner-Key: 0x", 33) ?: return null
+        val chain = lines[7].removePrefix("Chain-ID: eip155:").takeIf { it != lines[7] }?.toULongOrNull() ?: return null
+        val nonce = parseHexField(lines[9], "Nonce: 0x", 16) ?: return null
+        val issuedAt = lines[10].removePrefix("Issued-At: ").takeIf { it != lines[10] } ?: return null
+        if (lines[2] != "This signature authorizes no transaction and moves no assets." || lines[4] != "Domain-Tag: $accountBindingDomainTag" || lines[8] != "Scope: global") return null
+        return if (buildAccountBindingText(domain, wallet, owner, chain, nonce, issuedAt) == text) BindingFields(wallet, owner) else null
+    }
+    private fun parseHexField(line: String, prefix: String, size: Int): ByteArray? {
+        val value = line.removePrefix(prefix).takeIf { it != line } ?: return null
+        if (value.length != size * 2 || !value.all { it in "0123456789abcdef" }) return null
+        return ByteArray(size) { value.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+    }
+    private fun eip191Digest(text: String): ByteArray {
+        val message = text.toByteArray(StandardCharsets.UTF_8)
+        return keccak256("\u0019Ethereum Signed Message:\n".toByteArray(StandardCharsets.US_ASCII) + message.size.toString().toByteArray(StandardCharsets.US_ASCII) + message)
+    }
+    private fun keccak256(input: ByteArray): ByteArray = KeccakDigest(256).let { digest -> digest.update(input, 0, input.size); ByteArray(32).also { digest.doFinal(it, 0) } }
+    private fun WalletSignatureClassification.toVerification() = if (this == WalletSignatureClassification.SMART_WALLET_UNSUPPORTED) WalletBindingVerification.SMART_WALLET_UNSUPPORTED else WalletBindingVerification.INVALID
+    private val ERC6492_MAGIC = "6492649264926492649264926492649264926492649264926492649264926492".chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     private val SECP256K1_N = BigInteger(
         "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",

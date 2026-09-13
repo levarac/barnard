@@ -37,6 +37,38 @@ private enum Fixture {
 
 final class VenueEnvelopeProducerTests: XCTestCase {
 
+  func testDriverProducesRawSignedEnvelopeAndNotBLEContainer() throws {
+    let descriptor = try JSONEncoder().encode(Fixture.descriptor())
+    let frame = Fixture.frame(descriptor: descriptor)
+    guard case .success(let output) = VenueEnvelopeProducerDriver.produceSignedEnvelope(from: frame) else {
+      return XCTFail("driver refused valid frame")
+    }
+    XCTAssertEqual(output.eventId.count, 32)
+    XCTAssertGreaterThanOrEqual(output.signedEnvelope.count, 199)
+    XCTAssertEqual(output.container.count, output.signedEnvelope.count + 4)
+    XCTAssertNotEqual(output.container, output.signedEnvelope)
+    let json = VenueEnvelopeProducerDriver.outputJSON(output)
+    XCTAssertTrue(json.hasPrefix("{\"kind\":\"SIGNED_ENVELOPE_V1\""))
+    XCTAssertTrue(json.contains("\"signedEnvelopeHex\":\"" + hexString(output.signedEnvelope) + "\""))
+    XCTAssertFalse(json.contains(hexString(output.container)))
+  }
+
+  func testDriverRefusesWrongAuthorityDescriptor() throws {
+    var descriptor = Fixture.descriptor()
+    descriptor = VenueEnvelopeProducerDescriptor(registrarHex: descriptor.registrarHex, anchorOperatorHex: descriptor.anchorOperatorHex, nonceHex: descriptor.nonceHex, authorityKeysHex: [String(repeating: "02", count: 33)], joinMode: descriptor.joinMode, eninSeconds: descriptor.eninSeconds, validFromEnin: descriptor.validFromEnin, validThroughEnin: descriptor.validThroughEnin, relayExpiresAtEnin: descriptor.relayExpiresAtEnin, eventCodeHashHex: descriptor.eventCodeHashHex, eventDisplayName: descriptor.eventDisplayName, relayHopCount: descriptor.relayHopCount)
+    XCTAssertEqualFailure(VenueEnvelopeProducerDriver.produceSignedEnvelope(from: Fixture.frame(descriptor: try JSONEncoder().encode(descriptor))), "invalid descriptor")
+  }
+
+  func testDriverRefusesTruncatedBadKeyAndTrailingEOF() throws {
+    let descriptor = try JSONEncoder().encode(Fixture.descriptor())
+    let frame = Fixture.frame(descriptor: descriptor)
+    XCTAssertEqualFailure(VenueEnvelopeProducerDriver.produceSignedEnvelope(from: Array(frame.dropLast())), "descriptor frame is truncated")
+    XCTAssertEqualFailure(VenueEnvelopeProducerDriver.produceSignedEnvelope(from: frame + [0]), "input has trailing bytes after the private key")
+    XCTAssertEqualFailure(VenueEnvelopeProducerDriver.produceSignedEnvelope(from: Array(frame.prefix(frame.count - 32)) + [1]), "descriptor frame is truncated")
+    let badKeyFrame = Array(frame.dropLast(32)) + [UInt8](repeating: 0, count: 32)
+    XCTAssertEqualFailure(VenueEnvelopeProducerDriver.produceSignedEnvelope(from: badKeyFrame), "invalid descriptor")
+  }
+
   // MARK: - 1. Real Swift verifier accepts the produced container
 
   func testRealSwiftVerifierAcceptsProducedContainerAndRecoversTheSigningKey() throws {
@@ -168,6 +200,15 @@ final class VenueEnvelopeProducerTests: XCTestCase {
 }
 
 private extension Fixture {
+  static func descriptor() -> VenueEnvelopeProducerDescriptor {
+    VenueEnvelopeProducerDescriptor(registrarHex: registrarHex, anchorOperatorHex: anchorOperatorHex, nonceHex: nonceHex, authorityKeysHex: [authorityPublicKeyHex], joinMode: 0, eninSeconds: 300, validFromEnin: 6_000_000, validThroughEnin: 6_000_010, relayExpiresAtEnin: 6_000_004, eventCodeHashHex: nil, eventDisplayName: "Venue Test Event", relayHopCount: 0)
+  }
+
+  static func frame(descriptor: Data) -> [UInt8] {
+    let length = descriptor.count
+    return [UInt8((length >> 24) & 0xff), UInt8((length >> 16) & 0xff), UInt8((length >> 8) & 0xff), UInt8(length & 0xff)] + Array(descriptor) + hex(signingPrivateKeyHex)
+  }
+
   /// The same fields `input()` produces, but as `BarnardB005EnvelopeFields` directly, for a test
   /// that needs to re-run `encodeUnsignedEnvelope` itself rather than through `produce`.
   static func encodeOnlyFields() -> BarnardB005EnvelopeFields {
@@ -180,6 +221,13 @@ private extension Fixture {
       eventCodeHash: BarnardB005EnvelopeV2.openEventCodeHash(eventId: eventId)!,
       eventDisplayName: "Venue Test Event"
     )
+  }
+}
+
+private extension XCTestCase {
+  func XCTAssertEqualFailure<T>(_ result: Result<T, VenueEnvelopeProducerDriverError>, _ prefix: String, file: StaticString = #filePath, line: UInt = #line) {
+    guard case .failure(let error) = result else { return XCTFail("expected driver failure", file: file, line: line) }
+    XCTAssertTrue(error.description.hasPrefix(prefix), "unexpected error: \(error)", file: file, line: line)
   }
 }
 

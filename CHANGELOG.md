@@ -10,6 +10,22 @@ PRs, resolved issues, and `specs/` changes by
 `.github/workflows/release-notes.yml`; the entries here are the input the release
 driver draws the drafted summary from (see `RELEASING.md`).
 
+## 0.9.2 — 2026-09-14
+
+### Added
+
+- **Wallet binding verification on the Android SDK.** `BarnardIdentity` now
+  exposes strict EOA signature classification and verifies the canonical
+  `personal_sign` wallet claim together with the owner-key acknowledgement.
+  ERC-6492 smart-wallet signatures are identified as unsupported so consumers
+  can fail closed without treating them as malformed EOA signatures.
+
+### Fixed
+
+- Android Gradle version discovery is anchored at the Barnard repository root,
+  so an included build derives its version from the release tag even when
+  Gradle is invoked from a consumer checkout.
+
 ## Unreleased
 
 Nothing yet.

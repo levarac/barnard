@@ -208,6 +208,24 @@ public class BarnardIdentity internal constructor(
         return BarnardRecoverableSignature(r = sig.r.toHex(), s = sig.s.toHex(), v = sig.v)
     }
 
+    public fun classifyWalletSignature(signature: ByteArray): WalletSignatureClassification =
+        BarnardSigning.classifyWalletSignature(signature)
+
+    public fun verifyWalletBinding(
+        text: String,
+        walletSignature: ByteArray,
+        expectedWalletAddress: ByteArray,
+        expectedOwnerPublicKey: ByteArray,
+        acknowledgement: BarnardRecoverableSignature,
+    ): WalletBindingVerification {
+        val r = acknowledgement.r.hexToBytes() ?: return WalletBindingVerification.INVALID
+        val s = acknowledgement.s.hexToBytes() ?: return WalletBindingVerification.INVALID
+        return BarnardSigning.verifyWalletBinding(
+            text, walletSignature, expectedWalletAddress, expectedOwnerPublicKey,
+            BarnardSigning.RecoverableSignature(r, s, acknowledgement.v),
+        )
+    }
+
     // MARK: - DeviceSecret Management
     //
     // Same storage key as BarnardEngine.getOrCreateDeviceSecret — the
@@ -253,5 +271,10 @@ public class BarnardIdentity internal constructor(
     private fun parseOwnerPrivateKey(hex: String): BigInteger? {
         if (!Regex("[0-9a-f]{64}").matches(hex)) return null
         return BigInteger(hex, 16)
+    }
+
+    private fun String.hexToBytes(): ByteArray? {
+        if (length % 2 != 0 || !all { it in "0123456789abcdefABCDEF" }) return null
+        return runCatching { ByteArray(length / 2) { substring(it * 2, it * 2 + 2).toInt(16).toByte() } }.getOrNull()
     }
 }
