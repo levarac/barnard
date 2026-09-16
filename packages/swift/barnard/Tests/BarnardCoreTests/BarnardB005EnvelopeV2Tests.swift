@@ -587,6 +587,20 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overCap, currentEnin: 0, nameValidator: nameValidator, recoverer: recoverer), "a lifetime of 13 must still be rejected")
   }
 
+  /// Inclusivity: rejected at validThroughEnin because `now < expires <= validThrough` requires `now < validThrough` (BarnardB005EnvelopeV2.swift:511).
+  func testValidThroughEninBoundaries() {
+    let container = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 10, validThroughEnin: 22)
+    let recoverer = AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))
+    XCTAssertNotNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 21, nameValidator: nameValidator, recoverer: recoverer))
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 22, nameValidator: nameValidator, recoverer: recoverer))
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 23, nameValidator: nameValidator, recoverer: recoverer))
+    // `expires <= validThrough` on its own: with expires one past validThrough the window is rejected even at an
+    // ENIN (21) the relay-expiry clause would accept. validFrom is 12 so the lifetime (11) stays under the 12-ENIN
+    // cap; only the validThrough clause can produce the rejection.
+    let overrun = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 12, validThroughEnin: 22, relayExpiresAtEnin: 23)
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overrun, currentEnin: 21, nameValidator: nameValidator, recoverer: recoverer))
+  }
+
   /// Containment makes an inverted ENVELOPE window reachable in a way exact agreement did not.
   /// Under equality, a registry window that does not fall on ENIN boundaries converts to an empty
   /// range and could never equal anything, whatever the envelope carried. Under containment,
@@ -676,14 +690,15 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
   /// The container half of `synthesizeWindow`, without the verification step, so a test can assert
   /// that `verify` REJECTS a window (the 12-ENIN relay lifetime cap) rather than only exercising
   /// windows it accepts.
-  private func synthesizeWindowContainer(eninSeconds: UInt16, validFromEnin: Int64, validThroughEnin: Int64) -> [UInt8] {
+  private func synthesizeWindowContainer(eninSeconds: UInt16, validFromEnin: Int64, validThroughEnin: Int64, relayExpiresAtEnin: Int64? = nil) -> [UInt8] {
+    let expires = relayExpiresAtEnin ?? validThroughEnin
     var envelope: [UInt8] = [1] + [UInt8](repeating: 0, count: 20) + [UInt8](repeating: 0, count: 20) + [UInt8](repeating: 0, count: 32) + [1]
     envelope += [UInt8](repeating: 1, count: 33)
     envelope += [1] // joinMode = gated
     envelope += [UInt8(eninSeconds >> 8), UInt8(eninSeconds & 0xff)]
     envelope += [UInt8((validFromEnin >> 24) & 0xff), UInt8((validFromEnin >> 16) & 0xff), UInt8((validFromEnin >> 8) & 0xff), UInt8(validFromEnin & 0xff)]
     envelope += [UInt8((validThroughEnin >> 24) & 0xff), UInt8((validThroughEnin >> 16) & 0xff), UInt8((validThroughEnin >> 8) & 0xff), UInt8(validThroughEnin & 0xff)]
-    envelope += [UInt8((validThroughEnin >> 24) & 0xff), UInt8((validThroughEnin >> 16) & 0xff), UInt8((validThroughEnin >> 8) & 0xff), UInt8(validThroughEnin & 0xff)] // expires = validThroughEnin
+    envelope += [UInt8((expires >> 24) & 0xff), UInt8((expires >> 16) & 0xff), UInt8((expires >> 8) & 0xff), UInt8(expires & 0xff)] // expires = relayExpiresAtEnin, default validThroughEnin
     envelope += [2] // fixed marker byte
     envelope += [UInt8](repeating: 0, count: 8) // eventCodeHash (unchecked under gated mode)
     envelope += [1] // nameLength

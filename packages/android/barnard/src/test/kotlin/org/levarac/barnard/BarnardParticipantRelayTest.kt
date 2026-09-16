@@ -18,6 +18,14 @@ class BarnardParticipantRelayTest {
     @Test fun hopTwoAndRegistryGate() { val f=fixture(); assertEquals(BarnardRelayObservationResult.ACCEPTED,f.relay.observe(container(2,1),byteArrayOf(1))); finish(f); assertTrue(f.sink.served.isEmpty()); f.verify.result=BarnardRelayVerification.RadioSelfVerified; assertEquals(BarnardRelayObservationResult.REJECTED,f.relay.observe(container(0,2),byteArrayOf(2))) }
     @Test fun selectionPinExpires() { val f=fixture(); f.relay.observe(container(1,1),byteArrayOf(1)); f.relay.observe(container(0,2),byteArrayOf(2)); finish(f); assertEquals(2,f.sink.served.last()[1].toInt()); f.clock.now=300_001; f.relay.advance(); f.clock.now+=15_001; f.relay.advance(); assertEquals(1,f.sink.served.last()[1].toInt()) }
     @Test fun halfOpenEninBoundaries() { for ((n,ok) in listOf(21L to true,22L to false,23L to false)) { val f=fixture(); f.enin.value=n; assertEquals(ok,f.relay.observe(container(0,n.toInt()),byteArrayOf(1))==BarnardRelayObservationResult.ACCEPTED) } }
+    @Test fun validFromEninBoundaries() {
+        val f9 = fixture(); f9.enin.value = 9L
+        assertEquals(BarnardRelayObservationResult.REJECTED, f9.relay.observe(container(0, 9), byteArrayOf(1)))
+        val f10 = fixture(); f10.enin.value = 10L
+        assertEquals(BarnardRelayObservationResult.ACCEPTED, f10.relay.observe(container(0, 10), byteArrayOf(1)))
+        val f11 = fixture(); f11.enin.value = 11L
+        assertEquals(BarnardRelayObservationResult.ACCEPTED, f11.relay.observe(container(0, 11), byteArrayOf(1)))
+    }
     @Test fun thirtyThreeHandlesSaturate() { val f=fixture(); val c=container(1,4); f.relay.observe(c,byteArrayOf(0)); for(i in 1..32) assertEquals(BarnardRelayObservationResult.DUPLICATE,f.relay.observe(c,byteArrayOf(i.toByte()))); f.relay.advance(); f.clock.now += 15_001; f.relay.advance(); assertTrue(f.sink.served.isEmpty()) }
 
     // P1: a saturated handle set (33rd handle) must expire after T=30s so an

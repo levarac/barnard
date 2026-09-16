@@ -62,6 +62,14 @@ final class BarnardParticipantRelayTests: XCTestCase {
       XCTAssertEqual(relay.observe(container: container(0, [UInt8(current)]), peerHandle: [1]) == .accepted, accepted)
     }
   }
+  func testValidFromEninBoundaries() {
+    let (relay9, _, enin9, _, _, _) = fixture(); enin9.value = 9
+    XCTAssertEqual(relay9.observe(container: container(0, [UInt8(9)]), peerHandle: [1]), .rejected)
+    let (relay10, _, enin10, _, _, _) = fixture(); enin10.value = 10
+    XCTAssertEqual(relay10.observe(container: container(0, [UInt8(10)]), peerHandle: [1]), .accepted)
+    let (relay11, _, enin11, _, _, _) = fixture(); enin11.value = 11
+    XCTAssertEqual(relay11.observe(container: container(0, [UInt8(11)]), peerHandle: [1]), .accepted)
+  }
   func testThirtyThreeHandlesSaturateAndCancelContention() {
     let (relay, clock, _, _, sink, _) = fixture(); let bytes = container(1, [4])
     XCTAssertEqual(relay.observe(container: bytes, peerHandle: [0]), .accepted)
