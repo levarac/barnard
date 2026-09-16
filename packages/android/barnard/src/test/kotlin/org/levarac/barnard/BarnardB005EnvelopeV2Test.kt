@@ -557,6 +557,10 @@ class BarnardB005EnvelopeV2Test {
         assertNotNull(BarnardB005EnvelopeV2.verify(container, 21L, recoverer))
         assertNull(BarnardB005EnvelopeV2.verify(container, 22L, recoverer))
         assertNull(BarnardB005EnvelopeV2.verify(container, 23L, recoverer))
+        // `expires <= validThrough` on its own: with expires one past validThrough the window is rejected even at an
+        // ENIN (21) the relay-expiry clause would accept. Only this clause can produce the rejection.
+        val overrun = synthesizeWindowContainer(eninSeconds = 300, validFromEnin = 10, validThroughEnin = 22, relayExpiresAtEnin = 23)
+        assertNull(BarnardB005EnvelopeV2.verify(overrun, 21L, recoverer))
     }
 
     /**
@@ -689,14 +693,15 @@ class BarnardB005EnvelopeV2Test {
      * assert that [BarnardB005EnvelopeV2.verify] REJECTS a window (the 12-ENIN relay lifetime cap)
      * rather than only exercising windows it accepts.
      */
-    private fun synthesizeWindowContainer(eninSeconds: Int, validFromEnin: Int, validThroughEnin: Int): ByteArray {
+    private fun synthesizeWindowContainer(eninSeconds: Int, validFromEnin: Int, validThroughEnin: Int, relayExpiresAtEnin: Int = validThroughEnin): ByteArray {
+        val expires = relayExpiresAtEnin
         var envelope = byteArrayOf(1) + ByteArray(20) + ByteArray(20) + ByteArray(32) + byteArrayOf(1)
         envelope += ByteArray(33) { 1 }
         envelope += byteArrayOf(1) // joinMode = gated
         envelope += byteArrayOf((eninSeconds shr 8).toByte(), eninSeconds.toByte())
         envelope += byteArrayOf((validFromEnin shr 24).toByte(), (validFromEnin shr 16).toByte(), (validFromEnin shr 8).toByte(), validFromEnin.toByte())
         envelope += byteArrayOf((validThroughEnin shr 24).toByte(), (validThroughEnin shr 16).toByte(), (validThroughEnin shr 8).toByte(), validThroughEnin.toByte())
-        envelope += byteArrayOf((validThroughEnin shr 24).toByte(), (validThroughEnin shr 16).toByte(), (validThroughEnin shr 8).toByte(), validThroughEnin.toByte()) // expires = validThroughEnin
+        envelope += byteArrayOf((expires shr 24).toByte(), (expires shr 16).toByte(), (expires shr 8).toByte(), expires.toByte()) // expires = relayExpiresAtEnin, default validThroughEnin
         envelope += byteArrayOf(2) // fixed marker byte
         envelope += ByteArray(8) // eventCodeHash (unchecked under gated mode)
         envelope += byteArrayOf(1) // nameLength
