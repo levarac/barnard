@@ -550,6 +550,15 @@ class BarnardB005EnvelopeV2Test {
         assertNull(BarnardB005EnvelopeV2.verify(overCap, 0L, recoverer), "a lifetime of 13 must still be rejected")
     }
 
+    // Inclusivity: rejected at validThroughEnin because `currentEnin < expires <= validThrough` requires `currentEnin < validThrough` (BarnardB005EnvelopeV2.kt:554).
+    @Test fun validThroughEninBoundaries() {
+        val container = synthesizeWindowContainer(eninSeconds = 300, validFromEnin = 10, validThroughEnin = 22)
+        val recoverer = AlwaysAcceptingRecoverer(ByteArray(33) { 1 })
+        assertNotNull(BarnardB005EnvelopeV2.verify(container, 21L, recoverer))
+        assertNull(BarnardB005EnvelopeV2.verify(container, 22L, recoverer))
+        assertNull(BarnardB005EnvelopeV2.verify(container, 23L, recoverer))
+    }
+
     /**
      * Containment makes an inverted ENVELOPE window reachable in a way exact agreement did not.
      * Under equality, a registry window that does not fall on ENIN boundaries converts to an empty

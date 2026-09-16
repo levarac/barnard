@@ -587,6 +587,15 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overCap, currentEnin: 0, nameValidator: nameValidator, recoverer: recoverer), "a lifetime of 13 must still be rejected")
   }
 
+  /// Inclusivity: rejected at validThroughEnin because `now < expires <= validThrough` requires `now < validThrough` (BarnardB005EnvelopeV2.swift:511).
+  func testValidThroughEninBoundaries() {
+    let container = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 10, validThroughEnin: 22)
+    let recoverer = AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))
+    XCTAssertNotNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 21, nameValidator: nameValidator, recoverer: recoverer))
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 22, nameValidator: nameValidator, recoverer: recoverer))
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 23, nameValidator: nameValidator, recoverer: recoverer))
+  }
+
   /// Containment makes an inverted ENVELOPE window reachable in a way exact agreement did not.
   /// Under equality, a registry window that does not fall on ENIN boundaries converts to an empty
   /// range and could never equal anything, whatever the envelope carried. Under containment,
