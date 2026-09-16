@@ -595,8 +595,9 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 22, nameValidator: nameValidator, recoverer: recoverer))
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 23, nameValidator: nameValidator, recoverer: recoverer))
     // `expires <= validThrough` on its own: with expires one past validThrough the window is rejected even at an
-    // ENIN (21) the relay-expiry clause would accept. Only this clause can produce the rejection.
-    let overrun = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 10, validThroughEnin: 22, relayExpiresAtEnin: 23)
+    // ENIN (21) the relay-expiry clause would accept. validFrom is 12 so the lifetime (11) stays under the 12-ENIN
+    // cap; only the validThrough clause can produce the rejection.
+    let overrun = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 12, validThroughEnin: 22, relayExpiresAtEnin: 23)
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overrun, currentEnin: 21, nameValidator: nameValidator, recoverer: recoverer))
   }
 

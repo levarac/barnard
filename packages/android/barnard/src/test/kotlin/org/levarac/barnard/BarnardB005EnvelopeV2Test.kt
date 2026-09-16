@@ -558,8 +558,9 @@ class BarnardB005EnvelopeV2Test {
         assertNull(BarnardB005EnvelopeV2.verify(container, 22L, recoverer))
         assertNull(BarnardB005EnvelopeV2.verify(container, 23L, recoverer))
         // `expires <= validThrough` on its own: with expires one past validThrough the window is rejected even at an
-        // ENIN (21) the relay-expiry clause would accept. Only this clause can produce the rejection.
-        val overrun = synthesizeWindowContainer(eninSeconds = 300, validFromEnin = 10, validThroughEnin = 22, relayExpiresAtEnin = 23)
+        // ENIN (21) the relay-expiry clause would accept. validFrom is 12 so the lifetime (11) stays under the 12-ENIN
+        // cap; only the validThrough clause can produce the rejection.
+        val overrun = synthesizeWindowContainer(eninSeconds = 300, validFromEnin = 12, validThroughEnin = 22, relayExpiresAtEnin = 23)
         assertNull(BarnardB005EnvelopeV2.verify(overrun, 21L, recoverer))
     }
 
