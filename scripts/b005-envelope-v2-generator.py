@@ -146,9 +146,12 @@ def validate_ecdsa_profile() -> None:
     public_key = bytes.fromhex(values["public_key_compressed"])
     r = int(values["expected_r"], 16)
     s = int(values["expected_s"], 16)
+    recovery_id = int(values["expected_v"])
     w = pow(s, N - 2, N)
     point = point_add(point_mul(r * w % N, decompress_public_key(public_key)), point_mul(int.from_bytes(digest, "big") * w % N))
     assert point is not None and point[0] % N == r
+    signature = r.to_bytes(32, "big") + s.to_bytes(32, "big") + bytes([recovery_id])
+    assert recover_public_key(digest, signature) == public_key
 
 
 def validate_delegation_certificate(common: dict, certificate: bytes) -> None:

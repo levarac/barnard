@@ -4,8 +4,10 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +39,24 @@ class B005EnvelopeVectorGeneratorTest(unittest.TestCase):
                 mutated,
                 envelope,
             )
+
+    def test_profile_rejects_wrong_recovery_id(self):
+        source = GENERATOR.SECP_VECTOR.read_text()
+        expected_v = GENERATOR.parse_vectors(GENERATOR.SECP_VECTOR)["expected_v"]
+        wrong_v = "1" if expected_v == "0" else "0"
+        mutated = source.replace(
+            f"expected_v={expected_v}",
+            f"expected_v={wrong_v}",
+            1,
+        )
+        self.assertNotEqual(source, mutated)
+
+        with tempfile.TemporaryDirectory() as directory:
+            vector = Path(directory) / "secp256k1-ecdsa-v1.txt"
+            vector.write_text(mutated)
+            with mock.patch.object(GENERATOR, "SECP_VECTOR", vector):
+                with self.assertRaises(AssertionError):
+                    GENERATOR.validate_ecdsa_profile()
 
     def test_workflow_path_filters_name_only_existing_inputs(self):
         workflow = (ROOT / ".github/workflows/b005-envelope-vectors.yml").read_text()
