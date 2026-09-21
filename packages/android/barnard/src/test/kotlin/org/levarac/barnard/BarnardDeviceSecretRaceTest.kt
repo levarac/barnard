@@ -2,15 +2,14 @@
 
 package org.levarac.barnard
 
-import android.content.Context
-import android.content.ContextWrapper
-import android.content.SharedPreferences
-import androidx.test.core.app.ApplicationProvider
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.fail
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -18,88 +17,88 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class BarnardDeviceSecretRaceTest {
     @Test
-    fun concurrentColdInitializationReturnsThePersistedSecret() {
-        val baseContext = ApplicationProvider.getApplicationContext<Context>()
-        baseContext.getSharedPreferences("barnard", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
-        val preferences = ColdReadBarrierPreferences(
-            baseContext.getSharedPreferences("barnard", Context.MODE_PRIVATE),
+    fun concurrentColdInitializationSerializesReadCreatePersist() {
+        val storage = InMemoryProtectedStringStorage()
+        val bothCallersReady = CountDownLatch(2)
+        val releaseCallers = CountDownLatch(1)
+        val firstGeneratorEntered = CountDownLatch(1)
+        val releaseFirstGenerator = CountDownLatch(1)
+        val generationCount = AtomicInteger()
+        val results = arrayOfNulls<ByteArray>(2)
+        val failures = arrayOfNulls<Throwable>(2)
+        val workers = List(2) { index ->
+            Thread(
+                {
+                    try {
+                        bothCallersReady.countDown()
+                        check(releaseCallers.await(5, TimeUnit.SECONDS)) {
+                            "caller start barrier timed out"
+                        }
+                        results[index] = BarnardDeviceSecretStorage.getOrCreate(storage) { size ->
+                            val generation = generationCount.incrementAndGet()
+                            if (generation == 1) {
+                                firstGeneratorEntered.countDown()
+                                check(releaseFirstGenerator.await(5, TimeUnit.SECONDS)) {
+                                    "first generator release timed out"
+                                }
+                            }
+                            ByteArray(size) { generation.toByte() }
+                        }
+                    } catch (failure: Throwable) {
+                        failures[index] = failure
+                    }
+                },
+                "barnard-device-secret-reader-$index",
+            )
+        }
+
+        workers.forEach(Thread::start)
+        val callersWereReady = bothCallersReady.await(5, TimeUnit.SECONDS)
+        releaseCallers.countDown()
+        val generatorWasEntered = firstGeneratorEntered.await(5, TimeUnit.SECONDS)
+        val serializedCallerObserved = generatorWasEntered && waitForBlockedWorker(workers)
+        releaseFirstGenerator.countDown()
+        workers.forEach { it.join(5_000) }
+
+        assertTrue("both callers must reach the start barrier", callersWereReady)
+        assertTrue("one caller must enter cold generation", generatorWasEntered)
+        assertTrue(
+            "the second caller must block on process-local serialization while the first initializes",
+            serializedCallerObserved,
         )
-        val context = object : ContextWrapper(baseContext) {
-            override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = preferences
-        }
-        val executor = Executors.newFixedThreadPool(2)
-        Thread {
-            Thread.sleep(1_000)
-            preferences.releaseReaders.countDown()
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        val calls = List(2) { executor.submit<BarnardEngine> { BarnardEngine(context) } }
+        assertFalse("workers must complete after releasing the first generator", workers.any(Thread::isAlive))
+        failures.firstOrNull { it != null }?.let { throw AssertionError("worker failed", it) }
 
-        try {
-            val first = calls[0].get(5, TimeUnit.SECONDS)
-            val second = calls[1].get(5, TimeUnit.SECONDS)
-            val persisted = preferences.delegate.getString("rpidSeed", null)
-                ?: fail("cold initialization did not persist a device secret")
-            val persistedEngine = BarnardEngine(context)
-
-            assertEquals(currentTek(first), currentTek(second))
-            assertEquals(currentTek(first), currentTek(persistedEngine))
-            first.dispose()
-            second.dispose()
-            persistedEngine.dispose()
-        } finally {
-            preferences.releaseReaders.countDown()
-            executor.shutdownNow()
+        assertEquals(1, generationCount.get())
+        assertEquals(1, storage.synchronousWrites.get())
+        assertArrayEquals(results[0], results[1])
+        val persisted = BarnardDeviceSecretStorage.getOrCreate(storage) {
+            error("persisted initialization must not generate a second secret")
         }
+        assertArrayEquals(results[0], persisted)
     }
 
-    private class ColdReadBarrierPreferences(
-        val delegate: SharedPreferences,
-    ) : SharedPreferences {
-        val bothReadersReady = CountDownLatch(2)
-        val releaseReaders = CountDownLatch(1)
-        override fun getString(key: String, defValue: String?): String? {
-            if (key == "rpidSeed" && delegate.getString(key, null) == null) {
-                bothReadersReady.countDown()
-                check(releaseReaders.await(5, TimeUnit.SECONDS)) { "cold-read barrier timed out" }
+    private fun waitForBlockedWorker(workers: List<Thread>): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            if (workers.any { it.state == Thread.State.BLOCKED }) {
+                return true
             }
-            return delegate.getString(key, defValue)
+            Thread.sleep(1)
         }
-
-        override fun edit(): SharedPreferences.Editor = object : SharedPreferences.Editor by delegate.edit() {
-            private val editor = delegate.edit()
-
-            override fun putString(key: String, value: String?): SharedPreferences.Editor {
-                editor.putString(key, value)
-                return this
-            }
-
-            override fun apply() {
-                editor.commit()
-            }
-
-            override fun commit(): Boolean = editor.commit()
-        }
-
-        override fun getAll(): Map<String, *> = delegate.all
-        override fun getStringSet(key: String, defValues: Set<String>?): Set<String>? = delegate.getStringSet(key, defValues)
-        override fun getInt(key: String, defValue: Int): Int = delegate.getInt(key, defValue)
-        override fun getLong(key: String, defValue: Long): Long = delegate.getLong(key, defValue)
-        override fun getFloat(key: String, defValue: Float): Float = delegate.getFloat(key, defValue)
-        override fun getBoolean(key: String, defValue: Boolean): Boolean = delegate.getBoolean(key, defValue)
-        override fun contains(key: String): Boolean = delegate.contains(key)
-        override fun registerOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) = delegate.registerOnSharedPreferenceChangeListener(listener)
-        override fun unregisterOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) = delegate.unregisterOnSharedPreferenceChangeListener(listener)
+        return false
     }
 
-    private fun currentTek(engine: BarnardEngine): List<Byte> {
-        val field = BarnardEngine::class.java.getDeclaredField("currentTek")
-            .apply { isAccessible = true }
-        return (field.get(engine) as ByteArray).toList()
+    private class InMemoryProtectedStringStorage : BarnardProtectedStringStorage {
+        private val values = ConcurrentHashMap<String, String>()
+        val synchronousWrites = AtomicInteger()
+
+        override fun getString(key: String): String? = values[key]
+
+        override fun putStringSynchronously(key: String, value: String): Boolean {
+            synchronousWrites.incrementAndGet()
+            values[key] = value
+            return true
+        }
     }
 }
