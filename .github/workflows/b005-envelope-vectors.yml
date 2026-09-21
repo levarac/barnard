@@ -1,0 +1,28 @@
+name: B005 envelope vector regeneration
+
+on:
+  pull_request:
+    paths:
+      - "scripts/b005-envelope-v2-generator.py"
+      - "scripts/b005-envelope-v2-fixtures.json"
+      - "scripts/tests/test_b005_envelope_v2_generator.py"
+      - "test-vectors/b005-envelope-v2.txt"
+      - ".github/workflows/b005-envelope-vectors.yml"
+  push:
+    branches: [main, "release/**"]
+    paths:
+      - "scripts/b005-envelope-v2-generator.py"
+      - "scripts/b005-envelope-v2-fixtures.json"
+      - "scripts/tests/test_b005_envelope_v2_generator.py"
+      - "test-vectors/b005-envelope-v2.txt"
+      - ".github/workflows/b005-envelope-vectors.yml"
+
+jobs:
+  regenerate-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Regenerate and compare the committed vectors
+        run: python3 scripts/b005-envelope-v2-generator.py --check
+      - name: Run generator and round-trip tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
