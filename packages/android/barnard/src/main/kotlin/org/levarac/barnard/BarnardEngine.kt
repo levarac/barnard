@@ -33,7 +33,6 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
 import android.provider.Settings
-import android.util.Base64
 import android.util.Log
 import org.levarac.barnard.BarnardCrypto.toHex
 import java.security.MessageDigest
@@ -286,6 +285,7 @@ public class BarnardEngine(private val appContext: Context) {
 
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences("barnard", Context.MODE_PRIVATE)
+    private val deviceSecretStorage = BarnardDeviceSecretStorage
 
     init {
         initializeTek()
@@ -879,15 +879,7 @@ public class BarnardEngine(private val appContext: Context) {
     // MARK: - DeviceSecret Management
 
     private fun getOrCreateDeviceSecret(): ByteArray {
-        val key = "rpidSeed"
-        val existing = prefs.getString(key, null)
-        if (existing != null) {
-            val bytes = Base64.decode(existing, Base64.DEFAULT)
-            if (bytes.size >= 32) return bytes
-        }
-        val bytes = BarnardCrypto.generateRandomBytes(32)
-        prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
-        return bytes
+        return deviceSecretStorage.getOrCreate(prefs)
     }
 
     // MARK: - Scan Control
