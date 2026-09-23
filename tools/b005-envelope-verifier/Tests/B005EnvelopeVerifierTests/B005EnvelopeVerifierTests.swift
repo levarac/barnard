@@ -20,6 +20,32 @@ final class B005EnvelopeVerifierTests: XCTestCase {
     XCTAssertEqual(json["relayExpiresAtEnin"] as? Int, 6_000_002)
   }
 
+  func testPublishedReceiptSchemaMatchesSuccessOutput() throws {
+    let result = run(input: request(signedEnvelopeHex: vector("v1_envelope"), currentEnin: 6_000_000))
+    XCTAssertEqual(result.status, 0)
+    let output = try outputObject(result.stdout)
+
+    let schemaURL = packageRoot
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("schema/barnard/v2/b005-envelope-verifier.schema.json")
+    let schemaData = try Data(contentsOf: schemaURL)
+    let document = try XCTUnwrap(JSONSerialization.jsonObject(with: schemaData) as? [String: Any])
+    let definitions = try XCTUnwrap(document["$defs"] as? [String: Any])
+    let receipt = try XCTUnwrap(definitions["Receipt"] as? [String: Any])
+    let properties = try XCTUnwrap(receipt["properties"] as? [String: [String: Any]])
+    let required = try XCTUnwrap(receipt["required"] as? [String])
+
+    XCTAssertEqual(Set(required), Set(output.keys))
+    XCTAssertEqual(Set(properties.keys), Set(output.keys))
+    XCTAssertEqual(receipt["additionalProperties"] as? Bool, false)
+    XCTAssertEqual(properties["kind"]?["const"] as? String, output["kind"] as? String)
+    for name in ["validFromEnin", "validThroughEnin", "relayExpiresAtEnin"] {
+      XCTAssertEqual(properties[name]?["type"] as? String, "integer")
+      XCTAssertEqual(properties[name]?["minimum"] as? Int, 0)
+    }
+  }
+
   func testMutatedSignatureFailsWithOnlySanitizedMessage() throws {
     var signedEnvelope = vector("v1_envelope")
     let last = signedEnvelope.removeLast()
@@ -35,9 +61,9 @@ final class B005EnvelopeVerifierTests: XCTestCase {
   func testOutsideRelayWindowFailsWithOnlySanitizedMessage() throws {
     for currentEnin in [5_999_989, 6_000_002] {
       let result = run(input: request(signedEnvelopeHex: vector("v1_envelope"), currentEnin: currentEnin))
-      XCTAssertNotEqual(result.status, 0, "ENIN \\(currentEnin)")
-      XCTAssertEqual(result.stdout, "", "ENIN \\(currentEnin)")
-      XCTAssertEqual(result.stderr, failure + "\n", "ENIN \\(currentEnin)")
+      XCTAssertNotEqual(result.status, 0, "ENIN \(currentEnin)")
+      XCTAssertEqual(result.stdout, "", "ENIN \(currentEnin)")
+      XCTAssertEqual(result.stderr, failure + "\n", "ENIN \(currentEnin)")
     }
   }
 
@@ -63,6 +89,40 @@ final class B005EnvelopeVerifierTests: XCTestCase {
 
     for input in inputs {
       let result = run(input: input)
+      XCTAssertNotEqual(result.status, 0)
+      XCTAssertEqual(result.stdout, "")
+      XCTAssertEqual(result.stderr, failure + "\n")
+    }
+  }
+
+  func testMissingExtraAndInvalidEninRequestsFailClosed() throws {
+    let signedEnvelope = vector("v1_envelope")
+    let inputs = [
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)"}"#,
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000,"extra":1}"#,
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":-1}"#,
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000.5}"#
+    ]
+
+    for input in inputs {
+      let result = run(input: input)
+      XCTAssertNotEqual(result.status, 0)
+      XCTAssertEqual(result.stdout, "")
+      XCTAssertEqual(result.stderr, failure + "\n")
+    }
+  }
+
+  func testNoncanonicalEnvelopeHexFailsClosed() throws {
+    let signedEnvelope = vector("v1_envelope")
+    let inputs = [
+      signedEnvelope.uppercased(),
+      "0x" + signedEnvelope,
+      signedEnvelope + "0",
+      signedEnvelope + String(repeating: "0", count: 1_016)
+    ]
+
+    for signedEnvelopeHex in inputs {
+      let result = run(input: request(signedEnvelopeHex: signedEnvelopeHex, currentEnin: 6_000_000))
       XCTAssertNotEqual(result.status, 0)
       XCTAssertEqual(result.stdout, "")
       XCTAssertEqual(result.stderr, failure + "\n")
