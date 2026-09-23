@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v2/b005-envelope-verifier.schema.json",
+  "title": "Barnard B005 envelope verifier CLI JSON (v1)",
+  "description": "Strict stdin request and successful stdout receipt for the offline B005 verifier CLI. A successful receipt represents RADIO_SELF_VERIFIED at the supplied ENIN, not registry confirmation.",
+  "oneOf": [
+    { "$ref": "#/$defs/Request" },
+    { "$ref": "#/$defs/Receipt" }
+  ],
+  "$defs": {
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "signedEnvelopeHex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})+$",
+          "minLength": 398,
+          "maxLength": 1016,
+          "description": "Lowercase hexadecimal signed envelope bytes without the four-byte B005 container (199 to 508 bytes)."
+        },
+        "currentEnin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "ENIN supplied by the caller for offline verification; not independently established wall-clock time."
+        }
+      },
+      "required": ["signedEnvelopeHex", "currentEnin"]
+    },
+    "Receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "BARNARD_B005_VERIFIED_V1",
+          "description": "Versioned CLI receipt kind for RADIO_SELF_VERIFIED only; not a registration or user-facing verified state."
+        },
+        "eventIdHex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "joinMode": {
+          "type": "integer",
+          "enum": [0, 1]
+        },
+        "validFromEnin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "validThroughEnin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "relayExpiresAtEnin": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Exclusive end of the half-open relay window, not proof that the event is registered or physically present."
+        }
+      },
+      "required": ["kind", "eventIdHex", "joinMode", "validFromEnin", "validThroughEnin", "relayExpiresAtEnin"]
+    }
+  }
+}
