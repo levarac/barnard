@@ -101,7 +101,8 @@ final class B005EnvelopeVerifierTests: XCTestCase {
       #"{"signedEnvelopeHex":"\#(signedEnvelope)"}"#,
       #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000,"extra":1}"#,
       #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":-1}"#,
-      #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000.5}"#
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000.5}"#,
+      request(signedEnvelopeHex: signedEnvelope, currentEnin: 6_000_000) + " {}"
     ]
 
     for input in inputs {
@@ -118,7 +119,7 @@ final class B005EnvelopeVerifierTests: XCTestCase {
       signedEnvelope.uppercased(),
       "0x" + signedEnvelope,
       signedEnvelope + "0",
-      signedEnvelope + String(repeating: "0", count: 1_016)
+      String(repeating: "00", count: 509)
     ]
 
     for signedEnvelopeHex in inputs {
