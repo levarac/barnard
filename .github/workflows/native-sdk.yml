@@ -187,6 +187,21 @@ jobs:
         # runners have no Bluetooth radio.
         run: ./scripts/bundle.sh
 
+  b005-envelope-verifier:
+    runs-on: macos-15
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tools/b005-envelope-verifier
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Build verifier CLI
+        run: swift build
+      - name: Test verifier CLI
+        run: swift test
+
   venue-envelope-producer:
     # tools/venue-envelope-producer is a small SwiftPM CLI + library wrapping
     # packages/swift/barnard's public B005 v2 encoder/signing chain to produce a real signed

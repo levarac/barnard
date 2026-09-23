@@ -53,6 +53,22 @@ final class B005EnvelopeVerifierTests: XCTestCase {
     }
   }
 
+  func testDuplicateRequestKeysFailWithOnlySanitizedMessage() throws {
+    let signedEnvelope = vector("v1_envelope")
+    let inputs = [
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000,"currentEnin":6000000}"#,
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)","signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000}"#,
+      #"{"signedEnvelopeHex":"\#(signedEnvelope)","currentEnin":6000000,"\u0063urrentEnin":6000000}"#
+    ]
+
+    for input in inputs {
+      let result = run(input: input)
+      XCTAssertNotEqual(result.status, 0)
+      XCTAssertEqual(result.stdout, "")
+      XCTAssertEqual(result.stderr, failure + "\n")
+    }
+  }
+
   private func request(signedEnvelopeHex: String, currentEnin: Int) -> String {
     #"{"signedEnvelopeHex":"\#(signedEnvelopeHex)","currentEnin":\#(currentEnin)}"#
   }

@@ -46,11 +46,71 @@ public enum B005EnvelopeVerifier {
   private static func decodeRequest(_ input: Data) -> Request? {
     guard let object = try? JSONSerialization.jsonObject(with: input),
           let dictionary = object as? [String: Any],
-          Set(dictionary.keys) == ["signedEnvelopeHex", "currentEnin"]
+          Set(dictionary.keys) == ["signedEnvelopeHex", "currentEnin"],
+          hasExactlyTwoDistinctKeys(input)
     else {
       return nil
     }
     return try? JSONDecoder().decode(Request.self, from: input)
+  }
+
+  // JSONSerialization and JSONDecoder collapse repeated object keys. Inspect the
+  // original bytes so the documented two-member request cannot be ambiguous.
+  private static func hasExactlyTwoDistinctKeys(_ input: Data) -> Bool {
+    let bytes = Array(input)
+    var index = 0
+
+    func skipWhitespace() {
+      while index < bytes.count && [9, 10, 13, 32].contains(bytes[index]) { index += 1 }
+    }
+
+    func consume(_ byte: UInt8) -> Bool {
+      skipWhitespace()
+      guard index < bytes.count, bytes[index] == byte else { return false }
+      index += 1
+      return true
+    }
+
+    func readString() -> String? {
+      skipWhitespace()
+      guard index < bytes.count, bytes[index] == 34 else { return nil }
+      let start = index
+      index += 1
+      while index < bytes.count {
+        if bytes[index] == 92 {
+          index += 2
+        } else if bytes[index] == 34 {
+          index += 1
+          return try? JSONSerialization.jsonObject(
+            with: Data(bytes[start..<index]), options: [.fragmentsAllowed]
+          ) as? String
+        } else {
+          index += 1
+        }
+      }
+      return nil
+    }
+
+    guard consume(123) else { return false } // {
+    var keys: [String] = []
+    for member in 0..<2 {
+      guard let key = readString(), consume(58) else { return false } // :
+      keys.append(key)
+      skipWhitespace()
+      if key == "signedEnvelopeHex" {
+        guard readString() != nil else { return false }
+      } else if key == "currentEnin" {
+        let start = index
+        while index < bytes.count && bytes[index] != 44 && bytes[index] != 125 { index += 1 }
+        guard index > start else { return false }
+      } else {
+        return false
+      }
+      if member == 0 && !consume(44) { return false } // ,
+    }
+    guard consume(125) else { return false } // }
+    skipWhitespace()
+    return index == bytes.count && Set(keys) == ["signedEnvelopeHex", "currentEnin"]
   }
 
   private static func decodeLowercaseHex(_ hex: String) -> [UInt8]? {
