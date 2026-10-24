@@ -31,3 +31,9 @@ android_mirrored_files=(
   "BarnardV2Policy.kt"
   "BarnardIso8601.kt"
 )
+
+# Keep this React Native Android helper byte-identical to its native origin.
+# shellcheck disable=SC2034
+android_react_native_mirrored_files=(
+  "BarnardDeviceSecretStorage.kt"
+)
