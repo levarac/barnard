@@ -32,7 +32,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.provider.Settings
-import android.util.Base64
 import android.util.Log
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
@@ -472,17 +471,8 @@ internal class BarnardController(
 
     // MARK: - DeviceSecret Management
 
-    private fun getOrCreateDeviceSecret(): ByteArray {
-        val key = "rpidSeed"
-        val existing = prefs.getString(key, null)
-        if (existing != null) {
-            val bytes = Base64.decode(existing, Base64.DEFAULT)
-            if (bytes.size >= 32) return bytes
-        }
-        val bytes = BarnardCrypto.generateRandomBytes(32)
-        prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
-        return bytes
-    }
+    private fun getOrCreateDeviceSecret(): ByteArray =
+        BarnardDeviceSecretStorage.getOrCreate(prefs)
 
     // MARK: - Scan Control
 
