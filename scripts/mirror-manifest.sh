@@ -22,6 +22,7 @@ swift_mirrored_pairs=(
 )
 
 android_mirrored_files=(
+  "BarnardDeviceSecretStorage.kt"
   "BarnardCrypto.kt"
   "BarnardSigning.kt"
   "WalletBindingVerification.kt"

@@ -2,7 +2,6 @@ package org.levarac.barnard
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -116,15 +115,6 @@ class BarnardIdentityModule(reactContext: ReactApplicationContext) :
 
     // Same storage key as BarnardController.getOrCreateDeviceSecret — see
     // that class for the rationale (shared DeviceSecret, never exposed).
-    private fun getOrCreateDeviceSecret(): ByteArray {
-        val key = "rpidSeed"
-        val existing = prefs.getString(key, null)
-        if (existing != null) {
-            val bytes = Base64.decode(existing, Base64.DEFAULT)
-            if (bytes.size >= 32) return bytes
-        }
-        val bytes = BarnardCrypto.generateRandomBytes(32)
-        prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
-        return bytes
-    }
+    private fun getOrCreateDeviceSecret(): ByteArray =
+        BarnardDeviceSecretStorage.getOrCreate(prefs)
 }
