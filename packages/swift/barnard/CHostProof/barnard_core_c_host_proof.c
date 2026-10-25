@@ -19,6 +19,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "barnard_core_c_signing.h"
+
 typedef int32_t (*derive_tek_for_event_fn)(
     const uint8_t *, int32_t, const uint8_t *, int32_t, uint8_t *);
 typedef int32_t (*derive_tek_for_anonymous_fn)(const uint8_t *, int32_t, uint8_t *);
