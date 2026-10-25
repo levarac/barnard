@@ -99,7 +99,7 @@ static void expect_invalid_scalar_subprocess(const char *program,
   fflush(NULL);
   pid_t child = fork();
   if (child == 0) {
-    execl(program, program, library, scalar, (char *)NULL);
+    execlp(program, program, library, scalar, (char *)NULL);
     _exit(127);
   }
   if (child < 0) {

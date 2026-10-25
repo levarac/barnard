@@ -120,9 +120,9 @@ post-split regression oracle.
 `barnard_core_sign_recoverable` returns `-1` for a null input or output pointer,
 or a 32-byte private scalar outside `1 <= k < N` (the secp256k1 curve order).
 It validates these arguments before calling the Swift signer, so malformed
-scalars cannot trigger that signer's preconditions. The fixed-size C ABI
-requires callers to provide readable 32-byte inputs and writable outputs of
-the documented sizes; buffer capacity cannot be inferred from a pointer.
+scalars cannot trigger that signer's preconditions. Callers of the fixed-size
+C ABI MUST provide readable 32-byte inputs and writable outputs of the
+documented sizes; buffer capacity cannot be inferred from a pointer.
 
 For example, a call with 32 zero private-key bytes returns `-1`; the same host
 can then sign successfully with scalar `1`. Valid keys retain byte-identical
