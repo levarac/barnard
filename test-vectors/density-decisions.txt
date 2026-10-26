@@ -1,4 +1,5 @@
 # B005 participant relay shared density vectors.
+# The keep numerator is always k = 3; the denominator is r + 1, with the probability capped at 1.
 k=3
 window_ms=30000
 contention_max_ms=15000

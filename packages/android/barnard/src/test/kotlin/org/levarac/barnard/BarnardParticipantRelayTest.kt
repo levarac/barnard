@@ -233,7 +233,8 @@ class BarnardParticipantRelayTest {
             // pKeep = min(1, k/(r+1)) picks a keep candidate whenever r*_keep_numerator > 0,
             // but Advertise only actually restarts if r < k at the end of the contention
             // delay (advance()'s shared `relayCount(now) < 3` gate) -- both must hold.
-            val keepNumerator = density["r${r}_keep_numerator"]?.toInt() ?: k
+            val keepNumerator = density.getValue("r${r}_keep_numerator").toInt()
+            assertEquals(3, keepNumerator, "r=$r keep numerator must be exactly 3")
             val expectKeep = keepNumerator > 0 && r < k
             assertEquals(expectKeep, f.relay.isServing, "r=$r keep decision mismatch")
         }
