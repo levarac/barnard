@@ -207,7 +207,8 @@ final class BarnardParticipantRelayTests: XCTestCase {
     // input parameter names (peerHandle/randomnessSeedMaterial) are intentionally not outputs.
     let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let source = try String(contentsOf: package.appendingPathComponent("Sources/BarnardCore/BarnardParticipantRelay.swift"), encoding: .utf8)
-    let members = try NSRegularExpression(pattern: #"\bpublic\s+(?:func|var|let)\s+(\w+)"#)
+    // Setter visibility and member modifiers do not make a public getter or method private.
+    let members = try NSRegularExpression(pattern: #"\bpublic\s+(?:(?:(?:private|fileprivate|internal|package)\s*\(\s*set\s*\)|final|static|class|nonisolated|override|lazy|weak|unowned)\s+)*(?:func|var|let)\s+(\w+)"#)
     let names = members.matches(in: source, range: NSRange(source.startIndex..., in: source)).map {
       (source as NSString).substring(with: $0.range(at: 1))
     }
