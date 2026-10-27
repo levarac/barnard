@@ -28,7 +28,13 @@ driver draws the drafted summary from (see `RELEASING.md`).
 
 ## Unreleased
 
-Nothing yet.
+### Breaking
+
+- **B005 structural errors now name `maxRelayHops` at envelope offset `A+15`**
+  (`A = 74 + 33n`), matching specs 122 and 134. Swift: before `BarnardB005StructureError.eventCodeHashTlvType`, after `BarnardB005StructureError.maxRelayHops`; Kotlin: before `BarnardB005StructureError.EVENT_CODE_HASH_TLV_TYPE`, after `BarnardB005StructureError.MAX_RELAY_HOPS`.
+  Consumers with exhaustive Swift `switch` or Kotlin `when` branches must rename
+  the old case to the corresponding new case; no deprecated alias is provided.
+  Rejection behavior is unchanged: this byte must still be exactly `0x02`.
 
 ## 0.9.1 — 2026-09-10
 

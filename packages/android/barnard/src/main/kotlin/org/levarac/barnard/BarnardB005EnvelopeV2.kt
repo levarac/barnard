@@ -310,8 +310,8 @@ enum class BarnardB005StructureError {
     /** `eninSeconds` is zero, which no ENIN arithmetic can use. */
     ENIN_SECONDS,
 
-    /** The event-code-hash TLV type byte is not 2. */
-    EVENT_CODE_HASH_TLV_TYPE,
+    /** `maxRelayHops` is not 2. */
+    MAX_RELAY_HOPS,
 
     /** The display-name length is outside `1..64`. */
     DISPLAY_NAME_LENGTH,
@@ -347,7 +347,7 @@ object BarnardB005EnvelopeV2 {
         if (a + 91 > e.size) return BarnardB005StructureError.FIELD_LAYOUT
         if (e[a].u !in 0..1) return BarnardB005StructureError.JOIN_MODE
         if (read16(e, a + 1) == 0) return BarnardB005StructureError.ENIN_SECONDS
-        if (e[a + 15].u != 2) return BarnardB005StructureError.EVENT_CODE_HASH_TLV_TYPE
+        if (e[a + 15].u != 2) return BarnardB005StructureError.MAX_RELAY_HOPS
         val nameLength = e[a + 24].u
         if (nameLength !in 1..64) return BarnardB005StructureError.DISPLAY_NAME_LENGTH
         val certLengthOffset = a + 25 + nameLength

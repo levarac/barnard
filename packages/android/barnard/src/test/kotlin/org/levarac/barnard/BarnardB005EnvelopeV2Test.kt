@@ -13,6 +13,22 @@ class BarnardB005EnvelopeV2Test {
     private val vectors by lazy { parseVectors(File(findRepoRoot(), "test-vectors/b005-envelope-v2.txt")) }
     private val parallaxNegVectors by lazy { parseVectors(File(findRepoRoot(), "test-vectors/parallax-delegation-cert-v1.txt")) }
     private fun v(name: String) = vectors[name] ?: error("missing $name")
+    @Test fun structureRejectsInvalidMaxRelayHopsAtAPlus15() {
+        for (key in listOf("v1_container", "v2_container")) {
+            val container = hex(v(key))
+            val n = container[4 + 73].toInt() and 0xff
+            val a = 74 + 33 * n
+            val maxRelayHopsOffset = 4 + a + 15 // Include the four-byte container header.
+            assertEquals(2.toByte(), container[maxRelayHopsOffset], key)
+            assertNull(BarnardB005EnvelopeV2.validateStructure(container), key)
+            for (value in 0..255) {
+                if (value == 2) continue
+                val mutation = container.copyOf().also { it[maxRelayHopsOffset] = value.toByte() }
+                assertEquals(BarnardB005StructureError.MAX_RELAY_HOPS, BarnardB005EnvelopeV2.validateStructure(mutation), "$key: maxRelayHops=$value")
+            }
+        }
+    }
+
     @Test fun sharedVectorsAndBoundaries() {
         val key = hex(v("authority_public_key"))
         assertContentEquals(hex(v("event_key_set_bytes")), BarnardB005EnvelopeV2.eventKeySetBytes(listOf(key)))
