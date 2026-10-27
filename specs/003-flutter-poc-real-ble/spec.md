@@ -40,6 +40,15 @@ We need a minimal real-Transport PoC that can be exercised on real devices to va
 - Any server integration or domain logic.
 - Persisting any device-unique identifiers. 
 
+## Build SDK baseline (2026-10-27)
+
+- Pin local builds to Flutter 3.47.8 stable (Dart 3.13.7) in both the repository root and the PoC's `.tool-versions`.
+- Require Dart `^3.13.7` for this example so dependency resolution rejects SDKs affected by [GHSA-frr6-h895-5pxp](https://github.com/dart-lang/sdk/security/advisories/GHSA-frr6-h895-5pxp).
+- Keep the reusable library's Dart `^3.11.0` and Flutter `>=3.41.0` constraints: its Dart and native plugin production sources contain no outbound HTTP/TLS calls. Consuming applications that use `dart:io` TLS must select a patched SDK independently.
+- Example build flow: select the pinned SDK, run `flutter pub get` in `examples/flutter/barnard_poc`, then `flutter build apk --debug`. An older Dart SDK must fail dependency resolution before compilation.
+- Retain Flutter 3.47.8's analyzer exclusions for generated build and native platform directories, plus the example's `android.builtInKotlin=false` and `android.newDsl=false` compatibility settings. The current Gradle 8.14, Android Gradle Plugin 8.11.1, and Kotlin 2.2.20 still build, but Flutter warns that future support requires Gradle 9.1.0, Android Gradle Plugin 9.0.1, and Kotlin 2.3.20; that coordinated Android migration is separate from this SDK security update.
+- No public API, schema, Scan / Advertise, Central / Peripheral, GATT, or Transport behavior changes; on-wire payloads still contain no device-unique persistent identifiers.
+
 ## Terminology (do not translate)
 
 - **Scan** / **Advertise** / **Central** / **Peripheral** / **GATT** / **Transport**
