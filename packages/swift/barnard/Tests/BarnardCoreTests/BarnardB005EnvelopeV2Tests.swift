@@ -13,6 +13,23 @@ private struct TestNameValidator: BarnardB005DisplayNameNormalizing {
 
 final class BarnardB005EnvelopeV2Tests: XCTestCase {
   private let nameValidator = TestNameValidator()
+  func testStructureRejectsInvalidMaxRelayHopsAtAPlus15() throws {
+    let v = try load()
+    for key in ["v1_container", "v2_container"] {
+      let container = hex(v[key]!)
+      let n = Int(container[4 + 73])
+      let a = 74 + 33 * n
+      let maxRelayHopsOffset = 4 + a + 15 // Include the four-byte container header.
+      XCTAssertEqual(container[maxRelayHopsOffset], 2, key)
+      XCTAssertNil(BarnardB005EnvelopeV2.validateStructure(container: container), key)
+      for value in UInt8.min...UInt8.max where value != 2 {
+        var mutation = container
+        mutation[maxRelayHopsOffset] = value
+        XCTAssertEqual(BarnardB005EnvelopeV2.validateStructure(container: mutation), .maxRelayHops, "\(key): maxRelayHops=\(value)")
+      }
+    }
+  }
+
   func testSharedVectorsAndBoundaries() throws {
     let v = try load()
     let key = hex(v["authority_public_key"]!)
