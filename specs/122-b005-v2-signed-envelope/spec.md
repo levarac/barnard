@@ -118,6 +118,10 @@ For the definition's full validity window, the issuer MUST derive
 `ceilDiv` rounds upward and `floorDiv` rounds downward; an ENIN intersecting either
 boundary without lying wholly inside the window is excluded. For example, the inclusive
 window `[3000, 3299]` with `eninSeconds = 300` yields bounds `[10, 10]`.
+A window that contains no whole ENIN derives an empty range: `[3001, 3299]` yields `[11, 10]`.
+No envelope window is contained in an empty range, so registry agreement reports a
+`VALIDITY_WINDOW` mismatch for every envelope and none reaches `REGISTRY_VERIFIED`; an
+issuer has no valid envelope to issue for such a definition.
 These are the `registryStartEnin` and `registryEndEnin` computations in `registryAgreement`
 in [Swift](../../packages/swift/barnard/Sources/BarnardCore/BarnardB005EnvelopeV2.swift)
 and [Kotlin](../../packages/android/barnard/src/main/kotlin/org/levarac/barnard/BarnardB005EnvelopeV2.kt);
