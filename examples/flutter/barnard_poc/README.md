@@ -2,6 +2,10 @@
 
 Barnard Flutter PoC app (real BLE via GATT-first RPID read).
 
+## Requirements
+
+Use Flutter 3.47.8 stable (Dart 3.13.7), pinned in this directory and the repository root. The example requires Dart `^3.13.7` to exclude SDKs affected by [GHSA-frr6-h895-5pxp](https://github.com/dart-lang/sdk/security/advisories/GHSA-frr6-h895-5pxp).
+
 ## Run
 
 ```bash

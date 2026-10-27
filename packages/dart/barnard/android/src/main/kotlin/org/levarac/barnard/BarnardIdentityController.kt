@@ -4,7 +4,6 @@ package org.levarac.barnard
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -140,15 +139,6 @@ internal class BarnardIdentityController(
     // DeviceSecret, but this module never exposes it (unlike
     // BarnardClient.exportCurrentTek, which is the TEK, not the raw secret).
 
-    private fun getOrCreateDeviceSecret(): ByteArray {
-        val key = "rpidSeed"
-        val existing = prefs.getString(key, null)
-        if (existing != null) {
-            val bytes = Base64.decode(existing, Base64.DEFAULT)
-            if (bytes.size >= 32) return bytes
-        }
-        val bytes = BarnardCrypto.generateRandomBytes(32)
-        prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
-        return bytes
-    }
+    private fun getOrCreateDeviceSecret(): ByteArray =
+        BarnardDeviceSecretStorage.getOrCreate(prefs)
 }

@@ -4,7 +4,6 @@ package org.levarac.barnard
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
 import org.levarac.barnard.BarnardCrypto.toHex
 import java.math.BigInteger
 import java.security.MessageDigest
@@ -236,17 +235,8 @@ public class BarnardIdentity internal constructor(
     private fun signingKeyPair(eventCode: String): BarnardSigning.SigningKeyPair =
         signingKeyCache.keyPair(getOrCreateDeviceSecret(), eventCode, deriveSigningKeyPair)
 
-    private fun getOrCreateDeviceSecret(): ByteArray {
-        val key = "rpidSeed"
-        val existing = prefs.getString(key, null)
-        if (existing != null) {
-            val bytes = Base64.decode(existing, Base64.DEFAULT)
-            if (bytes.size >= 32) return bytes
-        }
-        val bytes = BarnardCrypto.generateRandomBytes(32)
-        prefs.edit().putString(key, Base64.encodeToString(bytes, Base64.NO_WRAP)).apply()
-        return bytes
-    }
+    private fun getOrCreateDeviceSecret(): ByteArray =
+        BarnardDeviceSecretStorage.getOrCreate(prefs)
 
     // MARK: - Owner-key hex <-> BigInteger conversion (barnard#133 / barnard#92)
     //

@@ -22,6 +22,7 @@ swift_mirrored_pairs=(
 )
 
 android_mirrored_files=(
+  "BarnardDeviceSecretStorage.kt"
   "BarnardCrypto.kt"
   "BarnardSigning.kt"
   "WalletBindingVerification.kt"
@@ -29,4 +30,10 @@ android_mirrored_files=(
   "BouncyCastleSecp256k1Backend.kt"
   "BarnardV2Policy.kt"
   "BarnardIso8601.kt"
+)
+
+# Keep this React Native Android helper byte-identical to its native origin.
+# shellcheck disable=SC2034
+android_react_native_mirrored_files=(
+  "BarnardDeviceSecretStorage.kt"
 )
