@@ -19,7 +19,9 @@ The real BLE Transport implements **Scan / Advertise** with **GATT-first** RPID 
 - iOS 14.0 or newer
 - Android API 24 or newer for the Flutter plugin package
 
-Swift Package Manager support in Flutter depends on the Flutter 3.41 toolchain.
+The Flutter SDK lower bound supports this package's Swift Package Manager integration.
+
+Local development uses Flutter 3.47.8 stable (Dart 3.13.7), pinned in the repository's `.tool-versions`, for [GHSA-frr6-h895-5pxp](https://github.com/dart-lang/sdk/security/advisories/GHSA-frr6-h895-5pxp). The library's SDK lower bounds remain unchanged because its Dart and native plugin production sources do not make HTTP/TLS connections. Applications that use `dart:io` TLS must select a patched SDK independently.
 
 ## Installation
 
