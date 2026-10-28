@@ -8,7 +8,8 @@
 extern "C" {
 #endif
 
-/* Sign a 32-byte message hash with a 32-byte secp256k1 private key.
+/* Sign a 32-byte message hash with a secp256k1 private scalar encoded as a
+ * 32-byte unsigned big-endian integer.
  * Returns 0 on success, or -1 for any null pointer or a private scalar
  * outside 1 <= k < N (including zero, N, and all-0xff bytes).
  * Callers provide readable 32-byte inputs, writable 32-byte r/s outputs,

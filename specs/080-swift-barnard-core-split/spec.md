@@ -119,6 +119,7 @@ post-split regression oracle.
 
 `barnard_core_sign_recoverable` returns `-1` for a null input or output pointer,
 or a 32-byte private scalar outside `1 <= k < N` (the secp256k1 curve order).
+The private scalar MUST be encoded as a 32-byte unsigned big-endian integer.
 It validates these arguments before calling the Swift signer, so malformed
 scalars cannot trigger that signer's preconditions. Callers of the fixed-size
 C ABI MUST provide readable 32-byte inputs and writable outputs of the
