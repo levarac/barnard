@@ -44,6 +44,10 @@ Same-named declarations can hide an absent qualified type. Shadowed names,
 inactive branches, strings, and cross-package names may cause false failures.
 Only conventional ASCII identifiers are supported. A new declaration syntax or
 different target layout requires updating this check and its fixtures.
+Swift extended regex syntax is unsupported: a Swift source used for declaration
+inventory or manifested references containing raw `#/` exits 2 before comment
+erasure, including occurrences inside comments or strings, rather than risk
+hiding declarations or references. Bare `/.../` regex literals are not parsed.
 
 ## Example and acceptance
 

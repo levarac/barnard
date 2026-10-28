@@ -3,6 +3,7 @@
 
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +84,32 @@ class MirrorFixtures:
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("NativeOnly", result.stdout)
 
+    def test_comments_inside_string_interpolation_are_not_references(self):
+        self.write(self.origin / ("NativeOnly" + self.suffix), self.missing_declaration)
+        for comment in ("/* NativeOnly */", "/* outer /* NativeOnly */ */", "// NativeOnly\n"):
+            with self.subTest(comment=comment):
+                self.reference(self.interpolated_comment % comment)
+                result = self.check()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_direct_checker_requires_both_manifested_files(self):
+        for side, directory, relative in (
+            ("native", self.origin, self.source_file),
+            ("mirror", self.mirror, self.mirror_file),
+        ):
+            with self.subTest(side=side):
+                self.reference("// No project type declarations or references.\n")
+                path = self.root / directory / relative
+                path.unlink()
+                result = subprocess.run(
+                    [sys.executable, str(self.root / "scripts/check-mirror-type-references.py"),
+                     self.language, "--repo-root", str(self.root)],
+                    text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(f"missing manifested {side} source", result.stderr)
+                self.assertIn(str(path), result.stderr)
+
     def test_string_cannot_supply_a_type_definition(self):
         self.write(self.origin / ("NativeOnly" + self.suffix), self.missing_declaration)
         self.reference(self.missing_reference)
@@ -123,7 +150,52 @@ class SwiftMirrorFixtures(MirrorFixtures, unittest.TestCase):
     missing_declaration = "struct NativeOnly {}\n"
     missing_reference = "struct Shared { let value: NativeOnly }\n"
     interpolated_reference = 'let text = "value: \\(NativeOnly())"\n'
+    interpolated_comment = 'let text = "\\( %s 0 )"\n'
     platform_source = "import Foundation\nstruct Shared { let text: String; let bytes: Data }\n"
+
+    def test_extended_regex_syntax_fails_closed(self):
+        self.write(self.origin / "NativeOnly.swift", self.missing_declaration)
+        for source in (
+            "let pattern = #//foo/#; let value: NativeOnly\n",
+            "let pattern = #/foo/*/#\nlet value: NativeOnly\n/* end */\n",
+            "let pattern = ##//foo/##; let value: NativeOnly\n",
+            "let pattern = #/foo/##\n",
+            '// #/ inside a comment\n',
+            'let text = "#/ inside a string"\n',
+        ):
+            with self.subTest(source=source):
+                self.reference(source)
+                result = self.check()
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("unsupported Swift extended regex", result.stderr)
+                self.assertIn(str(self.origin / self.source_file), result.stderr)
+
+    def test_direct_checker_requires_manifested_resource_mirror(self):
+        self.write("scripts/mirror-manifest.sh", self.manifest +
+                   'swift_mirrored_pairs+=("Barnard/PrivacyInfo.xcprivacy|PrivacyInfo.xcprivacy")\n')
+        self.write(self.origin / "Barnard/PrivacyInfo.xcprivacy", "resource\n")
+        result = subprocess.run(
+            [sys.executable, str(self.root / "scripts/check-mirror-type-references.py"),
+             self.language, "--repo-root", str(self.root)],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("missing manifested mirror source", result.stderr)
+        self.assertIn("PrivacyInfo.xcprivacy", result.stderr)
+
+    def test_extended_regex_in_inventory_fails_closed(self):
+        self.reference(self.missing_reference)
+        for directory in (self.origin, self.mirror):
+            path = directory / "Unmanifested.swift"
+            with self.subTest(directory=directory):
+                if directory == self.mirror:
+                    self.write(self.origin / "NativeOnly.swift", self.missing_declaration)
+                self.write(path, "let pattern = #//foo/#; struct NativeOnly {}\n")
+                result = self.check()
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("unsupported Swift extended regex", result.stderr)
+                self.assertIn(str(path), result.stderr)
+            (self.root / path).unlink()
 
     def test_protocol_actor_enum_and_typealias_are_project_types(self):
         for declaration in (
@@ -148,6 +220,7 @@ class AndroidMirrorFixtures(MirrorFixtures, unittest.TestCase):
     missing_declaration = "package org.levarac.barnard\nclass NativeOnly\n"
     missing_reference = "package org.levarac.barnard\nclass Shared(val value: NativeOnly)\n"
     interpolated_reference = 'val text = "value: ${NativeOnly()}"\n'
+    interpolated_comment = 'val text = "${ %s 0 }"\n'
     platform_source = "import android.content.Context\nclass Shared(val text: String, val context: Context)\n"
 
     def setUp(self):

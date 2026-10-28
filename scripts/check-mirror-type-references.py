@@ -66,7 +66,9 @@ def lexical_views(text):
         while pos < len(text) and depth:
             match = STRING_START.match(text, pos)
             if text.startswith(("//", "/*"), pos):
-                pos = comment_end(pos)
+                end = comment_end(pos)
+                erase(references, pos, end)
+                pos = end
             elif match:
                 pos = string_end(match)
             elif text[pos] == opening:
@@ -136,7 +138,8 @@ def manifest_paths(root, language):
     entries = result.stdout.decode("utf-8").rstrip("\0").split("\0")
     if not entries or any(not entry for entry in entries):
         raise ValueError(f"empty {variable} in mirror-manifest.sh")
-    return [entry.split("|", 1)[0] for entry in entries]
+    return [entry.split("|", 1) if language == "swift" else (entry, entry)
+            for entry in entries]
 
 
 def check(root, language):
@@ -149,13 +152,20 @@ def check(root, language):
         mirror = root / "packages/dart/barnard/android/src/main"
         suffixes = {".kt", ".java"}
 
+    def source_views(path):
+        text = path.read_text(encoding="utf-8")
+        if language == "swift" and "#/" in text:
+            # Fail before comment erasure can hide references or declarations.
+            raise ValueError(f"unsupported Swift extended regex (#/) in source: {path}")
+        return lexical_views(text)
+
     def inventory(directory):
         if not directory.is_dir():
             raise ValueError(f"missing production source directory: {directory}")
         result = {}
         for path in sorted(directory.rglob("*")):
             if path.is_file() and path.suffix in suffixes:
-                code, _ = lexical_views(path.read_text(encoding="utf-8"))
+                code, _ = source_views(path)
                 for name in declarations(code, language):
                     result.setdefault(name, []).append(path.relative_to(root))
         return result
@@ -165,14 +175,17 @@ def check(root, language):
     missing = native_types.keys() - mirror_types.keys()
     paths = manifest_paths(root, language)
     status, checked, failures = 0, 0, 0
-    for relative in paths:
+    for relative, mirror_relative in paths:
         path = origin / relative if language == "swift" else origin / "kotlin/org/levarac/barnard" / relative
         if not path.is_file():
             raise ValueError(f"missing manifested native source: {path}")
+        mirror_path = mirror / mirror_relative if language == "swift" else mirror / "kotlin/org/levarac/barnard" / mirror_relative
+        if not mirror_path.is_file():
+            raise ValueError(f"missing manifested mirror source: {mirror_path}")
         if path.suffix not in suffixes:
             continue  # e.g. PrivacyInfo.xcprivacy is a byte-mirrored resource.
         checked += 1
-        _, references = lexical_views(path.read_text(encoding="utf-8"))
+        _, references = source_views(path)
         reported = set()
         for match in IDENTIFIER.finditer(references):
             name = match.group()
