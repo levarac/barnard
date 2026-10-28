@@ -618,6 +618,15 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overrun, currentEnin: 21, nameValidator: nameValidator, recoverer: recoverer))
   }
 
+  /// Display-only verification never calls `registryAgreement`, so `verify` must itself
+  /// refuse an inverted signed window. Every other time comparison and the lifetime cap
+  /// passes here: only `expires <= validThrough` rejects this container.
+  func testVerifyRejectsInvertedEnvelopeWindowWithoutRegistryRead() {
+    let container = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 22, validThroughEnin: 10, relayExpiresAtEnin: 23)
+    let recoverer = AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 22, nameValidator: nameValidator, recoverer: recoverer), "display-only verification must reject an inverted envelope window without registry agreement")
+  }
+
   /// Containment makes an inverted ENVELOPE window reachable in a way exact agreement did not.
   /// Under equality, a registry window that does not fall on ENIN boundaries converts to an empty
   /// range and could never equal anything, whatever the envelope carried. Under containment,

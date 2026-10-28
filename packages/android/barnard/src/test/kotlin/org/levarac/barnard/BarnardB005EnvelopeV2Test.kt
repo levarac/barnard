@@ -581,6 +581,17 @@ class BarnardB005EnvelopeV2Test {
     }
 
     /**
+     * Display-only verification never calls `registryAgreement`, so `verify` must itself
+     * refuse an inverted signed window. Every other time comparison and the lifetime cap
+     * passes here: only `expires <= validThrough` rejects this container.
+     */
+    @Test fun verifyRejectsInvertedEnvelopeWindowWithoutRegistryRead() {
+        val container = synthesizeWindowContainer(eninSeconds = 300, validFromEnin = 22, validThroughEnin = 10, relayExpiresAtEnin = 23)
+        val recoverer = AlwaysAcceptingRecoverer(ByteArray(33) { 1 })
+        assertNull(BarnardB005EnvelopeV2.verify(container, 22L, recoverer), "display-only verification must reject an inverted envelope window without registry agreement")
+    }
+
+    /**
      * Containment makes an inverted ENVELOPE window reachable in a way exact agreement did not.
      * Under equality, a registry window that does not fall on ENIN boundaries converts to an empty
      * range and could never equal anything, whatever the envelope carried. Under containment,
