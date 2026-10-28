@@ -103,6 +103,22 @@ final class BarnardCoreCTests: XCTestCase {
     XCTAssertEqual(v, 0)
   }
 
+  func testCAbiSigningReadsPrivateScalarAsBigEndian() {
+    var privateKey = [UInt8](repeating: 0, count: 32)
+    privateKey[31] = 1
+    let messageHash = [UInt8](repeating: 0, count: 32)
+    var r = [UInt8](repeating: 0, count: 32)
+    var s = [UInt8](repeating: 0, count: 32)
+    var v: Int32 = -1
+    XCTAssertEqual(barnard_core_sign_recoverable(privateKey, messageHash, &r, &s, &v), 0)
+    XCTAssertEqual(
+      BarnardCoreSigning.recoverPublicKey(
+        recoveryId: Int(v), r: r, s: s, messageHash32: messageHash
+      ),
+      [0x02] + decodeHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+    )
+  }
+
   func testOutOfDomainTimestampsDoNotTrap() {
     // calculate_enin has no error channel: out-of-domain saturates.
     XCTAssertEqual(barnard_core_calculate_enin(-400, 0, 300, 0, 0), 0)
