@@ -31,7 +31,7 @@ jobs:
           python3 scripts/check-schema-privacy-invariant.py --self-test
           python3 scripts/check-wallet-binding-schema.py
 
-  swift-package:
+  swift-package-ios:
     # Flutter-free: builds/tests packages/swift/barnard directly. No Flutter
     # toolchain is installed in this job (barnard#56 acceptance criterion:
     # "CI validates each first-class SDK surface independently").
@@ -56,6 +56,26 @@ jobs:
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
       - name: swift build (package graph sanity check)
         run: xcodebuild -scheme Barnard -destination "id=${{ steps.destination.outputs.udid }}" build
+      - name: swift test (Barnard compatibility + BarnardCore unit tests)
+        # SWIFT_OPTIMIZATION_LEVEL=-O: the default -Onone debug build makes the
+        # BigInteger-based secp256k1 EC math much slower under test. Preserve
+        # the existing optimized test configuration. -O strips bare `assert()`
+        # only (none present in Sources/Tests here; `precondition()` is
+        # unaffected), so numeric-correctness test behavior is unchanged.
+        run: xcodebuild -scheme Barnard-Package -destination "id=${{ steps.destination.outputs.udid }}" SWIFT_OPTIMIZATION_LEVEL=-O test
+
+  swift-package-macos:
+    # Keep the complete native macOS test run alongside the iOS run above.
+    # Separate hosted jobs avoid serializing two platform builds/test runs.
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: packages/swift/barnard
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
       - name: BarnardCore stdlib-only build and purity check
         run: |
           swift build --target BarnardCore
@@ -66,23 +86,15 @@ jobs:
             echo "BarnardCore contains a forbidden platform dependency"
             exit 1
           fi
-      - name: swift test (Barnard compatibility + BarnardCore unit tests)
-        # SWIFT_OPTIMIZATION_LEVEL=-O: the default -Onone debug build makes the
-        # BigInteger-based secp256k1 EC math ~9x slower under test, which was
-        # the actual cause of this job running with near-zero timeout margin
-        # (not test harness or Simulator overhead). -O strips bare `assert()`
-        # only (none present in Sources/Tests here; `precondition()` is
-        # unaffected), so numeric-correctness test behavior is unchanged.
-        run: xcodebuild -scheme Barnard-Package -destination "id=${{ steps.destination.outputs.udid }}" SWIFT_OPTIMIZATION_LEVEL=-O test
       - name: swift test (native macOS, whole package)
         # barnard#192: the package also supports macOS, where the whole graph
         # (including the Barnard target's CoreBluetooth code) builds and tests
         # natively with no simulator. swift test builds what it runs, so no
         # separate swift build is needed. -Xswiftc -O for the same reason the
-        # xcodebuild step above passes SWIFT_OPTIMIZATION_LEVEL=-O: the default
+        # iOS job passes SWIFT_OPTIMIZATION_LEVEL=-O: the default
         # -Onone build makes the BigInteger-based secp256k1 EC math ~9x slower.
         # Runs in the job's working-directory packages/swift/barnard, i.e. the
-        # inner package graph; the root package resolves to the same 23 suites
+        # inner package graph; the root package resolves to the same test suites
         # and the repo-root test vectors are reachable from either.
         run: swift test -Xswiftc -O
       - name: Root and inner Swift package manifest drift guard
@@ -122,6 +134,18 @@ jobs:
             --package-path "$consumer_dir" \
             --triple arm64-apple-ios15.0-simulator \
             --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)"
+
+  swift-package:
+    # Preserve one check that requires every platform validation to succeed.
+    needs: [swift-package-ios, swift-package-macos]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful iOS and macOS package checks
+        run: |
+          test "${{ needs.swift-package-ios.result }}" = success
+          test "${{ needs.swift-package-macos.result }}" = success
 
   swift-mirror-sync-check:
     # packages/swift/barnard is the origin for Flutter-free platform adapters
