@@ -150,12 +150,14 @@ jobs:
   swift-mirror-sync-check:
     # packages/swift/barnard is the origin for Flutter-free platform adapters
     # and BarnardCore sources mirrored under packages/dart/barnard/ios; this
-    # guards against drift (see scripts/check-swift-mirror.sh).
+    # guards against byte drift and missing project types without a compiler.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-swift-mirror.sh
+      - name: Test mirror type reference checks
+        run: python3 -m unittest discover -s scripts/tests -p test_mirror_type_references.py -v
 
   ios-native-example:
     runs-on: macos-15
@@ -279,12 +281,14 @@ jobs:
   android-mirror-sync-check:
     # packages/android/barnard is the origin for Flutter-free
     # crypto/signing/RPID sources mirrored under packages/dart/barnard/android;
-    # this guards against drift (see scripts/check-android-mirror.sh).
+    # this guards against byte drift and missing project types without a compiler.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/check-android-mirror.sh
+      - name: Test mirror type reference checks
+        run: python3 -m unittest discover -s scripts/tests -p test_mirror_type_references.py -v
 
   android-native-example:
     runs-on: ubuntu-latest

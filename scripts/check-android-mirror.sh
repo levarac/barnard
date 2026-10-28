@@ -61,5 +61,6 @@ done
 if [[ $status -eq 0 ]]; then
   echo "OK: Dart Android mirrors match their native origins byte-for-byte."
   echo "OK: React Native Android mirrors match their native origins byte-for-byte."
+  python3 "$repo_root/scripts/check-mirror-type-references.py" android || status=$?
 fi
 exit "$status"

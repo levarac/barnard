@@ -40,5 +40,6 @@ done
 
 if [[ $status -eq 0 ]]; then
   echo "OK: Dart Swift mirrors match their native origins byte-for-byte."
+  python3 "$repo_root/scripts/check-mirror-type-references.py" swift || status=$?
 fi
 exit "$status"
