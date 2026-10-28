@@ -150,7 +150,7 @@ If GitHub Projects tooling is available via MCP, also update the relevant Projec
 
 Defaults:
 
-- Project: **Levarac Dev** (number `1`)
+- Project: **Levarac Parallax** (number `1`; query its live name and fields before updating items)
 
 Guidance:
 
