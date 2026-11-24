@@ -47,11 +47,11 @@ does build on the host, which is why it is the purity check below.
 
 ```
 cd packages/swift/barnard
-UDID=$(xcrun simctl list devices available iOS -j | \
+UDID=$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun simctl list devices available iOS -j | \
   python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
   runtimes=sorted([k for k in d if 'iOS' in k], reverse=True); \
   print([dev for rt in runtimes for dev in d[rt] if 'iPhone' in dev['name']][0]['udid'])")
-xcodebuild -scheme Barnard-Package -destination "id=$UDID" SWIFT_OPTIMIZATION_LEVEL=-O test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -scheme Barnard-Package -destination "id=$UDID" SWIFT_OPTIMIZATION_LEVEL=-O test
 ```
 
 `SWIFT_OPTIMIZATION_LEVEL=-O` is required, not optional: the default `-Onone`
