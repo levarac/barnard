@@ -10,3 +10,5 @@ Goals
 Layout
 - `schema/barnard/v1/`: Barnard v1 JSON Schemas
 - `schema/barnard/v2/`: Barnard v2 JSON Schemas for event streams, permissions, and shared types
+- `schema/barnard/v2/b005-envelope-verifier.schema.json`: strict offline verifier CLI request and
+  six-field V1 receipt; a success indicates radio self-verification, not registry confirmation

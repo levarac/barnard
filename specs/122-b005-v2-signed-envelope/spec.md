@@ -291,6 +291,24 @@ one from another:
 Radio alone reaches `RADIO_SELF_VERIFIED` and no further. That state MUST NOT be presented as
 "verified" or "registered" to a user.
 
+The `tools/b005-envelope-verifier` CLI exposes the signed-envelope verification in steps 1–7 as an
+offline integration surface. It does not check the received container. A receiving host MUST apply
+the step 1 container checks to the received container before it extracts `signedEnvelopeHex`.
+The CLI also does not deduplicate repeated envelopes: a receiving host MUST apply the step 6
+digest-deduplication and per-peer attempt budget before invoking it.
+Its versioned JSON contract is [`b005-envelope-verifier.schema.json`](../../schema/barnard/v2/b005-envelope-verifier.schema.json):
+stdin contains exactly `signedEnvelopeHex` (lowercase hex of the signed envelope, without the
+four-byte container) and `currentEnin` (a nonnegative ENIN supplied by the caller). On success,
+stdout contains exactly `kind: "BARNARD_B005_VERIFIED_V1"`, `eventIdHex`, `joinMode`,
+`validFromEnin`, `validThroughEnin`, and `relayExpiresAtEnin`; failure exits nonzero without a
+receipt. This receipt reports only that the envelope's signature and lease window verified for the given current ENIN; it is not evidence that the event is registered, and registration is NOT confirmed by this result.
+The CLI verifies stdin offline and does not observe radio reception. This result MUST NOT be
+presented to a user as "verified" or "registered". The CLI neither
+establishes the current wall-clock ENIN nor reads the pinned registry definition, proves physical
+presence, or authorizes relay/join. Hosts MUST apply the gates below independently. This six-field
+receipt is already consumed as an exact-key contract; changing its kind or fields requires a
+versioned, coordinated consumer migration.
+
 The gates:
 
 - **Candidate display** MAY proceed at `RADIO_SELF_VERIFIED`, before any chain read. This is the

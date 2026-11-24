@@ -25,7 +25,7 @@ IMPLEMENTED_KEYWORDS = frozenset(
     {
         "$ref", "const", "enum", "type", "pattern", "minimum", "maximum",
         "required", "properties", "additionalProperties", "oneOf", "allOf",
-        "if", "then",
+        "if", "then", "minLength", "maxLength",
     }
 )
 # Pure-annotation keywords that never constrain an instance, per the JSON
@@ -98,6 +98,10 @@ def validates(
     if isinstance(schema_type, str) and not matches_type(value, schema_type):
         return False
     if isinstance(value, str):
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            return False
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return False
         pattern = schema.get("pattern")
         if isinstance(pattern, str) and re.fullmatch(pattern, value) is None:
             return False
