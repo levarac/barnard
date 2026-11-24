@@ -13,6 +13,22 @@ class BarnardB005EnvelopeV2Test {
     private val vectors by lazy { parseVectors(File(findRepoRoot(), "test-vectors/b005-envelope-v2.txt")) }
     private val parallaxNegVectors by lazy { parseVectors(File(findRepoRoot(), "test-vectors/parallax-delegation-cert-v1.txt")) }
     private fun v(name: String) = vectors[name] ?: error("missing $name")
+    @Test fun structureRejectsInvalidMaxRelayHopsAtAPlus15() {
+        for (key in listOf("v1_container", "v2_container")) {
+            val container = hex(v(key))
+            val n = container[4 + 73].toInt() and 0xff
+            val a = 74 + 33 * n
+            val maxRelayHopsOffset = 4 + a + 15 // Include the four-byte container header.
+            assertEquals(2.toByte(), container[maxRelayHopsOffset], key)
+            assertNull(BarnardB005EnvelopeV2.validateStructure(container), key)
+            for (value in 0..255) {
+                if (value == 2) continue
+                val mutation = container.copyOf().also { it[maxRelayHopsOffset] = value.toByte() }
+                assertEquals(BarnardB005StructureError.MAX_RELAY_HOPS, BarnardB005EnvelopeV2.validateStructure(mutation), "$key: maxRelayHops=$value")
+            }
+        }
+    }
+
     @Test fun sharedVectorsAndBoundaries() {
         val key = hex(v("authority_public_key"))
         assertContentEquals(hex(v("event_key_set_bytes")), BarnardB005EnvelopeV2.eventKeySetBytes(listOf(key)))
@@ -562,6 +578,17 @@ class BarnardB005EnvelopeV2Test {
         // cap; only the validThrough clause can produce the rejection.
         val overrun = synthesizeWindowContainer(eninSeconds = 300, validFromEnin = 12, validThroughEnin = 22, relayExpiresAtEnin = 23)
         assertNull(BarnardB005EnvelopeV2.verify(overrun, 21L, recoverer))
+    }
+
+    /**
+     * Display-only verification never calls `registryAgreement`, so `verify` must itself
+     * refuse an inverted signed window. Every other time comparison and the lifetime cap
+     * passes here: only `expires <= validThrough` rejects this container.
+     */
+    @Test fun verifyRejectsInvertedEnvelopeWindowWithoutRegistryRead() {
+        val container = synthesizeWindowContainer(eninSeconds = 300, validFromEnin = 22, validThroughEnin = 10, relayExpiresAtEnin = 23)
+        val recoverer = AlwaysAcceptingRecoverer(ByteArray(33) { 1 })
+        assertNull(BarnardB005EnvelopeV2.verify(container, 22L, recoverer), "display-only verification must reject an inverted envelope window without registry agreement")
     }
 
     /**

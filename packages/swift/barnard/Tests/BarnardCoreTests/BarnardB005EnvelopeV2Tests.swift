@@ -13,6 +13,23 @@ private struct TestNameValidator: BarnardB005DisplayNameNormalizing {
 
 final class BarnardB005EnvelopeV2Tests: XCTestCase {
   private let nameValidator = TestNameValidator()
+  func testStructureRejectsInvalidMaxRelayHopsAtAPlus15() throws {
+    let v = try load()
+    for key in ["v1_container", "v2_container"] {
+      let container = hex(v[key]!)
+      let n = Int(container[4 + 73])
+      let a = 74 + 33 * n
+      let maxRelayHopsOffset = 4 + a + 15 // Include the four-byte container header.
+      XCTAssertEqual(container[maxRelayHopsOffset], 2, key)
+      XCTAssertNil(BarnardB005EnvelopeV2.validateStructure(container: container), key)
+      for value in UInt8.min...UInt8.max where value != 2 {
+        var mutation = container
+        mutation[maxRelayHopsOffset] = value
+        XCTAssertEqual(BarnardB005EnvelopeV2.validateStructure(container: mutation), .maxRelayHops, "\(key): maxRelayHops=\(value)")
+      }
+    }
+  }
+
   func testSharedVectorsAndBoundaries() throws {
     let v = try load()
     let key = hex(v["authority_public_key"]!)
@@ -599,6 +616,15 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     // cap; only the validThrough clause can produce the rejection.
     let overrun = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 12, validThroughEnin: 22, relayExpiresAtEnin: 23)
     XCTAssertNil(BarnardB005EnvelopeV2.verify(container: overrun, currentEnin: 21, nameValidator: nameValidator, recoverer: recoverer))
+  }
+
+  /// Display-only verification never calls `registryAgreement`, so `verify` must itself
+  /// refuse an inverted signed window. Every other time comparison and the lifetime cap
+  /// passes here: only `expires <= validThrough` rejects this container.
+  func testVerifyRejectsInvertedEnvelopeWindowWithoutRegistryRead() {
+    let container = synthesizeWindowContainer(eninSeconds: 300, validFromEnin: 22, validThroughEnin: 10, relayExpiresAtEnin: 23)
+    let recoverer = AlwaysAcceptingRecoverer(key: [UInt8](repeating: 1, count: 33))
+    XCTAssertNil(BarnardB005EnvelopeV2.verify(container: container, currentEnin: 22, nameValidator: nameValidator, recoverer: recoverer), "display-only verification must reject an inverted envelope window without registry agreement")
   }
 
   /// Containment makes an inverted ENVELOPE window reachable in a way exact agreement did not.

@@ -277,8 +277,8 @@ public enum BarnardB005StructureError: Equatable {
   case joinMode
   /// `eninSeconds` is zero, which no ENIN arithmetic can use.
   case eninSeconds
-  /// The event-code-hash TLV type byte is not 2.
-  case eventCodeHashTlvType
+  /// `maxRelayHops` is not 2.
+  case maxRelayHops
   /// The display-name length is outside `1...64`.
   case displayNameLength
 }
@@ -310,7 +310,7 @@ public enum BarnardB005EnvelopeV2 {
     guard a + 26 + 65 <= envelope.count else { return .fieldLayout }
     guard envelope[a] <= 1 else { return .joinMode }
     guard read16(envelope, a + 1) != 0 else { return .eninSeconds }
-    guard envelope[a + 15] == 2 else { return .eventCodeHashTlvType }
+    guard envelope[a + 15] == 2 else { return .maxRelayHops }
     let nameLength = Int(envelope[a + 24])
     guard (1...64).contains(nameLength) else { return .displayNameLength }
     let certLengthOffset = a + 25 + nameLength

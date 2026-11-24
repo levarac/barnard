@@ -186,12 +186,33 @@ final class BarnardParticipantRelayTests: XCTestCase {
     clock.now += 30_000; relay.advance(); clock.now += 15_001; relay.advance(); XCTAssertGreaterThanOrEqual(sink.served.count, 2)
     enin.value = 22; relay.advance(); XCTAssertFalse(relay.isServing); XCTAssertGreaterThan(sink.stops, 0)
   }
-  func testContentionCancellationAndNoSensitivePublicOutput() {
+  func testContentionCancellationAndNoSensitivePublicOutput() throws {
     let (relay, clock, _, _, sink, _) = fixture(); let secret: [UInt8] = [7,8,9], handle: [UInt8] = [99]
     XCTAssertEqual(relay.observe(container: container(0, [6]), peerHandle: handle), .accepted); relay.advance()
     for i in 0..<3 { _ = relay.observe(container: container(1, [6]), peerHandle: [UInt8(i)]) }
     clock.now += 15_001; relay.advance(); XCTAssertTrue(sink.served.isEmpty)
-    let publicBytes = sink.served.flatMap { $0 }; XCTAssertFalse(publicBytes == secret); XCTAssertFalse(publicBytes == handle)
+    // Once the competing handles expire, a fresh decision at r=0 must actually serve.
+    clock.now = 30_000
+    relay.advance()
+    _ = relay.observe(container: container(1, [6]), peerHandle: handle)
+    clock.now += 15_001
+    relay.advance()
+    XCTAssertTrue(relay.isServing, "the output checks must run during an active lease")
+    let publicBytes = try XCTUnwrap(sink.served.last, "the output checks require a served container")
+    XCTAssertFalse(publicBytes.indices.contains { publicBytes[$0...].starts(with: secret) }, "served bytes must not contain the election seed material")
+    XCTAssertFalse(publicBytes.indices.contains { publicBytes[$0...].starts(with: handle) }, "served bytes must not contain the peer handle")
+
+    // Swift's Mirror exposes stored fields regardless of access control and cannot enumerate
+    // methods. Inspect public declaration names for the Kotlin public-method check's analogue;
+    // input parameter names (peerHandle/randomnessSeedMaterial) are intentionally not outputs.
+    let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let source = try String(contentsOf: package.appendingPathComponent("Sources/BarnardCore/BarnardParticipantRelay.swift"), encoding: .utf8)
+    // Setter visibility and member modifiers do not make a public getter or method private.
+    let members = try NSRegularExpression(pattern: #"\bpublic\s+(?:(?:(?:private|fileprivate|internal|package)\s*\(\s*set\s*\)|final|static|class|nonisolated|override|lazy|weak|unowned)\s+)*(?:func|var|let)\s+(\w+)"#)
+    let names = members.matches(in: source, range: NSRange(source.startIndex..., in: source)).map {
+      (source as NSString).substring(with: $0.range(at: 1))
+    }
+    XCTAssertEqual(Set(names), ["observe", "advance", "invalidateDefinition", "signatureFailed", "hostStop", "isServing"], "the public relay surface must not expose handles, election secrets or neighborhood counts")
   }
   func testSharedRelayHopAndDensityVectors() throws {
     let hop = try vectors("relay-hop-dedup"), density = try vectors("density-decisions")

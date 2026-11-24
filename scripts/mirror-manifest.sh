@@ -6,6 +6,7 @@
 
 # shellcheck disable=SC2034  # This file is sourced by the check and sync scripts.
 swift_mirrored_pairs=(
+  "Barnard/BarnardAdoptionProtocolError.swift|BarnardAdoptionProtocolError.swift"
   "Barnard/BarnardCrypto.swift|BarnardCrypto.swift"
   "Barnard/Secp256k1.swift|Secp256k1.swift"
   "Barnard/BarnardSigning.swift|BarnardSigning.swift"
@@ -19,6 +20,7 @@ swift_mirrored_pairs=(
   "BarnardCore/BarnardCoreOwnerKey.swift|BarnardCore/BarnardCoreOwnerKey.swift"
   "BarnardCore/BarnardCoreSigning.swift|BarnardCore/BarnardCoreSigning.swift"
   "BarnardCore/Secp256k1.swift|BarnardCore/Secp256k1.swift"
+  "BarnardCore/Secp256k1Backend.swift|BarnardCore/Secp256k1Backend.swift"
 )
 
 android_mirrored_files=(

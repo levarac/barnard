@@ -262,6 +262,25 @@ bytes, extend expiry, reset selection, or create hints. State is bounded to one
 508-byte envelope and 32 handles; further handles saturate `r >= k` without
 being retained.
 
+*Erratum (2026-10-28), overflow saturation lifetime:* the preceding rule originally
+left the lifetime of an overflow observation unspecified. After expiring handles
+whose age is at least `T`, an observation of a new matching relay handle while 32
+handles remain retained MUST set `overflowSeenAt` to the observation time. It MUST
+NOT retain that handle or evict a retained handle. Each further overflow observation
+MUST replace `overflowSeenAt` with its own observation time. While
+`now - overflowSeenAt < T`, `r` MUST be at least `k`, independently of the retained
+handles' lifetimes. At an age of exactly `T` or greater, that overflow observation
+MUST no longer contribute to `r`. `T` is the same 30-second window used above.
+Switching the selected source (payload digest) MUST clear both the retained handles
+and `overflowSeenAt`; density state does not carry across selections.
+For example, if 32 handles are observed at `t = 0` and a 33rd at `t = 29 s`, then
+at `t = 30 s` the original handles have expired but `r` is still saturated, because
+the overflow observation is only one second old. With no later observations,
+its contribution expires at `t = 59 s`.
+This matches `retain`, `relayCount`, and `selectIfNeeded` in
+[Swift](../../packages/swift/barnard/Sources/BarnardCore/BarnardParticipantRelay.swift)
+and [Kotlin](../../packages/android/barnard/src/main/kotlin/org/levarac/barnard/BarnardParticipantRelay.kt).
+
 When `currentEnin` reaches `relayExpiresAtEnin`, on definition invalidation, on signature failure, or
 when the host stops Scan/Advertise, the implementation MUST stop new B005 reads,
 clear the relay lease and density handles, and delete the cached relay envelope.

@@ -94,9 +94,9 @@ Let `n` be `authorityKeyCount`, `L` be `displayNameLength`, `C` be `certLength`,
 | 74 | 33·n | `authorityKeys` | Compressed secp256k1, strictly ascending, unique |
 | A | 1 | `joinMode` | `0x00` open, `0x01` gated; any other value MUST be rejected |
 | A+1 | 2 | `eninSeconds` | Non-zero; the event's ENIN interval. Mode is pinned to `fixedLength` for envelope v1 |
-| A+3 | 4 | `validFromEnin` | |
-| A+7 | 4 | `validThroughEnin` | |
-| A+11 | 4 | `relayExpiresAtEnin` | |
+| A+3 | 4 | `validFromEnin` | Inclusive start; issuer derivation and refresh bounds below |
+| A+7 | 4 | `validThroughEnin` | Inclusive last ENIN wholly inside the definition's validity window; issuer derivation below |
+| A+11 | 4 | `relayExpiresAtEnin` | Exclusive end of the relay window |
 | A+15 | 1 | `maxRelayHops` | Exactly `0x02` |
 | A+16 | 8 | `eventCodeHash` | `SHA256(UTF8(EventCode))[0:8]`; equals the B004 value |
 | A+24 | 1 | `displayNameLength` | `1..64` |
@@ -106,6 +106,30 @@ Let `n` be `authorityKeyCount`, `L` be `displayNameLength`, `C` be `certLength`,
 | A+26+L+C | 65 | `signature` | `r‖s‖v`, low-S, `v` in `{0,1}` |
 
 Total envelope length is `165 + 33n + L + C`, and it MUST equal `signedEnvelopeLength` exactly.
+
+*Erratum (2026-10-28), inclusive validity bounds and issuer derivation:* the byte table
+originally omitted inclusivity and the issuer's conversion from the definition's inclusive
+Unix-second bounds `validFrom` and `validUntil`. Per the
+[maintainer decision of 2026-09-10](https://github.com/levarac/barnard/issues/180#issuecomment-5615418888),
+`validThroughEnin` is inclusive: it names the last ENIN lying wholly inside that window.
+For the definition's full validity window, the issuer MUST derive
+`validFromEnin = ceilDiv(validFrom, eninSeconds)` and
+`validThroughEnin = floorDiv(validUntil + 1, eninSeconds) - 1`.
+`ceilDiv` rounds upward and `floorDiv` rounds downward; an ENIN intersecting either
+boundary without lying wholly inside the window is excluded. For example, the inclusive
+window `[3000, 3299]` with `eninSeconds = 300` yields bounds `[10, 10]`.
+A window that contains no whole ENIN derives an empty range: `[3001, 3299]` yields `[11, 10]`.
+No envelope window is contained in an empty range, so registry agreement reports a
+`VALIDITY_WINDOW` mismatch for every envelope and none reaches `REGISTRY_VERIFIED`; an
+issuer has no valid envelope to issue for such a definition.
+These are the `registryStartEnin` and `registryEndEnin` computations in `registryAgreement`
+in [Swift](../../packages/swift/barnard/Sources/BarnardCore/BarnardB005EnvelopeV2.swift)
+and [Kotlin](../../packages/android/barnard/src/main/kotlin/org/levarac/barnard/BarnardB005EnvelopeV2.kt);
+both compute the end equivalently without forming `validUntil + 1`, avoiding overflow.
+Registry agreement still uses **containment**, as specified in verification step 8:
+a refresh MAY carry a later `validFromEnin` within these definition bounds.
+`relayExpiresAtEnin` remains exclusive. This erratum does not change the relay-window
+inequality or the 12-ENIN cap; the step-5 one-ENIN tail remains open in issue #180.
 
 There is deliberately **no `threshold` field** — `EventKeySetV1` pins it to `1`, so a carried copy
 could only ever hold one value and the receiver reconstructs `03 01` unconditionally when it rebuilds
