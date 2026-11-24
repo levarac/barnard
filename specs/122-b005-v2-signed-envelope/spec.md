@@ -267,10 +267,11 @@ one from another:
 Radio alone reaches `RADIO_SELF_VERIFIED` and no further. That state MUST NOT be presented as
 "verified" or "registered" to a user.
 
-The `tools/b005-envelope-verifier` CLI exposes the structural, cryptographic, and window
-verification in steps 1–7 as an offline integration surface. It does not deduplicate repeated
-envelopes: a receiving host MUST apply the step 6 digest-deduplication and per-peer attempt budget
-before invoking it.
+The `tools/b005-envelope-verifier` CLI exposes the signed-envelope verification in steps 1–7 as an
+offline integration surface. It does not check the received container. A receiving host MUST apply
+the step 1 container checks to the received container before it extracts `signedEnvelopeHex`.
+The CLI also does not deduplicate repeated envelopes: a receiving host MUST apply the step 6
+digest-deduplication and per-peer attempt budget before invoking it.
 Its versioned JSON contract is [`b005-envelope-verifier.schema.json`](../../schema/barnard/v2/b005-envelope-verifier.schema.json):
 stdin contains exactly `signedEnvelopeHex` (lowercase hex of the signed envelope, without the
 four-byte container) and `currentEnin` (a nonnegative ENIN supplied by the caller). On success,

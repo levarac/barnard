@@ -15,6 +15,8 @@ The input must be exactly one JSON object with exactly `signedEnvelopeHex` and `
 `signedEnvelopeHex` is the raw signed envelope before the four-byte B005 container; the tool wraps it
 with relay hop `0` before calling `BarnardB005EnvelopeV2.verify` with the production name normalizer
 and public-key recoverer. Input is capped at 2 KiB and signed envelopes at 508 bytes.
+Because it builds its own container, it does not check the received container; receiving hosts
+must apply specification 122's step 1 container checks before extracting `signedEnvelopeHex`.
 It does not deduplicate repeated envelopes or enforce a per-peer attempt budget; receiving hosts
 must do both before invoking it, as required by specification 122.
 The [JSON Schema](../../schema/barnard/v2/b005-envelope-verifier.schema.json) defines the
