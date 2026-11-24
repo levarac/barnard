@@ -129,13 +129,6 @@ Add or update tests proportional to the change:
 
 ## Definition of done (quick checklist)
 
-## Linking PRs to issues (Development sidebar)
-
-1. A PR that closes an issue puts `Closes #N` (one per issue) in its body. When the base is `main` the link appears automatically; editing the body after merge also creates it.
-2. Closing keywords are not evaluated when the base is not `main` (stacked PRs, `release/*` targets). Keep the PR's existing base. Add a manual closing link with the GraphQL `addCloseIssueReferences` mutation, using the issue's node ID as `issueId` and the PR node IDs as `pullRequestIds`, or use the issue's Development sidebar. Re-check the relationship with `issue.closedByPullRequestsReferences(includeClosedPrs: true, ...)` and verify the issue's state.
-3. The pre-merge checklist comment (review and verification results posted on the PR) states `Development link: done`, or `no issue` for PRs that close nothing.
-4. Comments and mentions are not links; verify with GraphQL.
-
 - Spec updated and readable without code.
 - Schema updated first (or explicitly “no public shape changes”).
 - Implementation matches spec; no extra behavior.
@@ -143,6 +136,13 @@ Add or update tests proportional to the change:
 - Mocks/simulations remain bounded.
 - Examples updated and runnable.
 - Tests updated; CI passes.
+
+## Linking PRs to issues (Development sidebar)
+
+1. A PR that closes an issue puts `Closes #N` (one per issue) in its body. When the base is `main`, merging closes the issue from the `Closes #N` that was in the body at merge time. A `Closes #N` added to the body after the merge adds the link but does not close the issue; close it by hand with evidence.
+2. Merging into a non-default base (stacked PRs, `release/*` targets) never closes issues, and closing keywords are not evaluated there. Keep the PR's existing base. Add a manual closing link with the GraphQL `addCloseIssueReferences` mutation, using the issue's node ID as `issueId` and the PR node IDs as `pullRequestIds`, or use the issue's Development sidebar. The link only shows in the Development sidebar; close the issue by hand after the merge. Re-check the relationship with `issue.closedByPullRequestsReferences(includeClosedPrs: true, ...)` and verify the issue's state.
+3. The pre-merge checklist comment (review and verification results posted on the PR) states `Development link: done`, or `no issue` for PRs that close nothing.
+4. Comments and mentions are not links; verify with GraphQL.
 
 ## GitHub Projects (optional)
 
