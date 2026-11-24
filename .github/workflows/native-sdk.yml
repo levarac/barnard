@@ -30,6 +30,7 @@ jobs:
         run: |
           python3 scripts/check-schema-privacy-invariant.py --self-test
           python3 scripts/check-wallet-binding-schema.py
+          python3 scripts/check-b005-envelope-verifier-schema-contract.py
 
   swift-package:
     # Flutter-free: builds/tests packages/swift/barnard directly. No Flutter
