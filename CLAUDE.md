@@ -22,12 +22,15 @@ python3 scripts/check-wallet-binding-schema.py
 
 ### Swift — packages/swift/barnard (requires Xcode + an iOS Simulator)
 
-`xcodebuild` needs a full Xcode, not the Command Line Tools. Check with
-`xcode-select -p`; if it prints `/Library/Developer/CommandLineTools`, point it
-at Xcode first (this needs sudo, so a human has to run it):
+`xcodebuild` needs a full Xcode, not the Command Line Tools. Read the active
+developer directory with `xcode-select -p`; if it prints
+`/Library/Developer/CommandLineTools`, do not run `sudo xcode-select -s`: that
+is a host-wide change affecting every worktree and session. Instead set
+`DEVELOPER_DIR` to an existing full Xcode (for example
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`) on each invocation:
 
 ```
-sudo xcode-select -s /Applications/Xcode.app
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild ...
 ```
 
 Two traps if you skip that step and try to fall back to SwiftPM on the host:
