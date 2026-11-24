@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://thegreeting.github.io/barnard/schema/barnard/v2/b005-envelope-verifier.schema.json",
   "title": "Barnard B005 envelope verifier CLI JSON (v1)",
-  "description": "Strict stdin request and successful stdout receipt for the offline B005 verifier CLI. A successful receipt represents RADIO_SELF_VERIFIED at the supplied ENIN, not registry confirmation.",
+  "description": "Strict stdin request and successful stdout receipt for the offline B005 verifier CLI. This receipt reports only that the envelope's signature and lease window verified for the given current ENIN; it is not evidence that the event is registered, and registration is NOT confirmed by this result.",
   "oneOf": [
     { "$ref": "#/$defs/Request" },
     { "$ref": "#/$defs/Receipt" }
@@ -29,12 +29,13 @@
       "required": ["signedEnvelopeHex", "currentEnin"]
     },
     "Receipt": {
+      "description": "This receipt reports only that the envelope's signature and lease window verified for the given current ENIN; it is not evidence that the event is registered, and registration is NOT confirmed by this result.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "kind": {
           "const": "BARNARD_B005_VERIFIED_V1",
-          "description": "Versioned CLI receipt kind for RADIO_SELF_VERIFIED only; not a registration or user-facing verified state."
+          "description": "This receipt reports only that the envelope's signature and lease window verified for the given current ENIN; it is not evidence that the event is registered, and registration is NOT confirmed by this result."
         },
         "eventIdHex": {
           "type": "string",

@@ -27,10 +27,10 @@ On success, stdout is one bounded JSON line:
 {"kind":"BARNARD_B005_VERIFIED_V1","eventIdHex":"...","joinMode":0,"validFromEnin":0,"validThroughEnin":0,"relayExpiresAtEnin":0}
 ```
 
-Despite the historical `VERIFIED` word in the kind, this receipt means only
-[`RADIO_SELF_VERIFIED`](../../specs/122-b005-v2-signed-envelope/spec.md#receiver-policy--the-display-and-relay-gate)
-at the supplied ENIN. It is not registry verification, proof of physical presence, or permission
-to relay or join. Consumers must independently verify the anchored definition at a pinned block
+This receipt reports only that the envelope's signature and lease window verified for the given current ENIN; it is not evidence that the event is registered, and registration is NOT confirmed by this result.
+The CLI verifies stdin offline and does not observe radio reception. This result MUST NOT be
+presented to a user as "verified" or "registered"; it does not prove physical presence or permit
+relay or joining. Consumers must independently verify the anchored definition at a pinned block
 before treating the event as `REGISTRY_VERIFIED`. The six-field V1 receipt is an exact-key
 integration contract; changing its kind or fields requires a versioned consumer migration.
 
@@ -41,4 +41,11 @@ stderr.
 
 ```bash
 swift test
+```
+
+From the repository root, validate request and receipt fixtures (including invalid
+boundaries) against the published root JSON Schema without third-party dependencies:
+
+```bash
+python3 scripts/check-b005-envelope-verifier-schema-contract.py
 ```

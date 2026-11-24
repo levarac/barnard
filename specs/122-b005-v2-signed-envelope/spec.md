@@ -276,7 +276,9 @@ stdin contains exactly `signedEnvelopeHex` (lowercase hex of the signed envelope
 four-byte container) and `currentEnin` (a nonnegative ENIN supplied by the caller). On success,
 stdout contains exactly `kind: "BARNARD_B005_VERIFIED_V1"`, `eventIdHex`, `joinMode`,
 `validFromEnin`, `validThroughEnin`, and `relayExpiresAtEnin`; failure exits nonzero without a
-receipt. The V1 kind means **radio-self-verified at the supplied ENIN only**. The CLI neither
+receipt. This receipt reports only that the envelope's signature and lease window verified for the given current ENIN; it is not evidence that the event is registered, and registration is NOT confirmed by this result.
+The CLI verifies stdin offline and does not observe radio reception. This result MUST NOT be
+presented to a user as "verified" or "registered". The CLI neither
 establishes the current wall-clock ENIN nor reads the pinned registry definition, proves physical
 presence, or authorizes relay/join. Hosts MUST apply the gates below independently. This six-field
 receipt is already consumed as an exact-key contract; changing its kind or fields requires a
