@@ -11,10 +11,15 @@
  */
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "barnard_core_c_signing.h"
 
 typedef int32_t (*derive_tek_for_event_fn)(
     const uint8_t *, int32_t, const uint8_t *, int32_t, uint8_t *);
@@ -38,9 +43,11 @@ typedef uint8_t (*should_emit_rssi_update_fn)(uint32_t, uint32_t);
 typedef uint8_t (*should_serve_gatt_display_id_fn)(const uint8_t *, int32_t);
 
 static int failures = 0;
+static int checks = 0;
 
 static void expect_hex(const char *name, const uint8_t *bytes, size_t count,
                        const char *expected) {
+  checks++;
   char actual[2 * 64 + 1];
   for (size_t i = 0; i < count; i++) {
     snprintf(actual + 2 * i, 3, "%02x", bytes[i]);
@@ -55,6 +62,7 @@ static void expect_hex(const char *name, const uint8_t *bytes, size_t count,
 }
 
 static void expect_u32(const char *name, uint32_t actual, uint32_t expected) {
+  checks++;
   int ok = actual == expected;
   printf("%s=%u%s\n", name, actual, ok ? "" : " MISMATCH");
   if (!ok) {
@@ -64,6 +72,7 @@ static void expect_u32(const char *name, uint32_t actual, uint32_t expected) {
 }
 
 static void expect_i32(const char *name, int32_t actual, int32_t expected) {
+  checks++;
   int ok = actual == expected;
   printf("%s=%d%s\n", name, actual, ok ? "" : " MISMATCH");
   if (!ok) {
@@ -81,9 +90,63 @@ static void *must_sym(void *handle, const char *name) {
   return sym;
 }
 
+/* Exec a fresh C host so a Swift precondition trap fails this case without
+ * terminating the parent or preventing the remaining cases from running. */
+static void expect_invalid_scalar_subprocess(const char *program,
+                                            const char *library,
+                                            const char *scalar) {
+  checks++;
+  fflush(NULL);
+  pid_t child = fork();
+  if (child == 0) {
+    execlp(program, program, library, scalar, (char *)NULL);
+    _exit(127);
+  }
+  if (child < 0) {
+    perror("fork");
+    failures++;
+    return;
+  }
+  int status;
+  pid_t waited;
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  int ok = waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  printf("invalid_scalar_%s_subprocess=%s\n", scalar, ok ? "PASS" : "FAIL");
+  if (!ok) failures++;
+}
+
+static int check_invalid_scalar(sign_recoverable_fn sign_recoverable,
+                                const char *scalar) {
+  uint8_t private_key[32] = {0};
+  if (strcmp(scalar, "order") == 0) {
+    const uint8_t order[32] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+        0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b,
+        0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41};
+    memcpy(private_key, order, sizeof(private_key));
+  } else if (strcmp(scalar, "max") == 0) {
+    memset(private_key, 0xff, sizeof(private_key));
+  } else if (strcmp(scalar, "zero") != 0) {
+    return 2;
+  }
+  uint8_t hash[32] = {0}, r[32], s[32];
+  int32_t v = -1;
+  expect_i32("invalid_scalar_status",
+             sign_recoverable(private_key, hash, r, s, &v), -1);
+  /* A successful call after rejection proves this host remains usable. */
+  memset(private_key, 0, sizeof(private_key));
+  private_key[31] = 1;
+  expect_i32("sign_after_rejection_status",
+             sign_recoverable(private_key, hash, r, s, &v), 0);
+  return failures == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
-  if (argc != 2) {
-    fprintf(stderr, "usage: %s <path-to-libBarnardCoreC>\n", argv[0]);
+  if (argc != 2 && argc != 3) {
+    fprintf(stderr, "usage: %s <path-to-libBarnardCoreC> [zero|order|max]\n", argv[0]);
     return 2;
   }
   void *handle = dlopen(argv[1], RTLD_NOW);
@@ -116,6 +179,10 @@ int main(int argc, char **argv) {
       (eip191_digest_fn)must_sym(handle, "barnard_core_eip191_digest");
   sign_recoverable_fn sign_recoverable =
       (sign_recoverable_fn)must_sym(handle, "barnard_core_sign_recoverable");
+  if (argc == 3) return check_invalid_scalar(sign_recoverable, argv[2]);
+  expect_invalid_scalar_subprocess(argv[0], argv[1], "zero");
+  expect_invalid_scalar_subprocess(argv[0], argv[1], "order");
+  expect_invalid_scalar_subprocess(argv[0], argv[1], "max");
   should_emit_rssi_update_fn should_emit_rssi_update =
       (should_emit_rssi_update_fn)must_sym(handle, "barnard_core_should_emit_rssi_update");
   should_serve_gatt_display_id_fn should_serve_gatt_display_id =
@@ -190,6 +257,25 @@ int main(int argc, char **argv) {
              "51760b12ac9be31472f61ca68574e7d1c950ca68504d7dd37bff1bba97e3e7d8");
   expect_i32("signing_v", v, 0);
 
+  expect_i32("signing_null_private_key",
+             sign_recoverable(NULL, message_hash, r, s, &v), -1);
+  expect_i32("signing_null_hash",
+             sign_recoverable(private_key, NULL, r, s, &v), -1);
+  expect_i32("signing_null_r",
+             sign_recoverable(private_key, message_hash, NULL, s, &v), -1);
+  expect_i32("signing_null_s",
+             sign_recoverable(private_key, message_hash, r, NULL, &v), -1);
+  expect_i32("signing_null_v",
+             sign_recoverable(private_key, message_hash, r, s, NULL), -1);
+
+  const uint8_t last_valid_key[32] = {
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+      0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b,
+      0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x40};
+  expect_i32("signing_order_minus_one",
+             sign_recoverable(last_valid_key, message_hash, r, s, &v), 0);
+
   uint8_t account_secret[32] = {0};
   uint8_t owner_private_key[32], owner_public_key[33], digest[32];
   if (derive_owner_keypair(account_secret, owner_private_key, owner_public_key) != 0) {
@@ -217,6 +303,7 @@ int main(int argc, char **argv) {
   expect_i32("stable_enin_status", stable_read_enin(899, 899, 0, 300, 0, 0, &stable), 1);
   expect_u32("stable_enin", stable, 2u);
 
+  printf("C host: %d checks, %d failures\n", checks, failures);
   if (failures != 0) {
     printf("FAILED: %d mismatch(es)\n", failures);
     return 1;

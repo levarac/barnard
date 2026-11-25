@@ -103,6 +103,60 @@ final class BarnardCoreCTests: XCTestCase {
     XCTAssertEqual(v, 0)
   }
 
+  func testCAbiSigningReadsPrivateScalarAsBigEndian() {
+    var privateKey = [UInt8](repeating: 0, count: 32)
+    privateKey[31] = 1
+    let messageHash = [UInt8](repeating: 0, count: 32)
+    var r = [UInt8](repeating: 0, count: 32)
+    var s = [UInt8](repeating: 0, count: 32)
+    var v: Int32 = -1
+    XCTAssertEqual(barnard_core_sign_recoverable(privateKey, messageHash, &r, &s, &v), 0)
+    XCTAssertEqual(
+      BarnardCoreSigning.recoverPublicKey(
+        recoveryId: Int(v), r: r, s: s, messageHash32: messageHash
+      ),
+      [0x02] + decodeHex("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+    )
+  }
+
+  func testCAbiSigningRejectsInvalidPrivateScalarsWithoutWritingOutputs() {
+    let messageHash = [UInt8](repeating: 0, count: 32)
+    let invalidScalars: [(String, [UInt8])] = [
+      ("zero", [UInt8](repeating: 0, count: 32)),
+      (
+        "curve order n",
+        decodeHex("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+      ),
+      ("0xff..ff", [UInt8](repeating: 0xff, count: 32)),
+    ]
+    let sentinel = [UInt8](repeating: 0xa5, count: 32)
+    let sentinelV: Int32 = 0x5a5a
+
+    for (label, privateKey) in invalidScalars {
+      var r = sentinel
+      var s = sentinel
+      var v = sentinelV
+      XCTAssertEqual(
+        barnard_core_sign_recoverable(privateKey, messageHash, &r, &s, &v), -1, label
+      )
+      XCTAssertEqual(r, sentinel, label)
+      XCTAssertEqual(s, sentinel, label)
+      XCTAssertEqual(v, sentinelV, label)
+    }
+
+    // The largest valid scalar (n - 1) still signs and overwrites every output.
+    let largestValidKey = decodeHex(
+      "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140"
+    )
+    var r = sentinel
+    var s = sentinel
+    var v = sentinelV
+    XCTAssertEqual(barnard_core_sign_recoverable(largestValidKey, messageHash, &r, &s, &v), 0)
+    XCTAssertNotEqual(r, sentinel)
+    XCTAssertNotEqual(s, sentinel)
+    XCTAssertTrue((0...3).contains(v))
+  }
+
   func testOutOfDomainTimestampsDoNotTrap() {
     // calculate_enin has no error channel: out-of-domain saturates.
     XCTAssertEqual(barnard_core_calculate_enin(-400, 0, 300, 0, 0), 0)

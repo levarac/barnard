@@ -288,7 +288,8 @@ public func barnard_core_derive_owner_keypair(
 }
 
 /// private_key32 and message_hash32: 32 bytes in. out_r32/out_s32: 32 bytes
-/// out; out_v: recovery id 0-3.
+/// out; out_v: recovery id 0-3. Returns -1 for a null pointer or a private
+/// scalar outside 1 <= k < N (the secp256k1 curve order).
 @_cdecl("barnard_core_sign_recoverable")
 public func barnard_core_sign_recoverable(
   _ privateKey32: UnsafePointer<UInt8>?,
@@ -304,6 +305,7 @@ public func barnard_core_sign_recoverable(
     let outS32,
     let outV
   else { return -1 }
+  guard BarnardCoreSigning.isValidPrivateScalar(privateKey) else { return -1 }
   let signature = BarnardCoreSigning.signRecoverable(
     privateKey: privateKey,
     messageHash32: messageHash

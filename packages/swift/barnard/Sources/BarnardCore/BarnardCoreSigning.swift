@@ -163,6 +163,15 @@ public enum BarnardCoreSigning {
     return BarnardCorePrimitives.keccak256(prefix + messageBytes)
   }
 
+#if SWIFT_PACKAGE
+  // Package-only validation for the C ABI; Swift callers retain preconditions.
+  package static func isValidPrivateScalar(_ privateKey: [UInt8]) -> Bool {
+    guard privateKey.count == 32 else { return false }
+    let scalar = BarnardCoreSecp256k1.UInt256(bytes: privateKey)
+    return !scalar.isZero && scalar < BarnardCoreSecp256k1.curveOrder
+  }
+#endif
+
   public static func signRecoverable(
     privateKey: [UInt8],
     messageHash32: [UInt8]
