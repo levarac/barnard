@@ -33,15 +33,15 @@ Notes:
 
 ## Rules
 
-- Keep documentation in **English**.
-- Use the standard terminology consistently: **Scan / Advertise / Central / Peripheral / GATT / Transport**.
+- Keep documentation in English.
+- Use the standard terminology consistently (Scan / Advertise / Central / Peripheral / GATT / Transport).
 - Prefer schema-first: update `schema/barnard/v1` (JSON Schema) when changing public shapes.
 - Do not add device-unique persistent identifiers to on-wire payload formats.
 - Keep mock/simulation implementations bounded (avoid unbounded memory growth).
 
 ## Git Commit Messages
 
-Use **Conventional Commits** for PR-ready changes.
+Use Conventional Commits for PR-ready changes.
 
 Format:
 
@@ -73,15 +73,15 @@ Create or update a spec document that makes the change reviewable without readin
 
 Minimum contents to include:
 
-- **Problem statement**: what is wrong/missing today, and why it matters.
-- **Goals / Non-goals**: keep them crisp; avoid scope creep.
-- **Glossary**: define terms and use the standard terminology (Scan/Advertise/Central/Peripheral/GATT/Transport).
-- **Behavior**: describe expected behavior as observable events and state changes.
+- Problem statement: what is wrong/missing today, and why it matters.
+- Goals / Non-goals: keep them crisp; avoid scope creep.
+- Glossary: define terms and use the standard terminology (Scan/Advertise/Central/Peripheral/GATT/Transport).
+- Behavior: describe expected behavior as observable events and state changes.
   - Prefer simple state machines and sequence diagrams (text form is fine).
   - Specify error cases and retry behavior (including timeouts/backoff if relevant).
-- **Compatibility**: what must remain backward compatible and what can change.
-- **Security & privacy**: explicitly confirm the on-wire payload does not carry device-unique persistent identifiers.
-- **Examples**: include at least one concrete end-to-end example message/flow (human-readable).
+- Compatibility: what must remain backward compatible and what can change.
+- Security & privacy: explicitly confirm the on-wire payload does not carry device-unique persistent identifiers.
+- Examples: include at least one concrete end-to-end example message/flow (human-readable).
 
 ### 2) Update schemas first (`schema/barnard/v1`)
 
@@ -150,7 +150,7 @@ If GitHub Projects tooling is available via MCP, also update the relevant Projec
 
 Defaults:
 
-- Project: **Levarac Parallax** (number `1`; query its live name and fields before updating items)
+- Project: Levarac Parallax (number `1`; query its live name and fields before updating items)
 
 Guidance:
 
