@@ -85,7 +85,8 @@ second SDK verification; it can never authorize a success.
 Success emits one JSON line with `kind`, SHA-256 of the exact input envelope bytes,
 authorization-context digest, registered event identity, authenticated signer compressed public
 key and role, and `validFromEnin`, inclusive `validThroughEnin`, and exclusive
-`relayExpiresAtEnin`. Only these public metadata fields are emitted.
+`relayExpiresAtEnin`. The offline request and receipt are holder-held records for
+the caller and must stay outside Advertise, GATT, anchors, and witness blobs.
 
 Stable stderr error codes are:
 

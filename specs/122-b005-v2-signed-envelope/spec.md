@@ -578,7 +578,7 @@ The versioned [authority verifier operation](../../tools/b005-envelope-verifier/
 checks the SDK-authenticated signer, role, and window against the registered
 definition and signer set supplied by its caller. The
 [request and receipt schema](../../schema/barnard/v2/b005-envelope-authority-verifier-v1.schema.json)
-defines the public CLI metadata. A receipt identifies the exact signed envelope
+defines holder-held records for the offline caller. A receipt identifies the exact signed envelope
 and caller-supplied context by digest. Registry authentication remains with the
 caller. The operation leaves the signed envelope and delivery container formats
 unchanged and adds no device identifier to either format.
