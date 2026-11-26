@@ -572,6 +572,17 @@ Recorded so implementers do not rediscover them. None is resolved here.
    which is not the Parallax keccak derivation used here. Two notions of `eventId` therefore exist
    in this repository. Tracked separately; the relay path uses the Parallax derivation.
 
+## Offline authority verification
+
+The versioned [authority verifier operation](../../tools/b005-envelope-verifier/README.md#authority-operation-v1)
+checks the SDK-authenticated signer, role, and window against the registered
+definition and signer set supplied by its caller. The
+[request and receipt schema](../../schema/barnard/v2/b005-envelope-authority-verifier-v1.schema.json)
+defines holder-held records for the offline caller. A receipt identifies the exact signed envelope
+and caller-supplied context by digest. Registry authentication remains with the
+caller. The operation leaves the signed envelope and delivery container formats
+unchanged and adds no device identifier to either format.
+
 ## References
 
 - [`specs/113-event-info-discovery`](../113-event-info-discovery/spec.md)

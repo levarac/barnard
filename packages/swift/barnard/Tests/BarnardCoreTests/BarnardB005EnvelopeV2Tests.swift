@@ -642,7 +642,7 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     // `registryAgreement` and carries no meaning for this case. Both bounds below are chosen so that each side of
     // the containment test passes on its own and only the ordering check refuses them, which is
     // what makes this a witness for the guard rather than for the arithmetic.
-    let inverted = BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: 0, eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, eventDisplayName: envelope.eventDisplayName, validFromEnin: 22, validThroughEnin: 10, relayExpiresAtEnin: 22, eninSeconds: 300, signedEnvelope: envelope.signedEnvelope)
+    let inverted = BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: 0, eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, eventDisplayName: envelope.eventDisplayName, validFromEnin: 22, validThroughEnin: 10, relayExpiresAtEnin: 22, eninSeconds: 300, signedEnvelope: envelope.signedEnvelope, signerPublicKey: envelope.signerPublicKey, signerRole: envelope.signerRole)
 
     // A well-formed definition, ENIN [10, 40] as seconds [3000, 12299]: 10 <= 22 and 10 <= 40 both
     // hold, so without the ordering check this inverted envelope would agree.
@@ -677,7 +677,7 @@ final class BarnardB005EnvelopeV2Tests: XCTestCase {
     // eninSeconds=0 is an invalid definition (division by zero). verify() itself already rejects a
     // wire envelope with eninSeconds=0, so build the verified envelope directly via the internal
     // initializer to exercise registryAgreement's own defense in depth.
-    let zeroEninEnvelope = BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: 0, eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, eventDisplayName: envelope.eventDisplayName, validFromEnin: 0, validThroughEnin: 0, relayExpiresAtEnin: 0, eninSeconds: 0, signedEnvelope: envelope.signedEnvelope)
+    let zeroEninEnvelope = BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: 0, eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, eventDisplayName: envelope.eventDisplayName, validFromEnin: 0, validThroughEnin: 0, relayExpiresAtEnin: 0, eninSeconds: 0, signedEnvelope: envelope.signedEnvelope, signerPublicKey: envelope.signerPublicKey, signerRole: envelope.signerRole)
     let zeroEninDefinition = BarnardEventDefinitionV1(eventId: envelope.eventId, keySetDigest: envelope.keySetDigest, joinMode: envelope.joinMode, eventCodeHash: envelope.eventCodeHash, validFromUnixSeconds: 0, validUntilUnixSeconds: 299)
     XCTAssertEqual(BarnardB005EnvelopeV2.registryAgreement(zeroEninEnvelope, definition: zeroEninDefinition), .mismatched(mismatchedFields: [.VALIDITY_WINDOW]), "eninSeconds=0 must not agree")
   }

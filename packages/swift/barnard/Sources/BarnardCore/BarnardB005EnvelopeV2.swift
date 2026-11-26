@@ -39,6 +39,11 @@ public struct BarnardB005NativeRecoverer: BarnardB005PublicKeyRecovering {
 /// `.REGISTRY_VERIFIED`: doing so is the responsibility of the component that performed the
 /// authenticated registry read (the host app), per spec 122's receiver policy; tracked as
 /// beid#367 / dispatch#11 (P4).
+public enum BarnardB005SignerRole: String {
+  case authorityDirect = "authority-direct"
+  case delegate
+}
+
 public struct BarnardB005VerifiedEnvelope {
   public let receiverState: BarnardB005ReceiverState
   public let relayHopCount: UInt8
@@ -72,11 +77,15 @@ public struct BarnardB005VerifiedEnvelope {
   public let relayExpiresAtEnin: Int64
   public let eninSeconds: UInt16
   public let signedEnvelope: [UInt8]
+  /// Public key authenticated by the envelope signature.
+  public let signerPublicKey: [UInt8]
+  /// Whether the authenticated signature used authority-direct or delegate mode.
+  public let signerRole: BarnardB005SignerRole
 
   /// This SDK never assigns `.REGISTRY_VERIFIED`: doing so is the responsibility of the
   /// component that performed the authenticated registry read (the host app), per spec 122's
   /// receiver policy; tracked as beid#367 / dispatch#11 (P4).
-  internal init(receiverState: BarnardB005ReceiverState, relayHopCount: UInt8, eventId: [UInt8], keySetDigest: [UInt8], joinMode: UInt8, eventCodeHash: [UInt8], eventDisplayName: String, validFromEnin: Int64, validThroughEnin: Int64, relayExpiresAtEnin: Int64, eninSeconds: UInt16, signedEnvelope: [UInt8]) {
+  internal init(receiverState: BarnardB005ReceiverState, relayHopCount: UInt8, eventId: [UInt8], keySetDigest: [UInt8], joinMode: UInt8, eventCodeHash: [UInt8], eventDisplayName: String, validFromEnin: Int64, validThroughEnin: Int64, relayExpiresAtEnin: Int64, eninSeconds: UInt16, signedEnvelope: [UInt8], signerPublicKey: [UInt8], signerRole: BarnardB005SignerRole) {
     self.receiverState = receiverState
     self.relayHopCount = relayHopCount
     self.eventId = eventId
@@ -89,6 +98,8 @@ public struct BarnardB005VerifiedEnvelope {
     self.relayExpiresAtEnin = relayExpiresAtEnin
     self.eninSeconds = eninSeconds
     self.signedEnvelope = signedEnvelope
+    self.signerPublicKey = signerPublicKey
+    self.signerRole = signerRole
   }
 
 }
@@ -540,8 +551,9 @@ public enum BarnardB005EnvelopeV2 {
       // identical point up to n times. Recover once and test set membership on the result.
       signatureKey = recoverMember(signature, digest: digest, keys: keys, recoverer: recoverer)
     }
-    guard signatureKey != nil else { return nil }
-    return BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: container[1], eventId: eventId, keySetDigest: ksDigest, joinMode: joinMode, eventCodeHash: codeHash, eventDisplayName: name, validFromEnin: validFrom, validThroughEnin: validThrough, relayExpiresAtEnin: expires, eninSeconds: eninSeconds, signedEnvelope: envelope)
+    guard let signatureKey else { return nil }
+    let signerRole: BarnardB005SignerRole = certLength == 0 ? .authorityDirect : .delegate
+    return BarnardB005VerifiedEnvelope(receiverState: .RADIO_SELF_VERIFIED, relayHopCount: container[1], eventId: eventId, keySetDigest: ksDigest, joinMode: joinMode, eventCodeHash: codeHash, eventDisplayName: name, validFromEnin: validFrom, validThroughEnin: validThrough, relayExpiresAtEnin: expires, eninSeconds: eninSeconds, signedEnvelope: envelope, signerPublicKey: signatureKey, signerRole: signerRole)
   }
 
   /// Pure comparison of a `.RADIO_SELF_VERIFIED` envelope against a registered
