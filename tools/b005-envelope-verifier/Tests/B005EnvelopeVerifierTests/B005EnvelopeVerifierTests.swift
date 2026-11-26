@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import B005EnvelopeVerifierKit
+import BarnardCore
 
 final class B005EnvelopeVerifierTests: XCTestCase {
   private let failure = "B005_ENVELOPE_VERIFICATION_FAILED"
@@ -127,6 +128,110 @@ final class B005EnvelopeVerifierTests: XCTestCase {
       XCTAssertNotEqual(result.status, 0)
       XCTAssertEqual(result.stdout, "")
       XCTAssertEqual(result.stderr, failure + "\n")
+    }
+  }
+
+  func testAuthorityOperationValidSignerAndRole() throws {
+    let result = authorityRun(enin: 6_000_000)
+    XCTAssertEqual(result.status, 0)
+    let json = try outputObject(result.stdout)
+    XCTAssertEqual(json["kind"] as? String, "BARNARD_B005_AUTHORITY_VERIFIED_V1")
+    XCTAssertEqual(json["eventIdHex"] as? String, vector("event_id"))
+    XCTAssertEqual(json["signerPublicKeyHex"] as? String, vector("authority_public_key"))
+    XCTAssertEqual(json["signerRole"] as? String, "authority-direct")
+    XCTAssertEqual(json["relayExpiresAtEnin"] as? Int, 6_000_002)
+    let expectedDigest = BarnardCoreCrypto.sha256(hexBytes(vector("v1_envelope")))
+      .map { String(format: "%02x", $0) }.joined()
+    XCTAssertEqual(json["envelopeSha256Hex"] as? String, expectedDigest)
+  }
+
+  func testAuthorityOperationAuthenticatesDelegateRole() throws {
+    let key = vector("v2_delegate_public_key")
+    let result = authorityRun(enin: 6_000_000, publicKey: key, role: "delegate", envelope: vector("v2_envelope"))
+    XCTAssertEqual(result.status, 0)
+    let json = try outputObject(result.stdout)
+    XCTAssertEqual(json["signerPublicKeyHex"] as? String, key)
+    XCTAssertEqual(json["signerRole"] as? String, "delegate")
+  }
+
+  func testAuthorityOperationRejectsUnauthorizedSigner() {
+    let result = authorityRun(enin: 6_000_000, publicKey: vector("v2_delegate_public_key"))
+    XCTAssertEqual(result.stderr, "B005_AUTH_SIGNER_UNAUTHORIZED\n")
+    let wrongRole = authorityRun(enin: 6_000_000, role: "delegate")
+    XCTAssertEqual(wrongRole.stderr, "B005_AUTH_SIGNER_UNAUTHORIZED\n")
+  }
+
+  func testAuthorityOperationRejectsInvalidContext() {
+    let result = authorityRun(enin: 6_000_000, corruptDigest: true)
+    XCTAssertEqual(result.status, 1)
+    XCTAssertEqual(result.stderr, "B005_AUTH_INVALID_CONTEXT\n")
+    XCTAssertEqual(result.stdout, "")
+  }
+
+  func testAuthorityOperationRejectsDuplicateMembersAtAnyLevel() {
+    let entries = [
+      #""kind":"BARNARD_B005_AUTHORITY_VERIFY_REQUEST_V1""#,
+      #""eventIdHex":"\#(vector("event_id"))""#,
+      #""role":"authority-direct""#
+    ]
+    for entry in entries {
+      let result = authorityRun(enin: 6_000_000, transform: {
+        $0.replacingOccurrences(of: entry, with: entry + "," + entry)
+      })
+      XCTAssertEqual(result.status, 1)
+      XCTAssertEqual(result.stdout, "")
+      XCTAssertEqual(result.stderr, "B005_AUTH_INVALID_CONTEXT\n")
+    }
+    let escaped = authorityRun(enin: 6_000_000, transform: {
+      $0.replacingOccurrences(of: #""role":"authority-direct""#,
+        with: #""role":"authority-direct","r\u006fle":"authority-direct""#)
+    })
+    XCTAssertEqual(escaped.stderr, "B005_AUTH_INVALID_CONTEXT\n")
+  }
+
+  func testAuthorityOperationReportsExpiredSignedWindow() {
+    let result = authorityRun(enin: 6_000_002)
+    XCTAssertEqual(result.stderr, "B005_AUTH_SIGNED_WINDOW_EXPIRED\n")
+    let notAuthorized = authorityRun(enin: 6_000_002, role: "delegate")
+    XCTAssertEqual(notAuthorized.stderr, "B005_AUTH_SIGNER_UNAUTHORIZED\n")
+  }
+
+  func testThreeEnvelopeSyntheticScheduleVerifiesEndToEnd() {
+    for enin in [6_000_000, 6_000_001, 6_000_002] {
+      let envelope = syntheticEnvelope(validFrom: enin, expires: enin + 1)
+      XCTAssertEqual(authorityRun(enin: enin, envelope: envelope).status, 0, "ENIN \(enin)")
+    }
+  }
+
+  private func authorityRun(
+    enin: Int, publicKey: String? = nil, role: String = "authority-direct",
+    corruptDigest: Bool = false, envelope: String? = nil, transform: (String) -> String = { $0 }
+  ) -> B005EnvelopeVerifierResult {
+    let key = publicKey ?? vector("authority_public_key")
+    let definitionDigest = String(repeating: "11", count: 32)
+    let eventId = vector("event_id")
+    let domain = Array("barnard-b005-authorization-context:v1\0".utf8)
+    let bytes = domain + hexBytes(definitionDigest) + hexBytes(eventId) + [1] + hexBytes(key) + [role == "authority-direct" ? 0 : 1]
+    var digest = BarnardCoreCrypto.sha256(bytes).map { String(format: "%02x", $0) }.joined()
+    if corruptDigest { digest = String(repeating: "00", count: 32) }
+    let input = #"{"kind":"BARNARD_B005_AUTHORITY_VERIFY_REQUEST_V1","signedEnvelopeHex":"\#(envelope ?? vector("v1_envelope"))","verificationEnin":\#(enin),"authorizationContext":{"eventIdHex":"\#(eventId)","definitionSha256Hex":"\#(definitionDigest)","contextDigestHex":"\#(digest)","signers":[{"publicKeyHex":"\#(key)","role":"\#(role)"}]}}"#
+    return B005AuthorityVerifier.run(input: Data(transform(input).utf8))
+  }
+
+  private func syntheticEnvelope(validFrom: Int, expires: Int) -> String {
+    let key = hexBytes(vector("authority_public_key"))
+    let eventId = BarnardB005EnvelopeV2.computeEventId(registrar: [UInt8](repeating: 0x11, count: 20), anchorOperator: [UInt8](repeating: 0x22, count: 20), nonce: [UInt8](repeating: 0x33, count: 32), keySetDigest: BarnardB005EnvelopeV2.keySetDigest([key])!)!
+    let fields = BarnardB005EnvelopeFields(registrar: [UInt8](repeating: 0x11, count: 20), anchorOperator: [UInt8](repeating: 0x22, count: 20), nonce: [UInt8](repeating: 0x33, count: 32), authorityKeys: [key], joinMode: 0, eninSeconds: 300, validFromEnin: UInt32(validFrom), validThroughEnin: UInt32(expires + 5), relayExpiresAtEnin: UInt32(expires), eventCodeHash: BarnardB005EnvelopeV2.openEventCodeHash(eventId: eventId)!, eventDisplayName: "Synthetic Schedule")
+    guard case .success(let unsigned) = BarnardB005EnvelopeV2.encodeUnsignedEnvelope(fields, nameValidator: BarnardB005NativeDisplayNameNormalizer(), recoverer: BarnardB005NativeRecoverer()) else { fatalError("fixture encode") }
+    let signature = BarnardCoreSigning.signRecoverable(privateKey: [UInt8](repeating: 0, count: 31) + [3], messageHash32: unsigned.signatureDigest)
+    guard case .success(let envelope) = BarnardB005EnvelopeV2.assembleSignedEnvelope(toBeSigned: unsigned.toBeSigned, signature: signature.r + signature.s + [UInt8(signature.v)]) else { fatalError("fixture assemble") }
+    return envelope.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private func hexBytes(_ value: String) -> [UInt8] {
+    stride(from: 0, to: value.count, by: 2).map { offset in
+      let start = value.index(value.startIndex, offsetBy: offset)
+      return UInt8(value[start..<value.index(start, offsetBy: 2)], radix: 16)!
     }
   }
 

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v2/b005-envelope-authority-verifier-v1.schema.json",
+  "title": "B005 authority verifier operation v1",
+  "oneOf": [{"$ref":"#/$defs/Request"},{"$ref":"#/$defs/Receipt"}],
+  "$defs": {
+    "Signer": {"type":"object","additionalProperties":false,"properties":{"publicKeyHex":{"type":"string","pattern":"^(02|03)[0-9a-f]{64}$"},"role":{"enum":["authority-direct","delegate"]}},"required":["publicKeyHex","role"]},
+    "Context": {"type":"object","additionalProperties":false,"properties":{"eventIdHex":{"type":"string","pattern":"^[0-9a-f]{64}$"},"definitionSha256Hex":{"type":"string","pattern":"^[0-9a-f]{64}$"},"contextDigestHex":{"type":"string","pattern":"^[0-9a-f]{64}$"},"signers":{"type":"array","minItems":1,"maxItems":64,"items":{"$ref":"#/$defs/Signer"}}},"required":["eventIdHex","definitionSha256Hex","contextDigestHex","signers"]},
+    "Request": {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"BARNARD_B005_AUTHORITY_VERIFY_REQUEST_V1"},"signedEnvelopeHex":{"type":"string","pattern":"^(?:[0-9a-f]{2})+$","maxLength":1016},"verificationEnin":{"type":"integer","minimum":0,"maximum":4294967295},"authorizationContext":{"$ref":"#/$defs/Context"}},"required":["kind","signedEnvelopeHex","verificationEnin","authorizationContext"]},
+    "Receipt": {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"BARNARD_B005_AUTHORITY_VERIFIED_V1"},"envelopeSha256Hex":{"type":"string","pattern":"^[0-9a-f]{64}$"},"authorizationContextDigestHex":{"type":"string","pattern":"^[0-9a-f]{64}$"},"eventIdHex":{"type":"string","pattern":"^[0-9a-f]{64}$"},"signerPublicKeyHex":{"type":"string","pattern":"^(02|03)[0-9a-f]{64}$"},"signerRole":{"enum":["authority-direct","delegate"]},"validFromEnin":{"type":"integer","minimum":0,"maximum":4294967295},"validThroughEnin":{"type":"integer","minimum":0,"maximum":4294967295},"relayExpiresAtEnin":{"type":"integer","minimum":0,"maximum":4294967295,"description":"Exclusive signed-window end."}},"required":["kind","envelopeSha256Hex","authorizationContextDigestHex","eventIdHex","signerPublicKeyHex","signerRole","validFromEnin","validThroughEnin","relayExpiresAtEnin"]}
+  }
+}
