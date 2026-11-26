@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import B005EnvelopeVerifierKit
+import Barnard
 import BarnardCore
 
 final class B005EnvelopeVerifierTests: XCTestCase {
@@ -210,8 +211,12 @@ final class B005EnvelopeVerifierTests: XCTestCase {
     let key = publicKey ?? vector("authority_public_key")
     let definitionDigest = String(repeating: "11", count: 32)
     let eventId = vector("event_id")
-    let domain = Array("barnard-b005-authorization-context:v1\0".utf8)
-    let bytes = domain + hexBytes(definitionDigest) + hexBytes(eventId) + [1] + hexBytes(key) + [role == "authority-direct" ? 0 : 1]
+    var bytes = Array("barnard-b005-authorization-context:v1\0".utf8)
+    bytes.append(contentsOf: hexBytes(definitionDigest))
+    bytes.append(contentsOf: hexBytes(eventId))
+    bytes.append(1)
+    bytes.append(contentsOf: hexBytes(key))
+    bytes.append(role == "authority-direct" ? 0 : 1)
     var digest = BarnardCoreCrypto.sha256(bytes).map { String(format: "%02x", $0) }.joined()
     if corruptDigest { digest = String(repeating: "00", count: 32) }
     let input = #"{"kind":"BARNARD_B005_AUTHORITY_VERIFY_REQUEST_V1","signedEnvelopeHex":"\#(envelope ?? vector("v1_envelope"))","verificationEnin":\#(enin),"authorizationContext":{"eventIdHex":"\#(eventId)","definitionSha256Hex":"\#(definitionDigest)","contextDigestHex":"\#(digest)","signers":[{"publicKeyHex":"\#(key)","role":"\#(role)"}]}}"#

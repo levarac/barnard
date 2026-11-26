@@ -25,7 +25,11 @@ let package = Package(
         ),
         .testTarget(
             name: "B005EnvelopeVerifierTests",
-            dependencies: ["B005EnvelopeVerifierKit", .product(name: "BarnardCore", package: "barnard")]
+            dependencies: [
+                "B005EnvelopeVerifierKit",
+                .product(name: "Barnard", package: "barnard"),
+                .product(name: "BarnardCore", package: "barnard")
+            ]
         )
     ]
 )
